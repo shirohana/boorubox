@@ -4,3 +4,39 @@
 node = "24"
 pnpm = "12"
 rust = "1.98"
+
+# Entry points. Everything below is what CI would run; `mise run check` is the gate.
+[tasks.dev]
+description = "Tauri dev window with Vite HMR"
+run = "pnpm --filter @boorubox/app tauri dev"
+
+[tasks."dev:ext"]
+description = "Rebuild the bridge extension on change (load packages/extension/dist unpacked)"
+run = "pnpm --filter @boorubox/extension dev"
+
+[tasks.build]
+description = "Build every package (frontend + extension; not the Tauri bundle)"
+run = "pnpm build"
+
+[tasks."build:app"]
+description = "Tauri release bundle"
+run = "pnpm --filter @boorubox/app tauri build"
+
+[tasks.test]
+run = "pnpm test"
+
+[tasks.lint]
+run = ["pnpm lint", "cargo fmt --manifest-path packages/app/src-tauri/Cargo.toml --check"]
+
+[tasks.format]
+run = ["pnpm format", "cargo fmt --manifest-path packages/app/src-tauri/Cargo.toml"]
+
+[tasks.typecheck]
+run = "pnpm typecheck"
+
+[tasks.clippy]
+run = "cargo clippy --manifest-path packages/app/src-tauri/Cargo.toml --all-targets -- -D warnings"
+
+[tasks.check]
+description = "Full gate: lint, typecheck, tests, rust clippy, builds"
+depends = ["lint", "typecheck", "test", "clippy", "build"]

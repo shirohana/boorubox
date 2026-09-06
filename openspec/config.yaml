@@ -1,0 +1,15 @@
+schema: spec-driven
+
+context: |
+  BooruBox: Tauri v2 desktop image library (macOS + Windows) plus a bridge Chrome extension.
+  Requirements with every closed decision and its argument: docs/requirements.md.
+  Repo rules and layout: CLAUDE.md. Stack: Rust (rusqlite + FTS5, axum listener on 127.0.0.1:47201),
+  SvelteKit static SPA + Svelte 5 + Tailwind 4 + shadcn-svelte, MV3 extension on vite-plugin-web-extension.
+  pnpm workspace under packages/{app,extension,shared}; mise tasks are the entry points, `mise run check` is the gate.
+
+rules:
+  proposal:
+    - Cite the docs/requirements.md section each requirement comes from; do not restate the argument
+    - Include a "Non-goals" section
+  tasks:
+    - One task per commit-sized unit; name the package it touches

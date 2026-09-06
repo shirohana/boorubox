@@ -1,6 +1,0 @@
-node_modules
-dist
-target
-pnpm-lock.yaml
-packages/app/src-tauri/gen
-packages/app/src/lib/components/ui
