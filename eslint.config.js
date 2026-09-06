@@ -59,16 +59,16 @@ export default tseslint.config(
   },
   {
     files: ['packages/app/**/*.{svelte,ts,js}'],
-    plugins: { 'better-tailwindcss': tailwindcss },
+    ...tailwindcss.configs.recommended,
     rules: {
       ...tailwindcss.configs.recommended.rules,
-      'better-tailwindcss/no-unknown-classes': 'off',
       'better-tailwindcss/enforce-consistent-line-wrapping': ['warn', {
         printWidth: 100, indent: 2, preferSingleLine: true,
       }],
     },
     settings: {
       'better-tailwindcss': {
+        // Tailwind 4 config is CSS; the plugin reads theme tokens from here.
         entryPoint: 'packages/app/src/app.css',
         messageStyle: 'compact',
       },
