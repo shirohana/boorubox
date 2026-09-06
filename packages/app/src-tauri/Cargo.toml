@@ -15,10 +15,38 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-tauri = { version = "2", features = [] }
+# `protocol-asset` is what serves library images to the webview through
+# `convertFileSrc` (design D7). It is paired with `app.security.assetProtocol`
+# in `tauri.conf.json`: tauri-build compares the two and fails the build when
+# only one of them is set, so they are changed together or not at all.
+tauri = { version = "2", features = ["protocol-asset"] }
 tauri-plugin-opener = "2"
+tauri-plugin-dialog = "2"
+tauri-plugin-store = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# `bundled` compiles SQLite in (FTS5 included) so no system library decides
+# whether the search index can be created; `functions` is the x_account()
+# scalar the query compiler registers.
+rusqlite = { version = "0.40", features = ["bundled", "functions"] }
+uuid = { version = "1", features = ["v4", "serde"] }
+thiserror = "2"
+image = "0.25"
+axum = { version = "0.8", features = ["multipart"] }
+# `sync` is the oneshot channel `pick_library` waits on while the folder
+# dialog runs on the thread that owns the UI.
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "sync"] }
+tower = "0.5"
+
+[dev-dependencies]
+http-body-util = "0.1"
+# The mock runtime the command tests drive: a headless `AppHandle` is the only
+# way to call a command that takes one without opening a window.
+tauri = { version = "2", features = ["test"] }
+tempfile = "3"
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+# `util` brings ServiceExt::oneshot, which drives the router in http tests.
+tower = { version = "0.5", features = ["util"] }
 
 # https://tauri.app/concept/size/#cargo-configuration
 [profile.release]

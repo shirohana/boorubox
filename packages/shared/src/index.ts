@@ -1,4 +1,166 @@
-// Types both runtimes need: the localhost transport contract and the
-// site-adapter record shape. Logic that decides what to do with them
-// (tags, ratings, upload) lives in the app only.
-export {}
+// Types both runtimes need: the localhost transport contract, the site-adapter
+// record shape, and the IPC contract between the app webview and the Rust core.
+// Logic that decides what to do with them (tags, ratings, upload) lives in the
+// app only.
+//
+// The Rust mirror of this file is packages/app/src-tauri/src/model.rs. Change
+// one, change the other: nothing generates either from the other yet.
+
+/** Default localhost port for the capture listener (docs/requirements.md §5). */
+export const DEFAULT_PORT = 47201
+
+/** Only requests from an extension origin may post captures (§5). */
+export const EXTENSION_ORIGIN_PREFIX = 'chrome-extension://'
+
+export type ImageSource = 'extension' | 'local' | 'legacy-bundle'
+
+export type Rating = 'g' | 's' | 'q' | 'e'
+
+/**
+ * What a site adapter extracted, verbatim. The extension produces it; only the
+ * app decides what the fields mean (CLAUDE.md: extraction in the extension,
+ * policy in the app).
+ */
+export interface SiteAdapterRecord {
+  site: string
+  fields: Record<string, string | string[]>
+}
+
+/** The JSON part of a `POST /captures` multipart body. */
+export interface CaptureMeta {
+  /** Caller-generated UUID. Delivery is idempotent on it. */
+  id: string
+  imageUrl: string
+  pageUrl: string
+  pageTitle: string
+  /** Epoch milliseconds. */
+  capturedAt: number
+  adapter?: SiteAdapterRecord
+}
+
+/** Body of `GET /status` when a library is open. */
+export interface StatusResponse {
+  version: string
+  libraryPath: string
+  imageCount: number
+}
+
+/** One row of the library, as the webview sees it. */
+export interface ImageRecord {
+  id: string
+  ext: string
+  mime: string
+  size: number
+  width: number
+  height: number
+  source: ImageSource
+  /** Adapter site for `extension`, bundle id for `legacy-bundle`, else null. */
+  sourceRef: string | null
+  imageUrl: string | null
+  pageUrl: string | null
+  pageTitle: string | null
+  rating: Rating | null
+  tags: string[]
+  capturedAt: number
+  createdAt: number
+  updatedAt: number
+  deletedAt: number | null
+  /** The file under `images/` was not there at the last check. */
+  missing: boolean
+}
+
+export interface TagCountFilter {
+  operator: '=' | '>' | '<' | '>=' | '<=' | 'range' | 'list'
+  value?: number
+  values?: number[]
+  min?: number
+  max?: number
+}
+
+/**
+ * The parsed query the webview sends to Rust, which compiles it to SQL. The
+ * parser (`$lib/domain/tag-utils`) is the only definition of the query
+ * language; Rust never sees the query string (design D3).
+ *
+ * Arrays, not Sets: this crosses the IPC boundary as JSON.
+ */
+export interface ParsedTagSearch {
+  includeTags: string[]
+  excludeTags: string[]
+  orGroups: string[][]
+  /** `g` | `s` | `q` | `e`. */
+  ratings: string[]
+  /** MIME types from `is:png` and friends. */
+  fileTypes: string[]
+  tagCount: TagCountFilter | null
+  includeUnrated: boolean
+  accounts: string[]
+  excludeAccounts: string[]
+}
+
+export interface SearchRequest {
+  query: ParsedTagSearch
+  /** Free text matched against page title and URLs through FTS5. */
+  text: string
+  includeDeleted: boolean
+  limit: number
+  offset: number
+}
+
+export interface SearchResult {
+  images: ImageRecord[]
+  /** Matches before `limit`/`offset`. */
+  total: number
+}
+
+export interface ImageCounts {
+  total: number
+  extension: number
+  local: number
+  legacyBundle: number
+}
+
+export interface ListenerStatus {
+  running: boolean
+  port: number
+  /** Why the listener is not running, for settings to show (§5). */
+  error: string | null
+}
+
+/** Everything the UI needs to decide between `/setup` and the library. */
+export interface LibraryStatus {
+  opened: boolean
+  libraryPath: string | null
+  /** A remembered path that could not be opened; kept until another is picked. */
+  missingPath: string | null
+  imageCount: number
+  listener: ListenerStatus
+  version: string
+}
+
+export type ImportStatus = 'imported' | 'skipped' | 'failed'
+
+export interface ImportOutcome {
+  path: string
+  status: ImportStatus
+  /** New image id when `imported`. */
+  id?: string
+  /** Why, when `skipped` or `failed`. */
+  reason?: string
+}
+
+export interface ImportReport {
+  imported: number
+  skipped: number
+  failed: number
+  items: ImportOutcome[]
+}
+
+/** Payload of the `import:progress` event emitted while an import runs. */
+export interface ImportProgress {
+  done: number
+  total: number
+  imported: number
+  skipped: number
+  failed: number
+}

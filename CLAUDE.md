@@ -8,7 +8,14 @@ there, with the argument. Do not re-open a §11 decision without recording why i
 All entry points are mise tasks (`mise tasks`). `mise run check` is the gate: lint,
 typecheck, tests, clippy, builds. Tests run per package (`pnpm -r test`), never from a root
 vitest config: the SvelteKit plugin pins vite `root` to `process.cwd()`, so a root runner
-scans every package under the app project.
+scans every package under the app project. Formatting is ESLint Stylistic (`mise run format`
+runs `eslint --fix` and `cargo fmt`); there is no Prettier.
+
+## Planning
+
+Work is planned as openspec changes under `openspec/changes/`. Phase 1 is
+`phase-1-app-mvp`; implement it with `/opsx:apply`. Task group 8 (legacy bundle import) is
+gated on the legacy repo shipping Phase 0.
 
 ## Layout rules
 

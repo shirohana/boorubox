@@ -1,0 +1,224 @@
+// The one definition of the query language (design D3): Rust never sees a query
+// string, only the `ParsedTagSearch` this produces.
+
+import type { ParsedTagSearch } from '@boorubox/shared'
+
+/**
+ * Sorts tags alphabetically (case-insensitive).
+ */
+export function sortTags(tags: string[]): string[] {
+  return [...tags].sort((a, b) => a.toLowerCase().localeCompare(b.toLowerCase()))
+}
+
+/** `ParsedTagSearch` uses arrays, not Sets (D13); these members are still sets in spirit. */
+function addUnique(values: string[], value: string): void {
+  if (!values.includes(value)) values.push(value)
+}
+
+// Parse Danbooru-style tag search
+// Supports: tags (AND), tag1 or tag2 (OR), -tag (exclude), rating:, is:, tagcount:, account:
+export function parseTagSearch(query: string): ParsedTagSearch {
+  const result: ParsedTagSearch = {
+    includeTags: [],
+    excludeTags: [],
+    orGroups: [],
+    ratings: [],
+    fileTypes: [],
+    tagCount: null,
+    includeUnrated: false,
+    accounts: [],
+    excludeAccounts: [],
+  }
+
+  if (!query.trim()) {
+    return result
+  }
+
+  let remainingQuery = query
+
+  // 1. Extract tagcount: metatag
+  // tagcount:2 (exact), tagcount:1,3 (list), tagcount:>5 (gt), tagcount:<3 (lt), tagcount:1..10
+  const tagCountListRegex = /tagcount:(\d+(?:,\d+)+)/gi
+  const tagCountListMatch = remainingQuery.match(tagCountListRegex)
+  if (tagCountListMatch) {
+    const values = tagCountListMatch[0].substring(9).split(',').map((v) => parseInt(v.trim(), 10))
+    result.tagCount = { operator: 'list', values }
+    remainingQuery = remainingQuery.replace(tagCountListRegex, '').trim()
+  } else {
+    const tagCountRegex = /tagcount:(>=|<=|>|<|)(\d+)(\.\.(\d+))?/gi
+    const tagCountMatch = remainingQuery.match(tagCountRegex)
+    if (tagCountMatch) {
+      const match = tagCountRegex.exec(query)
+      if (match) {
+        const operator = match[1]
+        const firstNum = parseInt(match[2], 10)
+        const secondNum = match[4] ? parseInt(match[4], 10) : undefined
+
+        if (secondNum !== undefined) {
+          result.tagCount = {
+            operator: 'range',
+            min: Math.min(firstNum, secondNum),
+            max: Math.max(firstNum, secondNum),
+          }
+        } else if (operator === '>') {
+          result.tagCount = { operator: '>', value: firstNum }
+        } else if (operator === '<') {
+          result.tagCount = { operator: '<', value: firstNum }
+        } else if (operator === '>=') {
+          result.tagCount = { operator: '>=', value: firstNum }
+        } else if (operator === '<=') {
+          result.tagCount = { operator: '<=', value: firstNum }
+        } else {
+          result.tagCount = { operator: '=', value: firstNum }
+        }
+      }
+      remainingQuery = remainingQuery.replace(tagCountRegex, '').trim()
+    }
+  }
+
+  // 2. Extract rating: metatags (match comma-separated list first, then single values)
+  const ratingRegex = /rating:([gsqe](?:,[gsqe])+|general|sensitive|questionable|explicit|[gsqe])/gi
+  const ratingMatches = remainingQuery.match(ratingRegex)
+  if (ratingMatches) {
+    ratingMatches.forEach((match) => {
+      const value = match.substring(7).toLowerCase() // Remove "rating:"
+      if (value.includes(',')) {
+        // First char only (g/s/q/e)
+        value.split(',').forEach((r) => addUnique(result.ratings, r.trim().charAt(0)))
+      } else {
+        addUnique(result.ratings, value.charAt(0)) // First char only
+      }
+    })
+    remainingQuery = remainingQuery.replace(ratingRegex, '').trim()
+  }
+
+  // 3. Extract is: metatags
+  const isRegex = /is:(unrated|jpg|jpeg|png|webp|gif|svg)/gi
+  const isMatches = remainingQuery.match(isRegex)
+  if (isMatches) {
+    isMatches.forEach((match) => {
+      const value = match.substring(3).toLowerCase() // Remove "is:"
+      if (value === 'unrated') {
+        result.includeUnrated = true
+      } else if (value === 'jpeg') {
+        addUnique(result.fileTypes, 'image/jpeg')
+      } else if (value === 'jpg') {
+        addUnique(result.fileTypes, 'image/jpeg')
+      } else if (value === 'png') {
+        addUnique(result.fileTypes, 'image/png')
+      } else if (value === 'webp') {
+        addUnique(result.fileTypes, 'image/webp')
+      } else if (value === 'gif') {
+        addUnique(result.fileTypes, 'image/gif')
+      } else if (value === 'svg') {
+        addUnique(result.fileTypes, 'image/svg+xml')
+      }
+    })
+    remainingQuery = remainingQuery.replace(isRegex, '').trim()
+  }
+
+  // 4. Extract account: metatags (support comma-separated list and exclusions)
+  const accountRegex = /-?account:([a-zA-Z0-9_]+(?:,[a-zA-Z0-9_]+)*)/gi
+  const accountMatches = remainingQuery.match(accountRegex)
+  if (accountMatches) {
+    accountMatches.forEach((match) => {
+      const isExclusion = match.startsWith('-')
+      const value = match.substring(isExclusion ? 9 : 8) // Remove "-account:" or "account:"
+      if (value.includes(',')) {
+        // Multiple accounts
+        value.split(',').forEach((acc) => {
+          const trimmed = acc.trim()
+          if (trimmed) {
+            addUnique(isExclusion ? result.excludeAccounts : result.accounts, trimmed)
+          }
+        })
+      } else {
+        // Single account
+        if (value) {
+          addUnique(isExclusion ? result.excludeAccounts : result.accounts, value)
+        }
+      }
+    })
+    remainingQuery = remainingQuery.replace(accountRegex, '').trim()
+  }
+
+  // 5. Parse tag terms (handle OR, exclusion, regular tags)
+  // Split by spaces but respect "or" as operator
+  const tokens = remainingQuery.split(/\s+/).filter((t) => t.length > 0)
+
+  let i = 0
+  while (i < tokens.length) {
+    const token = tokens[i]
+
+    if (token.toLowerCase() === 'or') {
+      // Handle OR: take previous tag and next tag as OR group
+      if (i > 0 && i < tokens.length - 1) {
+        const prevTag = tokens[i - 1]
+        const nextTag = tokens[i + 1]
+
+        // Remove previous tag from includeTags if it was just added
+        const prevIndex = result.includeTags.indexOf(prevTag)
+        if (prevIndex !== -1) {
+          result.includeTags.splice(prevIndex, 1)
+        }
+
+        // Check if previous tag is already in an OR group
+        let foundGroup = false
+        for (const group of result.orGroups) {
+          if (group.includes(prevTag)) {
+            group.push(nextTag)
+            foundGroup = true
+            break
+          }
+        }
+
+        if (!foundGroup) {
+          result.orGroups.push([prevTag, nextTag])
+        }
+
+        i += 2 // Skip 'or' and next tag
+        continue
+      }
+    } else if (token.startsWith('-')) {
+      // Exclusion
+      const tag = token.substring(1)
+      if (tag) {
+        result.excludeTags.push(tag)
+      }
+    } else {
+      // Regular tag (include, AND)
+      result.includeTags.push(token)
+    }
+
+    i++
+  }
+
+  return result
+}
+
+/**
+ * Removes a tag from search query string, cleaning up orphaned "or" operators.
+ * Handles: "girl or cat" → remove "cat" → "girl"
+ *          "cat or girl" → remove "cat" → "girl"
+ *          "dog cat girl" → remove "cat" → "dog girl"
+ */
+export function removeTagFromQuery(query: string, tagToRemove: string): string {
+  const tokens = query.split(/\s+/)
+  const newTokens: string[] = []
+
+  for (let i = 0; i < tokens.length; i++) {
+    if (tokens[i] === tagToRemove) {
+      // Skip this tag
+      // Also skip "or" if it's before or after this tag
+      if (i > 0 && tokens[i - 1].toLowerCase() === 'or') {
+        newTokens.pop() // Remove the "or" we just added
+      } else if (i < tokens.length - 1 && tokens[i + 1].toLowerCase() === 'or') {
+        i++ // Skip the next "or"
+      }
+    } else {
+      newTokens.push(tokens[i])
+    }
+  }
+
+  return newTokens.join(' ').trim()
+}
