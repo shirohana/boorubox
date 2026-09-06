@@ -11,6 +11,14 @@
   import { imageUrl } from '$lib/api'
   import { Button } from '$lib/components/ui/button'
   import { offsetIndexBounded } from '$lib/domain/navigation-math'
+  import {
+    isTypingTarget,
+    KEY_INSPECT,
+    KEY_LEFT,
+    KEY_RIGHT,
+    KEY_SPACE,
+  } from '$lib/keyboard'
+  import Inspector from './Inspector.svelte'
 
   interface Props {
     results: SearchResults
@@ -22,6 +30,9 @@
   let { results, index = $bindable(), libraryPath, onclose }: Props = $props()
 
   let dialog = $state<HTMLDialogElement | null>(null)
+  // Which mode the viewer opens in is session state, not a setting (Non-Goals),
+  // and the session is this dialog: it starts on the image alone every time.
+  let mode = $state<'gallery' | 'inspect'>('gallery')
 
   const image = $derived(results.at(index))
   const src = $derived(image && libraryPath ? imageUrl(libraryPath, image) : null)
@@ -40,12 +51,21 @@
   }
 
   function onkeydown(event: KeyboardEvent) {
-    if (event.key === 'ArrowLeft') {
+    if (isTypingTarget(event)) return
+
+    if (event.key === KEY_LEFT) {
       event.preventDefault()
       move(previous)
-    } else if (event.key === 'ArrowRight') {
+    } else if (event.key === KEY_RIGHT) {
       event.preventDefault()
       move(next)
+    } else if (event.key === KEY_INSPECT) {
+      event.preventDefault()
+      mode = mode === 'inspect' ? 'gallery' : 'inspect'
+    } else if (event.key === KEY_SPACE) {
+      // Escape is the dialog's own; Space is not, so it has to ask.
+      event.preventDefault()
+      dialog?.close()
     }
   }
 </script>
@@ -55,47 +75,87 @@
   {onclose}
   {onkeydown}
   class="
-    m-auto h-[92vh] max-h-none w-[92vw] max-w-none rounded-xl border border-border bg-background p-0
-    text-foreground
-    backdrop:bg-black/70
+    m-auto h-[96vh] max-h-none w-[96vw] max-w-none border-0 bg-transparent p-0
+    backdrop:bg-black/85
   "
 >
-  <div class="flex h-full flex-col">
-    <header class="flex items-center justify-between gap-3 border-b border-border px-3 py-2">
-      <div class="min-w-0">
-        <p class="truncate text-sm">{title}</p>
-        <p class="text-xs text-muted-foreground">
-          {(index + 1).toLocaleString()} of {results.total.toLocaleString()}
-        </p>
-      </div>
-      <div class="flex shrink-0 items-center gap-2">
-        <Button
-          size="sm"
-          variant="outline"
-          disabled={previous === null}
-          onclick={() => move(previous)}
-        >
-          Previous
-        </Button>
-        <Button size="sm" variant="outline" disabled={next === null} onclick={() => move(next)}>
-          Next
-        </Button>
-        <Button size="sm" variant="ghost" onclick={() => dialog?.close()}>Close</Button>
-      </div>
-    </header>
+  <div class="flex h-full min-h-0 gap-3">
+    <div class="flex min-w-0 flex-1 flex-col">
+      <!-- Minimal chrome: the image is what the viewer is for. -->
+      <!-- The dialog reaches the window's top edge, where the traffic lights are (D13). -->
+      <header
+        class="
+          flex items-center justify-between gap-3 px-1 py-2 text-white
+          in-data-[platform=macos]:ps-16
+        "
+      >
+        <div class="min-w-0">
+          <p class="truncate text-sm">{title}</p>
+          <p class="text-xs text-white/60">
+            {(index + 1).toLocaleString()} of {results.total.toLocaleString()}
+          </p>
+        </div>
+        <div class="flex shrink-0 items-center gap-1">
+          <Button
+            size="sm"
+            variant="ghost"
+            class="text-white hover:bg-white/15 hover:text-white"
+            disabled={previous === null}
+            onclick={() => move(previous)}
+          >
+            Previous
+          </Button>
+          <Button
+            size="sm"
+            variant="ghost"
+            class="text-white hover:bg-white/15 hover:text-white"
+            disabled={next === null}
+            onclick={() => move(next)}
+          >
+            Next
+          </Button>
+          <Button
+            size="sm"
+            variant="ghost"
+            class="text-white hover:bg-white/15 hover:text-white"
+            aria-pressed={mode === 'inspect'}
+            onclick={() => (mode = mode === 'inspect' ? 'gallery' : 'inspect')}
+          >
+            Info
+          </Button>
+          <Button
+            size="sm"
+            variant="ghost"
+            class="text-white hover:bg-white/15 hover:text-white"
+            onclick={() => dialog?.close()}
+          >
+            Close
+          </Button>
+        </div>
+      </header>
 
-    <div class="flex min-h-0 flex-1 items-center justify-center bg-muted/30 p-3">
-      {#if src}
-        <img {src} alt={title} class="max-h-full max-w-full object-contain" />
-      {:else}
-        <p class="text-sm text-muted-foreground">Loading…</p>
-      {/if}
+      <!--
+        The image is fitted to whatever space is left, so opening the inspector
+        refits it rather than cropping it (design D10).
+      -->
+      <div class="flex min-h-0 min-w-0 flex-1 items-center justify-center">
+        {#if src}
+          <img {src} alt={title} class="max-h-full max-w-full object-contain" />
+        {:else}
+          <p class="text-sm text-white/60">Loading…</p>
+        {/if}
+      </div>
     </div>
 
-    {#if image && image.tags.length > 0}
-      <footer class="border-t border-border px-3 py-2">
-        <p class="text-xs wrap-break-word text-muted-foreground">{image.tags.join(' ')}</p>
-      </footer>
+    {#if mode === 'inspect'}
+      <aside
+        class="
+          my-2 w-80 shrink-0 overflow-hidden rounded-xl border border-border bg-background
+          text-foreground
+        "
+      >
+        <Inspector image={image ?? null} />
+      </aside>
     {/if}
   </div>
 </dialog>

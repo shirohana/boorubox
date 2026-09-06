@@ -1,3 +1,4 @@
+import type { ParsedTagSearch } from '@boorubox/shared'
 import { describe, expect, it } from 'vitest'
 import { parseTagSearch } from './tag-utils'
 
@@ -254,69 +255,53 @@ describe('parseTagSearch', () => {
     })
   })
 
+  // Design D15: this branch used to ask `remainingQuery` whether it matched and
+  // then read the captures off `query`. The two are the same string only
+  // because tagcount is parsed FIRST, so no input can tell the shapes apart and
+  // no case fails before the fix. These pin what the one-read restructure has
+  // to preserve, and are what breaks if the parse steps are ever reordered.
   describe('tag count filters', () => {
-    describe('exact match', () => {
-      it('should parse exact count', () => {
-        const result = parseTagSearch('tagcount:2')
-        expect(result.tagCount).toEqual({ operator: '=', value: 2 })
-      })
+    const operators: [query: string, tagCount: ParsedTagSearch['tagCount']][] = [
+      ['tagcount:2', { operator: '=', value: 2 }],
+      ['tagcount:>5', { operator: '>', value: 5 }],
+      ['tagcount:<3', { operator: '<', value: 3 }],
+      ['tagcount:>=2', { operator: '>=', value: 2 }],
+      ['tagcount:<=10', { operator: '<=', value: 10 }],
+      ['tagcount:1..10', { operator: 'range', min: 1, max: 10 }],
+      ['tagcount:10..1', { operator: 'range', min: 1, max: 10 }],
+      ['tagcount:1,3,5', { operator: 'list', values: [1, 3, 5] }],
+      ['tagcount:0,2,4,6,8', { operator: 'list', values: [0, 2, 4, 6, 8] }],
+      ['TAGCOUNT:>5', { operator: '>', value: 5 }],
+    ]
 
-      it('should parse exact count with tags', () => {
-        const result = parseTagSearch('girl tagcount:5 cat')
-        expect(result.includeTags).toEqual(['girl', 'cat'])
-        expect(result.tagCount).toEqual({ operator: '=', value: 5 })
-      })
+    it.each(operators)('reads %s and strips it from the tag terms', (query, tagCount) => {
+      expect(parseTagSearch(query).tagCount).toEqual(tagCount)
+
+      const amongTags = parseTagSearch(`girl ${query} cat`)
+      expect(amongTags.tagCount).toEqual(tagCount)
+      expect(amongTags.includeTags).toEqual(['girl', 'cat'])
     })
 
-    describe('comparison operators', () => {
-      it('should parse greater than', () => {
-        const result = parseTagSearch('tagcount:>5')
-        expect(result.tagCount).toEqual({ operator: '>', value: 5 })
-      })
-
-      it('should parse less than', () => {
-        const result = parseTagSearch('tagcount:<3')
-        expect(result.tagCount).toEqual({ operator: '<', value: 3 })
-      })
-
-      it('should parse greater than or equal', () => {
-        const result = parseTagSearch('tagcount:>=2')
-        expect(result.tagCount).toEqual({ operator: '>=', value: 2 })
-      })
-
-      it('should parse less than or equal', () => {
-        const result = parseTagSearch('tagcount:<=10')
-        expect(result.tagCount).toEqual({ operator: '<=', value: 10 })
-      })
+    it('takes the first tagcount and strips every one of them', () => {
+      // The shape the defect would have shown up in: if the captures were read
+      // off a string an earlier step had not stripped, the two occurrences
+      // would disagree about which one won.
+      const result = parseTagSearch('girl tagcount:>2 tagcount:5 cat')
+      expect(result.tagCount).toEqual({ operator: '>', value: 2 })
+      expect(result.includeTags).toEqual(['girl', 'cat'])
     })
 
-    describe('range', () => {
-      it('should parse range', () => {
-        const result = parseTagSearch('tagcount:1..10')
-        expect(result.tagCount).toEqual({ operator: 'range', min: 1, max: 10 })
-      })
-
-      it('should handle reversed range (min > max)', () => {
-        const result = parseTagSearch('tagcount:10..1')
-        expect(result.tagCount).toEqual({ operator: 'range', min: 1, max: 10 })
-      })
-    })
-
-    describe('list', () => {
-      it('should parse list of values', () => {
-        const result = parseTagSearch('tagcount:1,3,5')
-        expect(result.tagCount).toEqual({ operator: 'list', values: [1, 3, 5] })
-      })
-
-      it('should parse list with multiple values', () => {
-        const result = parseTagSearch('tagcount:0,2,4,6,8')
-        expect(result.tagCount).toEqual({ operator: 'list', values: [0, 2, 4, 6, 8] })
-      })
-    })
-
-    it('should be case-insensitive', () => {
-      const result = parseTagSearch('TAGCOUNT:>5')
-      expect(result.tagCount).toEqual({ operator: '>', value: 5 })
+    it('parses the same tagcount wherever it sits among the other metatags', () => {
+      for (const query of [
+        'rating:s tagcount:>2 cat',
+        'tagcount:>2 rating:s cat',
+        'cat rating:s is:png account:alice tagcount:>2',
+        'tagcount:>2 cat rating:s is:png account:alice',
+      ]) {
+        const result = parseTagSearch(query)
+        expect(result.tagCount).toEqual({ operator: '>', value: 2 })
+        expect(result.includeTags).toEqual(['cat'])
+      }
     })
   })
 

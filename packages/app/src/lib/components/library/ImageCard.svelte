@@ -14,12 +14,14 @@
   interface Props {
     /** `undefined` while the page holding this row is still loading. */
     image: ImageRecord | undefined
-    height: number
+    /** The grid's current card: it holds the tab stop and shows its overlay. */
+    focused: boolean
+    onfocus: () => void
     onactivate: () => void
     onforget: () => void
   }
 
-  let { image, height, onactivate, onforget }: Props = $props()
+  let { image, focused, onfocus, onactivate, onforget }: Props = $props()
 
   let src = $state<string | null>(null)
   let previewFailed = $state(false)
@@ -51,7 +53,13 @@
   })
 </script>
 
-<div style="height: {height}px">
+<!--
+  Roving tabindex: exactly one card in the grid carries `tabindex="0"`, so Tab
+  lands on the current card and the grid finds the element to focus by querying
+  for it (`data-card-focus`). `onfocusin` rather than `onfocus` on the tile,
+  because on a missing-file card the tab stop is its own button.
+-->
+<div class="aspect-square" onfocusin={onfocus}>
   {#if !image}
     <div class="h-full rounded-lg border border-border bg-muted/40">
       <span class="sr-only">Loading</span>
@@ -63,8 +71,9 @@
     -->
     <div
       class="
-        flex h-full flex-col justify-between gap-2 rounded-lg border border-dashed
+        flex h-full flex-col justify-between gap-2 overflow-hidden rounded-lg border border-dashed
         border-destructive/40 bg-destructive/5 p-3
+        {focused ? 'ring-3 ring-ring/50' : ''}
       "
     >
       <div class="min-h-0">
@@ -94,7 +103,13 @@
           </div>
         </div>
       {:else}
-        <Button size="xs" variant="outline" onclick={() => (confirmingForget = true)}>
+        <Button
+          size="xs"
+          variant="outline"
+          data-card-focus
+          tabindex={focused ? 0 : -1}
+          onclick={() => (confirmingForget = true)}
+        >
           Remove record…
         </Button>
       {/if}
@@ -102,34 +117,57 @@
   {:else}
     <button
       type="button"
-      onclick={onactivate}
+      data-card-focus
+      tabindex={focused ? 0 : -1}
+      onclick={(event) => {
+        // WebKit does not focus a button on click, and the grid's keys only
+        // fire while the focus is inside it — so a clicked card has to take
+        // the focus itself, or a click and then an arrow key does nothing.
+        event.currentTarget.focus()
+        onfocus()
+      }}
+      ondblclick={onactivate}
       class="
-        flex size-full flex-col overflow-hidden rounded-lg border border-border bg-card text-left
-        outline-none
+        group relative block size-full overflow-hidden rounded-lg border bg-muted/40 outline-none
         focus-visible:ring-3 focus-visible:ring-ring/50
+        {focused ? 'border-ring' : 'border-border'}
       "
     >
-      <span class="flex min-h-0 flex-1 items-center justify-center bg-muted/40">
-        {#if src}
-          <img
-            {src}
-            alt={title}
-            loading="lazy"
-            decoding="async"
-            class="size-full object-contain"
-            onerror={() => (previewFailed = true)}
-          />
-        {:else}
-          <span class="px-2 text-center text-xs text-muted-foreground">
-            {previewFailed ? 'No preview' : ''}
-          </span>
-        {/if}
-      </span>
-      <span class="block w-full px-2 py-1.5">
-        <span class="block truncate text-xs text-foreground">{title}</span>
-        <span class="block text-[0.7rem] text-muted-foreground">
-          {capturedOn} · {image.source}
+      {#if src}
+        <img
+          {src}
+          alt={title}
+          loading="lazy"
+          decoding="async"
+          class="size-full object-contain"
+          onerror={() => (previewFailed = true)}
+        />
+      {:else}
+        <span
+          class="
+            flex size-full items-center justify-center px-2 text-center text-xs
+            text-muted-foreground
+          "
+        >
+          {previewFailed ? 'No preview' : ''}
         </span>
+      {/if}
+
+      <!--
+        The tile is the image (`library-browse`): its facts only ever cover it
+        while it is hovered or focused, never as a caption strip below it.
+      -->
+      <span
+        class="
+          absolute inset-x-0 bottom-0 block bg-linear-to-t from-black/80 to-transparent px-2 pt-6
+          pb-1.5 text-left opacity-0 transition-opacity
+          group-hover:opacity-100
+          group-focus-visible:opacity-100
+          {focused ? 'opacity-100' : ''}
+        "
+      >
+        <span class="block truncate text-xs text-white">{title}</span>
+        <span class="block text-[0.7rem] text-white/70">{capturedOn} · {image.source}</span>
       </span>
     </button>
   {/if}

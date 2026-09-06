@@ -1,0 +1,60 @@
+> Three implementing agents, split by file ownership: **A** owns group 1 (`packages/shared`,
+> `packages/app/src-tauri`, and `packages/app/src/lib/api/`), **B** owns groups 2 and 3
+> (`packages/app/src/routes/`, `src/lib/components/frame/`, `src/lib/theme.svelte.ts`,
+> `app.html`, `app.css`, `tauri.conf.json`), **C** owns group 4
+> (`packages/app/src/lib/components/library/`, `src/lib/keyboard.ts`, `src/lib/domain/`).
+> Group 1 lands first (B and C both call its commands), then 2. Groups 3 and 4 share no file
+> and run in parallel; land group 4 before task 3.4, which imports its components.
+
+## 1. Rust and the contract (agent A)
+
+- [x] 1.1 `packages/shared` + `packages/app/src-tauri`: add `Theme` (`system` | `light` | `dark`), `AppSettings { theme, gridTileSize }` and `RecentLibrary { path, name, available }` to `src/index.ts` and mirror them in `model.rs` (Phase 1 D11 — one commit, both files); verify a serde test asserts the camelCase JSON keys and `mise run typecheck` passes.
+- [x] 1.2 `packages/app/src-tauri`: `settings.rs` gains the `theme`, `gridTileSize` and `recentLibraries` keys with the existing per-field fallback, plus the push helper (front, dedupe by exact path, cap 10 — design D4); verify unit tests for round-trip, an unknown theme string falling back to `system`, re-pushing an existing path moving it to the front without duplicating, and the cap dropping the oldest.
+- [x] 1.3 `packages/app/src-tauri`: commands `app_settings`, `set_theme`, `set_grid_tile_size` (design D5); verify command tests on the mock app that a written value reads back through a second `settings::load`, and that an out-of-range tile size is clamped rather than stored.
+- [x] 1.4 `packages/app/src-tauri`: `open_library` pushes to the recent list and swaps the new library in only on success (design D1); `close_library` clears `libraryPath` and returns the closed status (design D3); `recent_libraries` computes `available` at call time (design D4); `forget_recent(path)`; verify command tests — switching A→B leaves the list `[B, A]`, close returns `opened: false` with `missingPath: None`, a deleted folder is listed unavailable, `forget_recent` removes the entry and leaves the folder on disk, and a failed open leaves the previously open library open.
+- [x] 1.5 `packages/app/src-tauri`: `reveal_library` through `tauri_plugin_opener::reveal_item_in_dir`; verify a command test that it is `NoLibrary` with no library open (the reveal itself is manual, task 5.4).
+- [x] 1.6 `packages/app/src-tauri`: give the listener a graceful-shutdown handle in `AppState` and add `set_listener_port` that stops, rebinds and stores the port whether or not the bind succeeded (design D6, spec `capture-ingest`); verify Rust tests that after a rebind the old port refuses connections and the new one serves `GET /status`, and that rebinding onto a port held by another socket returns `running: false` with the reason while the app keeps working.
+- [x] 1.7 `packages/app/src/lib/api`: one wrapper per new command in `commands.ts` plus the `index.ts` exports; verify `commands.test.ts` gains a case per command asserting the command name and argument keys that reach the IPC boundary.
+
+## 2. Frame foundations (agent B)
+
+- [x] 2.1 `packages/app`: add the shadcn-svelte copy-ins the frame uses — `pnpm dlx shadcn-svelte@latest add sidebar dialog dropdown-menu tooltip slider badge scroll-area separator select kbd` (`sidebar` pulls in `is-mobile`, `sheet`, `skeleton`, `tooltip`, `separator`, `button`, `input`); verify the files land under `src/lib/components/ui/`, `bits-ui` is a dependency of `packages/app`, and `mise run lint` still passes with them excluded (CLAUDE.md).
+- [x] 2.2 `packages/app`: fix the `app.html` title to `BooruBox`, set `titleBarStyle: "Overlay"` in `tauri.conf.json`, and stamp `data-platform="macos"` on the root element from the webview's user agent (design D13); verify the dev window on macOS shows no system title bar and the Windows build is unchanged.
+- [x] 2.3 `packages/app/src/lib/theme.svelte.ts`: resolve `system | light | dark` to the `dark` class on the root element, follow `prefers-color-scheme` live while `system`, and load the setting in `+layout.svelte` alongside `library_status` so nothing paints first (design D12); verify a unit test on the resolver for the three settings against both system appearances, and manually that starting dark shows no light flash.
+- [x] 2.4 `packages/app/src/routes/+layout.svelte`: become the frame — sidebar and toolbar regions around the route outlet, with the gate redirecting to `/start` when no library is open (design D2); verify moving between `/` and `/settings` keeps the sidebar mounted, and that the frame is absent on `/start`.
+
+## 3. Routes and screens (agent B)
+
+- [x] 3.1 `packages/app/src/routes/start`: the start screen — recent libraries (name, path, unavailable state, forget), choose a folder, the missing-folder wording, the listener line; delete `routes/setup`; verify the `library-switching` start-screen scenarios by hand: fresh profile shows only the picker, two opened folders list newest first, a renamed folder shows unavailable and choosing it reports that instead of creating a library.
+- [x] 3.2 `packages/app/src/lib/components/frame`: sidebar with the nav items that exist (`Library`, `Settings`), and the footer showing the library name, the total image count and the switch menu (recent libraries, Choose folder…, Reveal in Finder, Close library) — no item for a screen that does not exist (spec `app-frame`); verify by hand that switching from the menu swaps the grid and the name, and Close library lands on `/start`.
+- [x] 3.3 `packages/app/src/routes/settings`: the Library section (path, Reveal in Finder, Switch library, Close library, per-source counts from `image_counts` — design D7), the Capture section (listener state, reason, editable port — design D6), and the Appearance section (theme, default thumbnail size); verify by hand that a port change is followed by a successful `curl` capture on the new port and a refused connection on the old one, and that the counts match a library with a mixed ingest.
+- [x] 3.4 `packages/app/src/routes/+page.svelte`: wire the library screen — toolbar (the two search inputs, the tile-size slider, the `Import` menu and its progress and report card), the grid, and the inspector column; move the window drag-and-drop subscription out of the import panel to the route (design D8); delete `CountsPanel.svelte`, `ListenerBanner.svelte` and the old `ImportPanel` layout; verify by hand that dropping a folder still imports with progress and a per-item report, and that no counts or listener banner remain on the library screen.
+
+## 4. Grid, lightbox and inspector (agent C)
+
+- [x] 4.1 `packages/app/src/lib/keyboard.ts`: `isTypingTarget(event)` and the key names both regions share (design D14); verify unit tests covering an input, a textarea, a `contenteditable` element and a plain `div`.
+- [x] 4.2 `packages/app/src/lib/components/library/grid-window.ts`: take the tile edge as an input and drop `MIN_CARD_WIDTH` / `CARD_HEIGHT` (design D11); verify `grid-window.test.ts` covers column counts at the smallest, default and largest tile sizes and still asserts that the rendered row count depends on the viewport, not on the total.
+- [x] 4.3 `packages/app/src/lib/components/library/ImageCard.svelte`: square tile with the thumbnail fitted whole, title/source/date in a hover-and-focus overlay, the missing-file state kept as it is; verify by hand with a tall and a wide image that neither is cropped and the overlay appears on hover and on keyboard focus.
+- [x] 4.4 `packages/app/src/lib/components/library/LibraryGrid.svelte`: a focus index moved by the arrow keys, `Home` and `End` through `offsetIndexClamped`, scrolled into view; single click focuses, double click / `Enter` / `Space` activates (design D9); verify a unit test for the focus math against the grid's column count, and a manual keyboard pass from the first to the last card.
+- [x] 4.5 `packages/app/src/lib/components/library/Inspector.svelte`: read-only identity, tags and rating blocks from an `ImageRecord`, plus the "no image selected" state (spec `app-frame`); verify by hand against a capture and a local import that every field of the slot map's identity row is shown — there is no component-test harness in this repo (only jsdom unit tests) and this change does not add one.
+- [x] 4.6 `packages/app/src/lib/components/library/Lightbox.svelte`: gallery and inspect modes in the one dialog, image fitted to the space left, `i` toggling, `Esc`/`Space` closing with focus returned (design D10); verify by hand: an image larger than the window is fully visible in both modes and the arrows still stop at the ends.
+- [x] 4.7 `packages/app/src/lib/domain/tag-utils.ts`: make the `tagcount:` branch read one string and drop the redundant match (design D15); verify `tag-parser.test.ts` gains the regression block — the full operator table, the metatag stripped from the tag terms, and a query whose tagcount survives an earlier stripping step.
+
+## 5. Verification
+
+- [x] 5.1 `mise run check` passes (lint, typecheck, tests, clippy, builds).
+- [x] 5.2 Screenshot pass in the running app, light and dark: `/start` with and without recent entries, `/` with the inspector open and closed, the lightbox in gallery and in inspect mode, and `/settings`. Check the macOS traffic lights against the sidebar header reserve (design D13) in both themes.
+- [ ] 5.3 The Phase 1 end-to-end list still passes: `curl` a multipart capture with `Origin: chrome-extension://test` (201), retry the same id (200, one image), import a folder through the picker and by dropping it, tag search and free-text search, the empty state naming the query, the lightbox, and a file deleted under `images/` showing the missing card with its drop action.
+  > 2026-09-06 pass in the dev window (macOS, temp libraries, driven by System Events + screencapture): everything on this list was checked except **drop-to-import**, which a script cannot perform — one manual drop closes it. Also checked: `/` focuses the tag field, Esc leaves it, a single click focuses without opening (WebKit needed the card to take focus itself), the lightbox header clears the traffic lights.
+- [x] 5.4 The new end-to-end list: switch libraries from the sidebar menu and confirm the grid, counts and a fresh capture all follow; close the library and relaunch to the start screen with no missing-folder wording; reveal the folder in Finder; forget a recent entry; change the theme and relaunch; change the port and capture on it.
+
+## 6. Owner review of the first build (2026-09-06)
+
+- [x] 6.1 `src-tauri/capabilities/default.json`: `core:window:allow-start-dragging` (the drag regions were inert without it) and `core:webview:allow-set-webview-zoom`; drag regions on the toolbar band and on the `/start` and `/settings` backgrounds (design D13).
+- [x] 6.2 `components/frame/Sidebar.svelte`: collapsible to the icon rail — trigger in the header, `Sidebar.Rail`, Cmd+B from the provider.
+- [x] 6.3 `lib/zoom.ts` + `+layout.svelte`: whole-app zoom on Cmd/Ctrl `=` `-` `0`, clamped 0.5–2 in tenths; verify `zoom.test.ts`.
+- [x] 6.4 `+page.svelte` + `LibraryGrid.svelte`: closing the lightbox focuses the image it showed last (spec `library-browse`, design D10 reversal).
+- [x] 6.5 `lib/keyboard.ts` `KEYBOARD_MAP` + `/settings` Keyboard section, rendered with the `kbd` copy-in (spec `app-frame`).
+- [x] 6.7 Owner's second look: the sidebar's width tween is off (`app.css` overrides the copy-in), and the toggle moves to a frame-owned top bar (`frame/TopBar.svelte` + `frame.svelte.ts`) that stays put when the sidebar collapses to its icon rail — the Obsidian pattern; the sidebar header and the app name are gone (design D13 records the reversal).
+- [ ] 6.6 Deferred by the owner: transitions for the inspector column, sidebar collapse and lightbox open (tw-animate-css is already installed). Up/down in the viewer: decided against. Clipboard paste: its own change (`clipboard-paste`, touches `local-file-import`).
+

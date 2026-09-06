@@ -10,10 +10,15 @@ use std::path::{Path, PathBuf};
 
 use tauri::{AppHandle, Emitter, Manager, Runtime, State};
 use tauri_plugin_dialog::DialogExt;
+use tauri_plugin_opener::OpenerExt;
 
 use crate::error::{AppError, Result};
-use crate::library::Library;
-use crate::model::{ImageCounts, ImportReport, LibraryStatus, SearchRequest, SearchResult};
+use crate::library::{self, Library};
+use crate::model::{
+    AppSettings, GRID_TILE_MAX, GRID_TILE_MIN, ImageCounts, ImportReport, LibraryStatus,
+    ListenerStatus, RecentLibrary, SearchRequest, SearchResult, Theme,
+};
+use crate::settings::Settings;
 use crate::{
     AppState, VERSION, from_tauri, http, import, ingest, lock, maintenance, query, settings, thumbs,
 };
@@ -49,6 +54,146 @@ pub fn open_library<R: Runtime>(
 #[tauri::command]
 pub fn library_status(state: State<'_, AppState>) -> Result<LibraryStatus> {
     status(&state)
+}
+
+/// Close the open library and forget the remembered path, so the next launch
+/// starts on the start screen rather than reporting a folder as missing — which
+/// is what `status` would derive from a path with no library open (design D3).
+/// The folder is not forgotten: it is the first entry of the recent list.
+#[tauri::command]
+pub fn close_library<R: Runtime>(
+    app: AppHandle<R>,
+    state: State<'_, AppState>,
+) -> Result<LibraryStatus> {
+    // Dropping the `Library` closes its connection. Nothing may hold a second
+    // one on that database (§7).
+    *lock(&state.library) = None;
+    write_settings(&app, &state, |settings| settings.library_path = None)?;
+    status(&state)
+}
+
+/// The start screen's list. Availability is read here rather than at startup:
+/// ten `stat` calls on a volume that is not mounted would hold the window back,
+/// and nothing needs the answer until the list is drawn (design D4).
+#[tauri::command]
+pub fn recent_libraries(state: State<'_, AppState>) -> Vec<RecentLibrary> {
+    lock(&state.settings)
+        .recent_libraries
+        .iter()
+        .map(|path| recent_entry(path))
+        .collect()
+}
+
+/// Drop an entry from the recent list. Nothing inside the folder is touched.
+#[tauri::command]
+pub fn forget_recent<R: Runtime>(
+    path: String,
+    app: AppHandle<R>,
+    state: State<'_, AppState>,
+) -> Result<Vec<RecentLibrary>> {
+    write_settings(&app, &state, |settings| {
+        settings.forget_recent(Path::new(&path));
+    })?;
+    Ok(recent_libraries(state))
+}
+
+/// Move the capture listener to `port` without a restart (design D6). The port
+/// is stored whether or not it bound, so the field shows what the user chose
+/// when they come back to it (spec `capture-ingest`).
+#[tauri::command]
+pub async fn set_listener_port<R: Runtime>(
+    port: u16,
+    app: AppHandle<R>,
+    state: State<'_, AppState>,
+) -> Result<ListenerStatus> {
+    let status = rebind_listener(&state, port).await;
+    write_settings(&app, &state, |settings| settings.port = port)?;
+    Ok(status)
+}
+
+/// Stop whatever is listening and bind `port`, leaving the outcome in the state.
+/// A port that will not bind is a state, not an error: the app opens, and keeps
+/// working, either way. `setup` binds the first listener through this too.
+pub async fn rebind_listener(state: &AppState, port: u16) -> ListenerStatus {
+    // Taken out of the state before the `await`, not inside an `if let`: the
+    // guard would otherwise be held across it, and a `MutexGuard` is not `Send`.
+    let running = lock(&state.listener_shutdown).take();
+    if let Some(handle) = running {
+        handle.stop().await;
+    }
+
+    let (status, handle) = http::start(state.http_state(), port).await;
+    *lock(&state.listener_shutdown) = handle;
+    *lock(&state.listener) = status.clone();
+    status
+}
+
+/// Show the open library's folder in the file manager, so it can be backed up
+/// or copied (docs/requirements.md §6).
+#[tauri::command]
+pub fn reveal_library<R: Runtime>(app: AppHandle<R>, state: State<'_, AppState>) -> Result<()> {
+    let root = http::with_library(&state.library, |library| Ok(library.root.clone()))?;
+    app.opener().reveal_item_in_dir(root).map_err(from_tauri)
+}
+
+fn recent_entry(path: &Path) -> RecentLibrary {
+    let database = library::database_path(path);
+    RecentLibrary {
+        path: path.display().to_string(),
+        // A library folder with no basename is `/`, which nobody picks; naming
+        // it by its path is better than an empty row.
+        name: path.file_name().map_or_else(
+            || path.display().to_string(),
+            |name| name.to_string_lossy().into_owned(),
+        ),
+        // Opened, not merely stat'ed: a file the user cannot read would
+        // otherwise offer an entry that fails the moment it is clicked.
+        available: database.is_file() && std::fs::File::open(&database).is_ok(),
+    }
+}
+
+/// The two preferences the webview paints with (design D5). The listener port
+/// is not among them: it is on `LibraryStatus.listener`, and a second copy would
+/// be a second thing to keep in step.
+#[tauri::command]
+pub fn app_settings(state: State<'_, AppState>) -> AppSettings {
+    AppSettings::from(&*lock(&state.settings))
+}
+
+#[tauri::command]
+pub fn set_theme<R: Runtime>(
+    theme: Theme,
+    app: AppHandle<R>,
+    state: State<'_, AppState>,
+) -> Result<AppSettings> {
+    write_settings(&app, &state, |settings| settings.theme = theme)
+}
+
+/// Clamped, never refused: the slider is what sends this, and a rejected size
+/// would leave the grid disagreeing with the control that set it.
+#[tauri::command]
+pub fn set_grid_tile_size<R: Runtime>(
+    size: u32,
+    app: AppHandle<R>,
+    state: State<'_, AppState>,
+) -> Result<AppSettings> {
+    write_settings(&app, &state, |settings| {
+        settings.grid_tile_size = size.clamp(GRID_TILE_MIN, GRID_TILE_MAX);
+    })
+}
+
+/// Change the settings the app is running on and the file they came from
+/// together. A preference that reached only one of the two is one the running
+/// app ignores, or one that comes back on the next launch.
+fn write_settings<R: Runtime>(
+    app: &AppHandle<R>,
+    state: &AppState,
+    edit: impl FnOnce(&mut Settings),
+) -> Result<AppSettings> {
+    let mut settings = lock(&state.settings);
+    edit(&mut settings);
+    settings::save(app, &settings)?;
+    Ok(AppSettings::from(&*settings))
 }
 
 #[tauri::command]
@@ -134,11 +279,10 @@ fn open_and_remember<R: Runtime>(
     path: &Path,
 ) -> Result<LibraryStatus> {
     open_into_state(app, state, path, OpenMode::CreateIfMissing)?;
-    {
-        let mut settings = lock(&state.settings);
+    write_settings(app, state, |settings| {
         settings.library_path = Some(path.to_path_buf());
-        settings::save(app, &settings)?;
-    }
+        settings.remember_recent(path);
+    })?;
     status(state)
 }
 
@@ -232,8 +376,8 @@ mod tests {
     use tauri::test::MockRuntime;
 
     use super::*;
-    use crate::http::test_support::png_bytes;
-    use crate::model::{ImportProgress, ImportStatus, ParsedTagSearch};
+    use crate::http::test_support::{ask_for_status, free_port, nothing_answers_on, png_bytes};
+    use crate::model::{GRID_TILE_DEFAULT, ImportProgress, ImportStatus, ParsedTagSearch};
     use crate::test_support::mock_app;
 
     type App = tauri::App<MockRuntime>;
@@ -348,6 +492,220 @@ mod tests {
 
         assert_eq!(status.missing_path, None);
         assert_eq!(status.library_path, Some(dir.path().display().to_string()));
+    }
+
+    #[test]
+    fn a_fresh_profile_reads_the_default_preferences() {
+        let app = mock_app();
+
+        let settings = app_settings(app.state());
+
+        assert_eq!(settings.theme, Theme::System);
+        assert_eq!(settings.grid_tile_size, GRID_TILE_DEFAULT);
+    }
+
+    #[test]
+    fn the_theme_reaches_the_state_and_the_store() {
+        let app = mock_app();
+
+        let answered = set_theme(Theme::Dark, app.handle().clone(), app.state()).unwrap();
+
+        assert_eq!(answered.theme, Theme::Dark);
+        assert_eq!(app_settings(app.state()).theme, Theme::Dark);
+        assert_eq!(settings::load(app.handle()).theme, Theme::Dark);
+    }
+
+    /// A slider that sent 10 000 must leave the grid and the setting agreeing,
+    /// so the size is clamped where it is stored rather than refused.
+    #[test]
+    fn a_tile_size_past_the_range_is_clamped_rather_than_refused() {
+        let app = mock_app();
+
+        let small = set_grid_tile_size(1, app.handle().clone(), app.state()).unwrap();
+        assert_eq!(small.grid_tile_size, GRID_TILE_MIN);
+
+        let large = set_grid_tile_size(10_000, app.handle().clone(), app.state()).unwrap();
+        assert_eq!(large.grid_tile_size, GRID_TILE_MAX);
+        assert_eq!(settings::load(app.handle()).grid_tile_size, GRID_TILE_MAX);
+    }
+
+    /// The `library-switching` spec's "Two libraries seen": the list is what
+    /// the start screen offers, so its order is the requirement.
+    #[test]
+    fn switching_from_one_library_to_another_lists_the_newest_first() {
+        let first = tempfile::tempdir().unwrap();
+        let second = tempfile::tempdir().unwrap();
+        let app = mock_app();
+
+        for dir in [&first, &second] {
+            open_library(
+                dir.path().display().to_string(),
+                app.handle().clone(),
+                app.state(),
+            )
+            .unwrap();
+        }
+
+        let recent = recent_libraries(app.state());
+
+        assert_eq!(
+            recent.iter().map(|entry| &entry.path).collect::<Vec<_>>(),
+            vec![
+                &second.path().display().to_string(),
+                &first.path().display().to_string(),
+            ],
+        );
+        assert!(recent.iter().all(|entry| entry.available));
+        assert_eq!(
+            recent[0].name,
+            second.path().file_name().unwrap().to_string_lossy(),
+        );
+    }
+
+    #[test]
+    fn closing_a_library_leaves_nothing_open_and_nothing_missing() {
+        let (dir, app) = app_with_library();
+
+        let status = close_library(app.handle().clone(), app.state()).unwrap();
+
+        assert!(!status.opened);
+        assert_eq!(status.library_path, None);
+        assert_eq!(
+            status.missing_path, None,
+            "a deliberate close is not a missing folder (design D3)",
+        );
+        assert_eq!(settings::load(app.handle()).library_path, None);
+        assert_eq!(
+            recent_libraries(app.state())[0].path,
+            dir.path().display().to_string(),
+            "the folder stays one click away",
+        );
+    }
+
+    #[test]
+    fn a_recent_folder_that_is_gone_is_listed_unavailable() {
+        let parent = tempfile::tempdir().unwrap();
+        let gone = parent.path().join("moved-away");
+        std::fs::create_dir(&gone).unwrap();
+        let app = mock_app();
+        open_library(
+            gone.display().to_string(),
+            app.handle().clone(),
+            app.state(),
+        )
+        .unwrap();
+        std::fs::remove_dir_all(&gone).unwrap();
+
+        let recent = recent_libraries(app.state());
+
+        assert_eq!(recent.len(), 1, "an entry stays listed until it is removed");
+        assert!(!recent[0].available);
+        assert_eq!(recent[0].name, "moved-away");
+    }
+
+    #[test]
+    fn forgetting_an_entry_leaves_the_folder_on_disk() {
+        let (dir, app) = app_with_library();
+
+        let recent = forget_recent(
+            dir.path().display().to_string(),
+            app.handle().clone(),
+            app.state(),
+        )
+        .unwrap();
+
+        assert!(recent.is_empty());
+        assert!(settings::load(app.handle()).recent_libraries.is_empty());
+        assert!(
+            dir.path().join("library.sqlite").is_file(),
+            "forgetting an entry must not touch the folder",
+        );
+    }
+
+    /// Design D1: a switch opens the new library before it lets go of the old
+    /// one, so a typo or an unmounted volume cannot close the library the user
+    /// is working in.
+    #[test]
+    fn an_open_that_fails_leaves_the_previous_library_open() {
+        let (dir, app) = app_with_library();
+        let blocked = dir.path().join("a-file");
+        std::fs::write(&blocked, b"not a folder").unwrap();
+
+        let error = open_library(
+            blocked.join("library").display().to_string(),
+            app.handle().clone(),
+            app.state(),
+        )
+        .unwrap_err();
+
+        let status = library_status(app.state()).unwrap();
+        assert!(status.opened, "the working library must survive: {error:?}");
+        assert_eq!(status.library_path, Some(dir.path().display().to_string()));
+        assert_eq!(recent_libraries(app.state()).len(), 1);
+    }
+
+    /// The reveal itself opens a file manager window, so only the refusal is
+    /// testable here; the rest is the manual pass (task 5.4).
+    #[test]
+    fn revealing_the_library_folder_needs_one_to_be_open() {
+        let app = mock_app();
+
+        let error = reveal_library(app.handle().clone(), app.state()).unwrap_err();
+
+        assert!(matches!(error, AppError::NoLibrary), "{error:?}");
+    }
+
+    fn set_port(app: &App, port: u16) -> ListenerStatus {
+        tauri::async_runtime::block_on(set_listener_port(port, app.handle().clone(), app.state()))
+            .unwrap()
+    }
+
+    /// The `capture-ingest` scenario "Port changed to a free one". The old port
+    /// must be released, not merely stopped being served: the rebind waits for
+    /// the accept loop to end before it binds (design D6).
+    #[test]
+    fn changing_the_port_moves_the_listener_and_releases_the_old_one() {
+        let (_library, app) = app_with_library();
+        let was = free_port();
+        assert!(set_port(&app, was).running);
+        // Asked for only once `was` is held, so the kernel cannot hand it out
+        // again as the new port.
+        let now = free_port();
+
+        let status = set_port(&app, now);
+
+        assert!(status.running, "rebind failed: {:?}", status.error);
+        assert_eq!(status.port, now);
+        assert!(
+            ask_for_status(now).starts_with("HTTP/1.1 200"),
+            "the new port must serve the open library",
+        );
+        assert!(nothing_answers_on(was), "the old port must be released");
+        assert_eq!(library_status(app.state()).unwrap().listener.port, now);
+    }
+
+    /// The `capture-ingest` scenario "Port changed to one already in use": the
+    /// chosen port is stored anyway, so the settings field shows what the user
+    /// typed rather than silently reverting.
+    #[test]
+    fn a_port_another_socket_holds_is_reported_and_the_app_keeps_working() {
+        let (_library, app) = app_with_library();
+        let taken = std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let port = taken.local_addr().unwrap().port();
+
+        let status = set_port(&app, port);
+
+        assert!(!status.running);
+        assert_eq!(status.port, port);
+        assert!(
+            status.error.is_some(),
+            "settings show the reason, so it must be carried",
+        );
+        assert_eq!(settings::load(app.handle()).port, port);
+        assert!(
+            library_status(app.state()).unwrap().opened,
+            "a listener that will not bind must not take the app down",
+        );
     }
 
     #[test]

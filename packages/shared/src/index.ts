@@ -12,6 +12,16 @@ export const DEFAULT_PORT = 47201
 /** Only requests from an extension origin may post captures (§5). */
 export const EXTENSION_ORIGIN_PREFIX = 'chrome-extension://'
 
+/**
+ * The grid tile's edge in pixels: what the size slider offers and what
+ * `set_grid_tile_size` clamps a stored value to (design D11). The grid reads
+ * these; Rust bounds them again in `model.rs`, since a webview cannot be the
+ * guard on what reaches the settings file.
+ */
+export const GRID_TILE_MIN = 120
+export const GRID_TILE_MAX = 360
+export const GRID_TILE_DEFAULT = 180
+
 export type ImageSource = 'extension' | 'local' | 'legacy-bundle'
 
 export type Rating = 'g' | 's' | 'q' | 'e'
@@ -127,7 +137,7 @@ export interface ListenerStatus {
   error: string | null
 }
 
-/** Everything the UI needs to decide between `/setup` and the library. */
+/** Everything the UI needs to decide between `/start` and the library. */
 export interface LibraryStatus {
   opened: boolean
   libraryPath: string | null
@@ -136,6 +146,31 @@ export interface LibraryStatus {
   imageCount: number
   listener: ListenerStatus
   version: string
+}
+
+/** Which palette the app paints. `system` follows the OS (design D12). */
+export type Theme = 'system' | 'light' | 'dark'
+
+/**
+ * The preferences the webview reads and writes one field at a time (design D5).
+ * The listener port is not here: it is already on `LibraryStatus.listener`, and
+ * a second copy would be a second thing to keep in step.
+ */
+export interface AppSettings {
+  theme: Theme
+  gridTileSize: number
+}
+
+/**
+ * One entry of the start screen's recent list. `name` and `available` are
+ * derived from the path when the list is asked for, never stored (design D4).
+ */
+export interface RecentLibrary {
+  path: string
+  /** The folder's basename. */
+  name: string
+  /** `library.sqlite` is there and readable, checked at call time. */
+  available: boolean
 }
 
 export type ImportStatus = 'imported' | 'skipped' | 'failed'

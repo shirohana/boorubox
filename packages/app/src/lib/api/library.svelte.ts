@@ -1,10 +1,10 @@
-import type { LibraryStatus } from '@boorubox/shared'
+import type { LibraryStatus, ListenerStatus } from '@boorubox/shared'
 import { libraryStatus } from './commands'
 import { errorText } from './errors'
 
 /**
  * The webview's one copy of `LibraryStatus`. The root layout loads it once at
- * startup and the gate to `/setup` reads it; every command that can change the
+ * startup and the gate to `/start` reads it; every command that can change the
  * status returns the new one, so hand that to `set` instead of asking Rust
  * again.
  */
@@ -28,6 +28,15 @@ class Library {
   set(status: LibraryStatus): void {
     this.status = status
     this.error = null
+  }
+
+  /**
+   * `set_listener_port` answers with the listener alone — the rest of the
+   * status did not change, and asking for the whole thing again would read the
+   * image count a capture may have moved in between.
+   */
+  setListener(listener: ListenerStatus): void {
+    if (this.status) this.status = { ...this.status, listener }
   }
 }
 

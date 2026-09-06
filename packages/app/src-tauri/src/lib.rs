@@ -30,6 +30,9 @@ pub struct AppState {
     pub library: SharedLibrary,
     pub settings: Mutex<Settings>,
     pub listener: Mutex<ListenerStatus>,
+    /// The running listener's off switch, so the port can be changed without a
+    /// relaunch (design D6). `None` whenever nothing is listening.
+    pub listener_shutdown: Mutex<Option<http::ListenerHandle>>,
 }
 
 impl Default for AppState {
@@ -40,6 +43,19 @@ impl Default for AppState {
             library: SharedLibrary::default(),
             settings: Mutex::new(Settings::default()),
             listener: Mutex::new(ListenerStatus::default()),
+            listener_shutdown: Mutex::new(None),
+        }
+    }
+}
+
+impl AppState {
+    /// What the listener's handlers see. Built from this state, so a capture and
+    /// a UI action never reach two different libraries — including after a
+    /// rebind, which builds a second router over the same `SharedLibrary`.
+    pub fn http_state(&self) -> http::HttpState {
+        http::HttpState {
+            library: self.library.clone(),
+            version: VERSION.to_string(),
         }
     }
 }
@@ -77,6 +93,14 @@ pub fn run() {
             commands::pick_library,
             commands::open_library,
             commands::library_status,
+            commands::close_library,
+            commands::recent_libraries,
+            commands::forget_recent,
+            commands::reveal_library,
+            commands::set_listener_port,
+            commands::app_settings,
+            commands::set_theme,
+            commands::set_grid_tile_size,
             commands::search,
             commands::image_counts,
             commands::drop_image_record,
@@ -91,9 +115,9 @@ pub fn run() {
 /// open if it still opens, and the capture listener bound.
 ///
 /// Nothing here can fail the launch. A library that will not open leaves the
-/// app on the setup screen with the path named (spec `library-folder`), and a
+/// app on the start screen with the path named (spec `library-folder`), and a
 /// port already taken leaves the listener stopped with its reason on the
-/// library banner (spec `capture-ingest`, design D17).
+/// settings screen (spec `capture-ingest`, design D6).
 fn open_remembered_library_and_listen(app: &tauri::App) {
     let handle = app.handle().clone();
     let state = app.state::<AppState>();
@@ -108,15 +132,7 @@ fn open_remembered_library_and_listen(app: &tauri::App) {
         let _ = commands::open_into_state(&handle, &state, path, commands::OpenMode::ExistingOnly);
     }
 
-    let listener = tauri::async_runtime::block_on(http::start(
-        http::HttpState {
-            library: state.library.clone(),
-            version: VERSION.to_string(),
-        },
-        settings.port,
-    ));
-
-    *lock(&state.listener) = listener;
+    tauri::async_runtime::block_on(commands::rebind_listener(&state, settings.port));
     *lock(&state.settings) = settings;
 }
 

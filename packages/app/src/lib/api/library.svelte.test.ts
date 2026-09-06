@@ -28,3 +28,11 @@ it('takes the status a command returned without asking again', () => {
   expect(library.status?.imageCount).toBe(7)
   expect(library.error).toBeNull()
 })
+
+it('replaces only the listener when the port is rebound', () => {
+  library.set(status({ imageCount: 7, listener: { running: true, port: 47201, error: null } }))
+  library.setListener({ running: false, port: 47300, error: 'address in use' })
+
+  expect(library.status?.listener.port).toBe(47300)
+  expect(library.status?.imageCount).toBe(7)
+})

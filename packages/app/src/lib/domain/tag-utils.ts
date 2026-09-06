@@ -45,32 +45,34 @@ export function parseTagSearch(query: string): ParsedTagSearch {
     result.tagCount = { operator: 'list', values }
     remainingQuery = remainingQuery.replace(tagCountListRegex, '').trim()
   } else {
+    // Design D15: every step of this parse reads and strips `remainingQuery`.
+    // One `exec` gives both "did it match" and the captures, so there is no
+    // second read of another string to fall out of step with the strip below.
+    // `String.replace` with a /g/ regex resets `lastIndex` itself; do not add
+    // another `exec` on this literal without resetting it first.
     const tagCountRegex = /tagcount:(>=|<=|>|<|)(\d+)(\.\.(\d+))?/gi
-    const tagCountMatch = remainingQuery.match(tagCountRegex)
-    if (tagCountMatch) {
-      const match = tagCountRegex.exec(query)
-      if (match) {
-        const operator = match[1]
-        const firstNum = parseInt(match[2], 10)
-        const secondNum = match[4] ? parseInt(match[4], 10) : undefined
+    const match = tagCountRegex.exec(remainingQuery)
+    if (match) {
+      const operator = match[1]
+      const firstNum = parseInt(match[2], 10)
+      const secondNum = match[4] ? parseInt(match[4], 10) : undefined
 
-        if (secondNum !== undefined) {
-          result.tagCount = {
-            operator: 'range',
-            min: Math.min(firstNum, secondNum),
-            max: Math.max(firstNum, secondNum),
-          }
-        } else if (operator === '>') {
-          result.tagCount = { operator: '>', value: firstNum }
-        } else if (operator === '<') {
-          result.tagCount = { operator: '<', value: firstNum }
-        } else if (operator === '>=') {
-          result.tagCount = { operator: '>=', value: firstNum }
-        } else if (operator === '<=') {
-          result.tagCount = { operator: '<=', value: firstNum }
-        } else {
-          result.tagCount = { operator: '=', value: firstNum }
+      if (secondNum !== undefined) {
+        result.tagCount = {
+          operator: 'range',
+          min: Math.min(firstNum, secondNum),
+          max: Math.max(firstNum, secondNum),
         }
+      } else if (operator === '>') {
+        result.tagCount = { operator: '>', value: firstNum }
+      } else if (operator === '<') {
+        result.tagCount = { operator: '<', value: firstNum }
+      } else if (operator === '>=') {
+        result.tagCount = { operator: '>=', value: firstNum }
+      } else if (operator === '<=') {
+        result.tagCount = { operator: '<=', value: firstNum }
+      } else {
+        result.tagCount = { operator: '=', value: firstNum }
       }
       remainingQuery = remainingQuery.replace(tagCountRegex, '').trim()
     }

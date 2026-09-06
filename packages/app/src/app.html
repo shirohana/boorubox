@@ -4,7 +4,17 @@
     <meta charset="utf-8" />
     <link rel="icon" href="%sveltekit.assets%/favicon.png" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Tauri + SvelteKit + Typescript App</title>
+    <title>BooruBox</title>
+    <script>
+      // Design D13: the window has no system title bar on macOS, so the sidebar
+      // header reserves the top-left for the traffic lights. The reserve is a
+      // CSS rule keyed off this attribute, and CSS cannot ask what platform it
+      // is on — so the answer has to be stamped here, before the first paint,
+      // or the sidebar lays out once without the reserve and jumps.
+      if (navigator.userAgent.includes('Mac OS X')) {
+        document.documentElement.dataset.platform = 'macos'
+      }
+    </script>
     %sveltekit.head%
   </head>
   <body data-sveltekit-preload-data="hover">

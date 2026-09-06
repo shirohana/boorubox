@@ -127,3 +127,13 @@
     @apply font-sans;
   }
 }
+
+/*
+  The sidebar snaps open and shut. The shadcn copy-in tweens its width linearly
+  over 200ms, which the owner read as lag rather than motion; the copy-in is
+  upstream code, so the override lives here instead of in it.
+*/
+[data-slot='sidebar-gap'],
+[data-slot='sidebar-container'] {
+  transition: none;
+}

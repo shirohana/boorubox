@@ -47,7 +47,7 @@ impl Library {
     /// somewhere they are not looking while the real library sits elsewhere.
     /// Deleting this check puts that bug back.
     pub fn open_existing(root: &Path) -> Result<Library> {
-        if !root.is_dir() || !root.join(DB_FILE).is_file() {
+        if !root.is_dir() || !database_path(root).is_file() {
             return Err(AppError::NotFound(format!("library at {}", root.display())));
         }
         Library::open_or_create(root)
@@ -66,7 +66,7 @@ impl Library {
     }
 
     pub fn db_path(&self) -> PathBuf {
-        self.root.join(DB_FILE)
+        database_path(&self.root)
     }
 
     pub fn image_path(&self, id: &str, ext: &str) -> PathBuf {
@@ -101,6 +101,13 @@ impl Library {
         }
         Ok(())
     }
+}
+
+/// The database inside a library folder. The recent list asks this of folders
+/// it has not opened, so the filename has one definition and an entry can never
+/// be judged available by a name the loader does not use.
+pub fn database_path(root: &Path) -> PathBuf {
+    root.join(DB_FILE)
 }
 
 fn create_layout_then_open(root: &Path) -> Result<Connection> {

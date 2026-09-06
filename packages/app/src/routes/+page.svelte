@@ -1,80 +1,171 @@
 <script lang="ts">
-  import type { ImageCounts, ImageRecord } from '@boorubox/shared'
+  import type { ImageRecord } from '@boorubox/shared'
+  import { GRID_TILE_DEFAULT, GRID_TILE_MAX, GRID_TILE_MIN } from '@boorubox/shared'
+  import PanelRightIcon from '@lucide/svelte/icons/panel-right'
   import {
     dropImageRecord,
     errorText,
-    imageCounts,
     library,
+    onFileDrop,
     SearchResults,
+    settings,
     type SearchInputs,
   } from '$lib/api'
-  import CountsPanel from '$lib/components/library/CountsPanel.svelte'
+  import { frame } from '$lib/components/frame/frame.svelte'
   import EmptyState from '$lib/components/library/EmptyState.svelte'
-  import ImportPanel from '$lib/components/library/ImportPanel.svelte'
+  import ImportMenu from '$lib/components/library/ImportMenu.svelte'
+  import ImportReportCard from '$lib/components/library/ImportReportCard.svelte'
+  import { Imports } from '$lib/components/library/imports.svelte'
+  import Inspector from '$lib/components/library/Inspector.svelte'
   import LibraryGrid from '$lib/components/library/LibraryGrid.svelte'
   import Lightbox from '$lib/components/library/Lightbox.svelte'
-  import ListenerBanner from '$lib/components/library/ListenerBanner.svelte'
   import SearchBar from '$lib/components/library/SearchBar.svelte'
+  import { Button } from '$lib/components/ui/button'
+  import { Slider } from '$lib/components/ui/slider'
+  import { isTypingTarget, KEY_SEARCH } from '$lib/keyboard'
 
   const results = new SearchResults()
+  const imports = new Imports(() => void results.refresh())
 
-  let counts = $state<ImageCounts | null>(null)
+  const noQuery: SearchInputs = { tagQuery: '', text: '' }
+  let inputs = $state<SearchInputs>(noQuery)
+  /** The current card, `-1` for none; the inspector shows whatever it names. */
+  let focusIndex = $state(-1)
+  /** Session state, not a setting (design D9 / Non-Goals): open until hidden. */
+  let inspectorOpen = $state(true)
+  // The grid follows the drag; only the release writes the setting (design D11),
+  // so this is the live edge and `gridTileSize` is where it comes back from.
+  let tile = $state(settings.current?.gridTileSize ?? GRID_TILE_DEFAULT)
   let lightboxIndex = $state(0)
   let lightboxOpen = $state(false)
+  let grid = $state<LibraryGrid | null>(null)
+  let hovering = $state(false)
   let actionError = $state<string | null>(null)
 
   const libraryPath = $derived(library.status?.libraryPath ?? null)
+  const focused = $derived(results.at(focusIndex) ?? null)
 
-  async function loadCounts() {
-    try {
-      counts = await imageCounts()
-    } catch (error) {
-      actionError = errorText(error)
-    }
+  function runSearch(next: SearchInputs) {
+    inputs = next
+    // A new list: the old index names a different image, or none at all.
+    focusIndex = -1
+    lightboxOpen = false
+    void results.run(next)
   }
 
-  function runSearch(inputs: SearchInputs) {
+  // Spec `library-switching`: everything reading the library follows a switch,
+  // and the switch is started from the sidebar footer, which this page cannot
+  // hear about any other way than by the path it holds changing.
+  let shownPath = library.status?.libraryPath ?? null
+  $effect(() => {
+    const path = library.status?.libraryPath ?? null
+    if (path === shownPath) return
+    shownPath = path
+    focusIndex = -1
     lightboxOpen = false
+    // The report describes a run into the library that was open, not this one.
+    imports.dismiss()
     void results.run(inputs)
+  })
+
+  // Design D8: the subscription is the route's, not the Import menu's. A menu is
+  // unmounted while its dropdown is closed, which is nearly always — registered
+  // in there, drop-to-import would silently stop working.
+  $effect(() => {
+    const subscription = onFileDrop({
+      onhover: () => (hovering = true),
+      onleave: () => (hovering = false),
+      ondrop: (paths) => {
+        hovering = false
+        void imports.run(paths)
+      },
+    })
+    subscription.catch((cause) => (actionError = errorText(cause)))
+    return () => {
+      void subscription.then((unlisten) => unlisten()).catch(() => {})
+    }
+  })
+
+  /**
+   * The keyboard map's one frame-wide binding. It lives on this route and not in
+   * the layout because the field it focuses is this toolbar's: bound in the
+   * layout it would fire on /settings, where `/` would do nothing. It moves to
+   * the layout the day a second screen has a search field.
+   */
+  function focusSearch(event: KeyboardEvent) {
+    if (event.key !== KEY_SEARCH || lightboxOpen || isTypingTarget(event)) return
+    const field = document.getElementById('tag-query')
+    if (!(field instanceof HTMLInputElement)) return
+    event.preventDefault()
+    field.focus()
   }
 
   /** Design D16: the record goes, the file under `images/` stays. */
   async function forget(image: ImageRecord) {
     try {
       library.set(await dropImageRecord(image.id))
-      await Promise.all([results.refresh(), loadCounts()])
+      await results.refresh()
     } catch (error) {
       actionError = errorText(error)
     }
   }
 
-  void results.run({ tagQuery: '', text: '' })
-  void loadCounts()
+  // The route's controls in the frame's top bar, for as long as this route is
+  // mounted (see `frame.svelte.ts`).
+  $effect(() => {
+    frame.toolbar = toolbar
+    return () => {
+      frame.toolbar = null
+    }
+  })
+
+  void results.run(noQuery)
 </script>
 
-<main class="flex h-screen flex-col">
-  <ListenerBanner listener={library.status?.listener ?? null} />
+<svelte:window onkeydown={focusSearch} />
 
-  <header class="flex flex-col gap-3 border-b border-border px-4 py-3">
-    <div class="flex flex-wrap items-start justify-between gap-3">
-      <CountsPanel {counts} />
-      <ImportPanel
-        onimported={() => {
-          void results.refresh()
-          void loadCounts()
-        }}
-      />
-    </div>
-    <SearchBar onsearch={runSearch} />
-    {#if results.loading && results.total > 0}
-      <p role="status" class="text-xs text-muted-foreground">Searching…</p>
-    {/if}
-    {#if actionError}
-      <p class="text-xs text-destructive">{actionError}</p>
-    {/if}
-  </header>
+{#snippet toolbar()}
+  <SearchBar onsearch={runSearch} />
 
-  <div class="min-h-0 flex-1">
+  <Slider
+    type="single"
+    class="w-24 shrink-0"
+    aria-label="Thumbnail size"
+    min={GRID_TILE_MIN}
+    max={GRID_TILE_MAX}
+    step={10}
+    bind:value={tile}
+    onValueCommit={(size) => {
+      settings.setGridTileSize(size).catch((error) => (actionError = errorText(error)))
+    }}
+  />
+
+  <!-- The variant, not just `aria-pressed`: the state has to be visible. -->
+  <Button
+    size="icon-sm"
+    variant={inspectorOpen ? 'secondary' : 'ghost'}
+    aria-label="Show or hide the inspector"
+    aria-pressed={inspectorOpen}
+    onclick={() => (inspectorOpen = !inspectorOpen)}
+  >
+    <PanelRightIcon />
+  </Button>
+
+  <ImportMenu {imports} />
+{/snippet}
+
+{#if imports.report}
+  <ImportReportCard report={imports.report} ondismiss={() => imports.dismiss()} />
+{/if}
+
+{#if actionError || imports.error}
+  <p class="border-b border-border px-4 py-2 text-xs text-destructive">
+    {actionError ?? imports.error}
+  </p>
+{/if}
+
+<div class="flex min-h-0 flex-1">
+  <div class="min-w-0 flex-1">
     {#if results.error}
       <div class="flex h-full flex-col items-center justify-center gap-2 p-8 text-center">
         <p class="text-sm font-medium">The search could not be run.</p>
@@ -93,22 +184,49 @@
       {/if}
     {:else}
       <LibraryGrid
+        bind:this={grid}
         {results}
+        {tile}
+        bind:focusIndex
         onactivate={(index) => {
           lightboxIndex = index
           lightboxOpen = true
         }}
         onforget={forget}
+        ontoggleinspector={() => (inspectorOpen = !inspectorOpen)}
       />
     {/if}
   </div>
-</main>
+
+  {#if inspectorOpen}
+    <aside class="w-80 shrink-0 border-s border-border">
+      <Inspector image={focused} />
+    </aside>
+  {/if}
+</div>
 
 {#if lightboxOpen}
   <Lightbox
     {results}
     {libraryPath}
     bind:index={lightboxIndex}
-    onclose={() => (lightboxOpen = false)}
+    onclose={() => {
+      lightboxOpen = false
+      // The native dialog has just put the focus back on the card it opened
+      // from; the viewer may have moved on since, and the grid follows it.
+      grid?.focusCard(lightboxIndex)
+    }}
   />
+{/if}
+
+{#if hovering}
+  <div
+    class="
+      pointer-events-none fixed inset-0 z-40 flex items-center justify-center bg-background/80
+    "
+  >
+    <p class="rounded-xl border border-dashed border-border px-6 py-4 text-sm">
+      Drop images or folders to import them
+    </p>
+  </div>
 {/if}

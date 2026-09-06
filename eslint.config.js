@@ -15,8 +15,11 @@ export default tseslint.config(
       '**/.svelte-kit/',
       '**/src-tauri/target/',
       '**/src-tauri/gen/',
-      // shadcn-svelte copy-in components: upstream code, updated by its CLI
+      // shadcn-svelte copy-ins: upstream code, updated by its CLI. `hooks` is a
+      // second root because components.json maps that alias outside `ui/`, and
+      // `sidebar` pulls `is-mobile` in through it.
       'packages/app/src/lib/components/ui/',
+      'packages/app/src/lib/hooks/',
     ],
   },
   js.configs.recommended,

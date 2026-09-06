@@ -1,17 +1,26 @@
 // @vitest-environment jsdom
 // mockIPC installs its handler on `window`, so these run in a DOM environment.
 
-import type { SearchRequest } from '@boorubox/shared'
+import type { AppSettings, SearchRequest } from '@boorubox/shared'
+import { GRID_TILE_DEFAULT, GRID_TILE_MAX } from '@boorubox/shared'
 import { clearMocks, mockIPC } from '@tauri-apps/api/mocks'
 import { afterEach, expect, it, vi } from 'vitest'
 import {
+  appSettings,
+  closeLibrary,
   dropImageRecord,
+  forgetRecent,
   imageCounts,
   importPaths,
   libraryStatus,
   openLibrary,
   pickLibrary,
+  recentLibraries,
+  revealLibrary,
   search,
+  setGridTileSize,
+  setListenerPort,
+  setTheme,
   thumbnailPath,
 } from './commands'
 import { status } from './status-fixture'
@@ -47,6 +56,59 @@ it('library_status decodes a missing library', async () => {
   const result = await libraryStatus()
   expect(result.opened).toBe(false)
   expect(result.missingPath).toBe('/gone')
+})
+
+it('close_library takes no arguments and returns the closed status', async () => {
+  const closed = status({ opened: false, libraryPath: null })
+  const calls = spyIPC(closed)
+  await expect(closeLibrary()).resolves.toEqual(closed)
+  expect(calls).toHaveBeenCalledWith('close_library', {})
+})
+
+it('recent_libraries takes no arguments', async () => {
+  const recent = [{ path: '/library', name: 'library', available: true }]
+  const calls = spyIPC(recent)
+  await expect(recentLibraries()).resolves.toEqual(recent)
+  expect(calls).toHaveBeenCalledWith('recent_libraries', {})
+})
+
+it('forget_recent passes the path and returns what is left', async () => {
+  const calls = spyIPC([])
+  await expect(forgetRecent('/gone')).resolves.toEqual([])
+  expect(calls).toHaveBeenCalledWith('forget_recent', { path: '/gone' })
+})
+
+it('reveal_library takes no arguments', async () => {
+  const calls = spyIPC(null)
+  await revealLibrary()
+  expect(calls).toHaveBeenCalledWith('reveal_library', {})
+})
+
+it('app_settings takes no arguments', async () => {
+  const settings: AppSettings = { theme: 'system', gridTileSize: GRID_TILE_DEFAULT }
+  const calls = spyIPC(settings)
+  await expect(appSettings()).resolves.toEqual(settings)
+  expect(calls).toHaveBeenCalledWith('app_settings', {})
+})
+
+it('set_theme passes the theme and returns the settings', async () => {
+  const settings: AppSettings = { theme: 'dark', gridTileSize: GRID_TILE_DEFAULT }
+  const calls = spyIPC(settings)
+  await expect(setTheme('dark')).resolves.toEqual(settings)
+  expect(calls).toHaveBeenCalledWith('set_theme', { theme: 'dark' })
+})
+
+it('set_grid_tile_size passes the size', async () => {
+  const calls = spyIPC({ theme: 'system', gridTileSize: GRID_TILE_MAX })
+  await setGridTileSize(10_000)
+  expect(calls).toHaveBeenCalledWith('set_grid_tile_size', { size: 10_000 })
+})
+
+it('set_listener_port passes the port and returns the listener state', async () => {
+  const listener = { running: false, port: 1234, error: 'address in use' }
+  const calls = spyIPC(listener)
+  await expect(setListenerPort(1234)).resolves.toEqual(listener)
+  expect(calls).toHaveBeenCalledWith('set_listener_port', { port: 1234 })
 })
 
 it('search wraps the request in a `req` argument', async () => {

@@ -22,6 +22,14 @@ pub const DEFAULT_PORT: u16 = 47201;
 /// Only requests from an extension origin may post captures (§5).
 pub const EXTENSION_ORIGIN_PREFIX: &str = "chrome-extension://";
 
+/// The grid tile's edge in pixels: what the size slider offers and what
+/// `set_grid_tile_size` clamps to (design D11). The webview has the same three
+/// numbers for the slider's own bounds; these are the ones that decide what
+/// reaches the settings file.
+pub const GRID_TILE_MIN: u32 = 120;
+pub const GRID_TILE_MAX: u32 = 360;
+pub const GRID_TILE_DEFAULT: u32 = 180;
+
 /// How an image entered the library. The string form is what the `images.source`
 /// column holds and what crosses IPC, so it is defined once here: `as_str` and
 /// `FromStr` back the serde, `ToSql` and `FromSql` impls below.
@@ -249,7 +257,7 @@ impl Default for ListenerStatus {
     }
 }
 
-/// Everything the UI needs to decide between `/setup` and the library.
+/// Everything the UI needs to decide between `/start` and the library.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LibraryStatus {
@@ -260,6 +268,38 @@ pub struct LibraryStatus {
     pub image_count: i64,
     pub listener: ListenerStatus,
     pub version: String,
+}
+
+/// Which palette the app paints. `System` follows the OS (design D12).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Theme {
+    #[default]
+    System,
+    Light,
+    Dark,
+}
+
+/// The preferences the webview reads and writes one field at a time (design D5).
+/// The listener port is not here: it is already on `LibraryStatus.listener`, and
+/// a second copy would be a second thing to keep in step.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AppSettings {
+    pub theme: Theme,
+    pub grid_tile_size: u32,
+}
+
+/// One entry of the start screen's recent list. `name` and `available` are
+/// derived from the path when the list is asked for, never stored (design D4).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RecentLibrary {
+    pub path: String,
+    /// The folder's basename.
+    pub name: String,
+    /// `library.sqlite` is there and readable, checked at call time.
+    pub available: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -301,4 +341,54 @@ pub struct ImportProgress {
     pub imported: u32,
     pub skipped: u32,
     pub failed: u32,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Nothing checks this file against `packages/shared/src/index.ts`, so the
+    /// wire form of the types added for the app shell is pinned here: a key or a
+    /// spelling that drifts from the mirror is a webview reading `undefined`.
+    #[test]
+    fn app_settings_crosses_the_wire_in_camel_case() {
+        let settings = AppSettings {
+            theme: Theme::Dark,
+            grid_tile_size: GRID_TILE_DEFAULT,
+        };
+
+        assert_eq!(
+            serde_json::to_value(settings).unwrap(),
+            serde_json::json!({ "theme": "dark", "gridTileSize": 180 }),
+        );
+    }
+
+    #[test]
+    fn every_theme_is_its_lowercase_name_in_both_directions() {
+        for (theme, name) in [
+            (Theme::System, "system"),
+            (Theme::Light, "light"),
+            (Theme::Dark, "dark"),
+        ] {
+            assert_eq!(serde_json::to_value(theme).unwrap(), name);
+            assert_eq!(
+                serde_json::from_value::<Theme>(serde_json::json!(name)).unwrap(),
+                theme,
+            );
+        }
+    }
+
+    #[test]
+    fn a_recent_library_carries_its_path_name_and_availability() {
+        let entry = RecentLibrary {
+            path: "/libraries/art".to_string(),
+            name: "art".to_string(),
+            available: false,
+        };
+
+        assert_eq!(
+            serde_json::to_value(entry).unwrap(),
+            serde_json::json!({ "path": "/libraries/art", "name": "art", "available": false }),
+        );
+    }
 }

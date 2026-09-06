@@ -1,0 +1,39 @@
+import type { AppSettings, Theme } from '@boorubox/shared'
+import { appSettings, setGridTileSize, setTheme } from './commands'
+import { errorText } from './errors'
+
+/**
+ * The webview's one copy of `AppSettings`, in the shape of `library.svelte.ts`:
+ * the root layout loads it once at startup and waits for it before painting
+ * anything (design D12), and every writing command answers with the whole new
+ * settings object, so a write updates this copy without a second read.
+ */
+class Settings {
+  /** `null` until the first `app_settings()` call answers. */
+  current = $state<AppSettings | null>(null)
+  /** Why the settings could not be read at all. */
+  error = $state<string | null>(null)
+  #asked = false
+
+  async load(): Promise<void> {
+    if (this.#asked) return
+    this.#asked = true
+    try {
+      this.current = await appSettings()
+    } catch (error) {
+      this.error = errorText(error)
+    }
+  }
+
+  /** Rejects on failure: the caller is a control the user just touched. */
+  async setTheme(theme: Theme): Promise<void> {
+    this.current = await setTheme(theme)
+  }
+
+  /** Rust clamps the size, so the stored value is what comes back, not `size`. */
+  async setGridTileSize(size: number): Promise<void> {
+    this.current = await setGridTileSize(size)
+  }
+}
+
+export const settings = new Settings()

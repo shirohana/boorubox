@@ -39,34 +39,64 @@ pub fn router(state: HttpState) -> axum::Router {
         .with_state(state)
 }
 
+/// A running listener's off switch (design D6). Dropping it stops the listener
+/// too, since the accept loop shuts down when the sender goes; `stop` is the
+/// form that also waits for the socket to be released, which is what a rebind
+/// needs before it binds.
+pub struct ListenerHandle {
+    shutdown: tokio::sync::oneshot::Sender<()>,
+    stopped: tokio::task::JoinHandle<()>,
+}
+
+impl ListenerHandle {
+    pub async fn stop(self) {
+        let _ = self.shutdown.send(());
+        // The port is free only once the serve task has ended: signalling and
+        // binding in the same breath races the loop being signalled.
+        let _ = self.stopped.await;
+    }
+}
+
 /// Bind and serve. A failure to bind is returned, not raised: the app still
-/// opens and settings show the reason (spec `capture-ingest`).
-pub async fn start(state: HttpState, port: u16) -> ListenerStatus {
+/// opens and settings show the reason (spec `capture-ingest`). The handle comes
+/// back only when there is something to stop.
+pub async fn start(state: HttpState, port: u16) -> (ListenerStatus, Option<ListenerHandle>) {
     // `LOCALHOST`, never `UNSPECIFIED`: the origin header is the only guard this
     // listener has, and it is worth nothing against a caller on the LAN.
     let bound = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, port)).await;
     let listener = match bound {
         Ok(listener) => listener,
         Err(error) => {
-            return ListenerStatus {
-                running: false,
-                port,
-                error: Some(error.to_string()),
-            };
+            return (
+                ListenerStatus {
+                    running: false,
+                    port,
+                    error: Some(error.to_string()),
+                },
+                None,
+            );
         }
     };
 
-    tokio::spawn(async move {
-        // The accept loop ends with the process. Nothing here can act on a
-        // failure, and the app has to stay up when the listener goes down.
-        let _ = axum::serve(listener, router(state)).await;
+    let (shutdown, signal) = tokio::sync::oneshot::channel();
+    let stopped = tokio::spawn(async move {
+        // Nothing here can act on a failure, and the app has to stay up when
+        // the listener goes down.
+        let _ = axum::serve(listener, router(state))
+            .with_graceful_shutdown(async move {
+                let _ = signal.await;
+            })
+            .await;
     });
 
-    ListenerStatus {
-        running: true,
-        port,
-        error: None,
-    }
+    (
+        ListenerStatus {
+            running: true,
+            port,
+            error: None,
+        },
+        Some(ListenerHandle { shutdown, stopped }),
+    )
 }
 
 /// The one place an `AppError` becomes a status code — the mapping `error.rs`
@@ -145,6 +175,38 @@ pub mod test_support {
             Ok(library.image_path(id, ext).is_file())
         })
         .unwrap()
+    }
+
+    /// A port nothing is listening on: bound to prove it is free, then released.
+    /// Ask for the next one only once the previous is held by something, or the
+    /// kernel may hand out the same ephemeral port twice.
+    pub fn free_port() -> u16 {
+        std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port()
+    }
+
+    /// `GET /status` over a real socket, for the tests that must go through a
+    /// bound port rather than through the router directly. The whole response,
+    /// status line first.
+    pub fn ask_for_status(port: u16) -> String {
+        use std::io::{Read, Write};
+
+        let mut stream =
+            std::net::TcpStream::connect((std::net::Ipv4Addr::LOCALHOST, port)).unwrap();
+        stream
+            .write_all(b"GET /status HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n")
+            .unwrap();
+        let mut response = String::new();
+        stream.read_to_string(&mut response).unwrap();
+        response
+    }
+
+    /// Nothing is listening on `port`.
+    pub fn nothing_answers_on(port: u16) -> bool {
+        std::net::TcpStream::connect((std::net::Ipv4Addr::LOCALHOST, port)).is_err()
     }
 
     pub fn png_bytes(width: u32, height: u32) -> Vec<u8> {
@@ -242,30 +304,11 @@ pub mod test_support {
 
 #[cfg(test)]
 mod tests {
-    use std::io::{Read, Write};
     use std::net::{Ipv4Addr, SocketAddr, TcpListener, TcpStream};
     use std::time::Duration;
 
     use super::test_support::*;
     use super::*;
-
-    fn free_port() -> u16 {
-        TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
-            .unwrap()
-            .local_addr()
-            .unwrap()
-            .port()
-    }
-
-    fn ask_for_status(port: u16) -> String {
-        let mut stream = TcpStream::connect((Ipv4Addr::LOCALHOST, port)).unwrap();
-        stream
-            .write_all(b"GET /status HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n")
-            .unwrap();
-        let mut response = String::new();
-        stream.read_to_string(&mut response).unwrap();
-        response
-    }
 
     /// The machine's own address on the network, when it has one. Connecting a
     /// UDP socket sends no packet; it only asks the routing table which local
@@ -286,7 +329,7 @@ mod tests {
     async fn a_started_listener_answers_on_loopback_and_nowhere_else() {
         let port = free_port();
 
-        let status = start(empty_state(), port).await;
+        let (status, _handle) = start(empty_state(), port).await;
 
         assert!(status.running, "start failed: {:?}", status.error);
         assert_eq!(status.port, port);
@@ -310,9 +353,10 @@ mod tests {
         let taken = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
         let port = taken.local_addr().unwrap().port();
 
-        let status = start(empty_state(), port).await;
+        let (status, handle) = start(empty_state(), port).await;
 
         assert!(!status.running);
+        assert!(handle.is_none(), "there is nothing to shut down");
         assert_eq!(status.port, port);
         assert!(
             status.error.is_some(),
