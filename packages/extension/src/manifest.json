@@ -1,0 +1,29 @@
+{
+  "manifest_version": 3,
+  "name": "BooruBox Bridge",
+  "version": "0.1.0",
+  "description": "Right-click an image and send it to the BooruBox app",
+  "permissions": [
+    "contextMenus",
+    "storage",
+    "activeTab",
+    "notifications",
+    "declarativeNetRequestWithHostAccess"
+  ],
+  "host_permissions": ["<all_urls>", "http://127.0.0.1/*"],
+  "background": {
+    "service_worker": "src/background/index.ts",
+    "type": "module"
+  },
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["src/content/index.ts"],
+      "run_at": "document_start",
+      "all_frames": false
+    }
+  ],
+  "action": {
+    "default_title": "BooruBox Bridge"
+  }
+}

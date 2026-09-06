@@ -6,6 +6,8 @@ import process from 'node:process'
 const host = process.env.TAURI_DEV_HOST
 
 // Vite options tailored for Tauri development, applied in `tauri dev` and `tauri build`.
+// Run vitest from this directory only: the SvelteKit plugin sets vite `root` to
+// process.cwd(), so a runner started at the workspace root would scan every package.
 export default defineConfig(() => ({
   plugins: [tailwindcss(), sveltekit()],
   // prevent Vite from obscuring rust errors

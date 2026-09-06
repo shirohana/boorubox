@@ -1,0 +1,21 @@
+{
+  "name": "@boorubox/extension",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite build --watch --mode development",
+    "build": "vite build",
+    "typecheck": "tsc -p tsconfig.json",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@boorubox/shared": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/chrome": "^0.1.23",
+    "typescript": "catalog:",
+    "vite": "catalog:",
+    "vite-plugin-web-extension": "^4.5.1"
+  }
+}
