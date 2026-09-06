@@ -1,0 +1,6 @@
+# Toolchain for this repo. mise is the only version pin: no packageManager
+# field, no corepack, no rust-toolchain file, so nothing can drift from here.
+[tools]
+node = "24"
+pnpm = "12"
+rust = "1.98"
