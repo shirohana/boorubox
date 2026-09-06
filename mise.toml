@@ -39,4 +39,6 @@ run = "cargo clippy --manifest-path packages/app/src-tauri/Cargo.toml --all-targ
 
 [tasks.check]
 description = "Full gate: lint, typecheck, tests, rust clippy, builds"
-depends = ["lint", "typecheck", "test", "clippy", "build"]
+# Sequential on purpose: typecheck, test and build all regenerate packages/app/.svelte-kit,
+# and running them in parallel (depends = [...]) races on those files.
+run = ["mise run lint", "mise run typecheck", "mise run test", "mise run clippy", "mise run build"]
