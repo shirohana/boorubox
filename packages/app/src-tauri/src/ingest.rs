@@ -176,7 +176,10 @@ fn insert_rows(library: &Library, input: &IngestInput, decoded: &Decoded) -> Res
     Ok(Ingested::Created(require_record(&library.conn, input.id)?))
 }
 
-fn link_tag(conn: &Connection, image_id: &str, tag: &str) -> Result<()> {
+/// Ensure the tag row exists and link the image to it. The one place a
+/// `tags` row is created: `tags::update_tags` links through here too, so a tag
+/// typed into the editor and a tag that arrived with a capture are the same row.
+pub fn link_tag(conn: &Connection, image_id: &str, tag: &str) -> Result<()> {
     conn.execute(
         "INSERT INTO tags (name) VALUES (?1) ON CONFLICT (name) DO NOTHING",
         [tag],
@@ -257,7 +260,8 @@ pub fn load_records(conn: &Connection, ids: &[String]) -> Result<Vec<ImageRecord
     Ok(ids.iter().filter_map(|id| by_id.remove(id)).collect())
 }
 
-fn require_record(conn: &Connection, id: &str) -> Result<ImageRecord> {
+/// The record, or `NotFound`. What every command answering with one row uses.
+pub fn require_record(conn: &Connection, id: &str) -> Result<ImageRecord> {
     load_record(conn, id)?.ok_or_else(|| AppError::NotFound(format!("image {id}")))
 }
 

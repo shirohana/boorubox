@@ -18,6 +18,12 @@ export const KEY_INSPECT = 'i'
 /** Focuses the tag search field from anywhere in the frame. */
 export const KEY_SEARCH = '/'
 /**
+ * Accepts the highlighted tag suggestion (design D13). Not a row of the map
+ * below and not a new binding: it acts only while the focus is in a text field,
+ * which is where the map declares nothing fires.
+ */
+export const KEY_TAB = 'Tab'
+/**
  * With Cmd/Ctrl: whole-app zoom (`lib/zoom.ts`). `+` is what a shifted `=` sends
  * on some layouts.
  */

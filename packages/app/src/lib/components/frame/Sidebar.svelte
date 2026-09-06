@@ -9,6 +9,7 @@
   import LibraryMenu from '$lib/components/frame/LibraryMenu.svelte'
   import { libraryName } from '$lib/components/frame/library-name'
   import * as Sidebar from '$lib/components/ui/sidebar'
+  import { frame } from './frame.svelte'
 
   // Only screens that exist (spec `app-frame`): Trash, Import and Rules are
   // added by the changes that build them, not reserved here.
@@ -36,7 +37,26 @@
   class="top-14! h-[calc(100svh-3.5rem)]! border-e border-sidebar-border"
 >
   <Sidebar.Content class="p-2">
-    <Sidebar.Menu>
+    <!--
+      The filters region, filled by whichever route has a result set to describe
+      (`frame.filters`). Collapsed to the icon rail there is no room for a list
+      of names, so it is hidden rather than clipped — the same rule the library
+      footer follows.
+    -->
+    {#if frame.filters}
+      <div class="min-h-0 flex-1 overflow-y-auto group-data-[collapsible=icon]:hidden">
+        {@render frame.filters()}
+      </div>
+      <Sidebar.Separator class="my-2 group-data-[collapsible=icon]:hidden" />
+    {/if}
+
+    <!--
+      Nav sits at the bottom, directly above the library footer: the filters are
+      used on every search and the two nav items a few times a session, so the
+      filters start at the top. `mt-auto` pins the nav there on routes with no
+      filters to render.
+    -->
+    <Sidebar.Menu class="mt-auto gap-1">
       {#each nav as item (item.href)}
         <Sidebar.MenuItem>
           <Sidebar.MenuButton isActive={page.url.pathname === item.href}>
@@ -62,14 +82,18 @@
       <Sidebar.MenuItem>
         <LibraryMenu align="start" side="top" onerror={(message) => (error = message)}>
           {#snippet trigger({ props })}
-            <!-- `lg` drops its padding when collapsed, which pins the icon to the left edge. -->
+            <!--
+              `lg` drops its padding when collapsed, which pins the icon to the left edge.
+            -->
             <Sidebar.MenuButton
               size="lg"
               class="group-data-[collapsible=icon]:justify-center"
               {...props}
             >
               <LibraryIcon class="shrink-0" />
-              <!-- Collapsed, the rail shows the icon alone: a clipped count reads as a wrong one. -->
+              <!--
+                Collapsed, the rail shows the icon alone: a clipped count reads as a wrong one.
+              -->
               <div class="min-w-0 flex-1 text-left group-data-[collapsible=icon]:hidden">
                 <p class="truncate text-sm font-medium" title={library.status?.libraryPath ?? ''}>
                   {name}

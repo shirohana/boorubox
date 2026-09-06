@@ -1,8 +1,9 @@
 // @vitest-environment jsdom
 // mockIPC installs its handler on `window`, so these run in a DOM environment.
 
-import type { AppSettings, SearchRequest } from '@boorubox/shared'
+import type { AppSettings, SearchRequest, TagCounts } from '@boorubox/shared'
 import { GRID_TILE_DEFAULT, GRID_TILE_MAX } from '@boorubox/shared'
+import { img } from '$lib/domain/image-fixture'
 import { clearMocks, mockIPC } from '@tauri-apps/api/mocks'
 import { afterEach, expect, it, vi } from 'vitest'
 import {
@@ -20,8 +21,12 @@ import {
   search,
   setGridTileSize,
   setListenerPort,
+  setRating,
   setTheme,
+  tagCounts,
+  tagSuggestions,
   thumbnailPath,
+  updateTags,
 } from './commands'
 import { status } from './status-fixture'
 
@@ -111,27 +116,31 @@ it('set_listener_port passes the port and returns the listener state', async () 
   expect(calls).toHaveBeenCalledWith('set_listener_port', { port: 1234 })
 })
 
+const request: SearchRequest = {
+  query: {
+    includeTags: ['cat'],
+    excludeTags: [],
+    orGroups: [],
+    ratings: [],
+    fileTypes: [],
+    tagCount: null,
+    includeUnrated: false,
+    accounts: [],
+    excludeAccounts: [],
+  },
+  text: '',
+  includeDeleted: false,
+  sort: { field: 'captured', direction: 'desc' },
+  group: 'none',
+  limit: 100,
+  offset: 0,
+}
+
 it('search wraps the request in a `req` argument', async () => {
-  const calls = spyIPC({ images: [], total: 0 })
-  const req: SearchRequest = {
-    query: {
-      includeTags: ['cat'],
-      excludeTags: [],
-      orGroups: [],
-      ratings: [],
-      fileTypes: [],
-      tagCount: null,
-      includeUnrated: false,
-      accounts: [],
-      excludeAccounts: [],
-    },
-    text: '',
-    includeDeleted: false,
-    limit: 100,
-    offset: 0,
-  }
-  await expect(search(req)).resolves.toEqual({ images: [], total: 0 })
-  expect(calls).toHaveBeenCalledWith('search', { req })
+  const answer = { images: [], total: 0, groups: [] }
+  const calls = spyIPC(answer)
+  await expect(search(request)).resolves.toEqual(answer)
+  expect(calls).toHaveBeenCalledWith('search', { req: request })
 })
 
 it('image_counts takes no arguments', async () => {
@@ -162,6 +171,39 @@ it('import_paths passes the path array', async () => {
   const calls = spyIPC(report)
   await expect(importPaths(['/a', '/b'])).resolves.toEqual(report)
   expect(calls).toHaveBeenCalledWith('import_paths', { paths: ['/a', '/b'] })
+})
+
+it('update_tags passes the id and the whole tag set, and returns the row', async () => {
+  const record = img({ id: 'abc', tags: ['cat', 'dog'] })
+  const calls = spyIPC(record)
+  await expect(updateTags('abc', ['cat', 'dog'])).resolves.toEqual(record)
+  expect(calls).toHaveBeenCalledWith('update_tags', { id: 'abc', tags: ['cat', 'dog'] })
+})
+
+it('set_rating passes the rating, and null to clear it', async () => {
+  const calls = spyIPC(img({ id: 'abc', rating: 'e' }))
+  await setRating('abc', 'e')
+  expect(calls).toHaveBeenCalledWith('set_rating', { id: 'abc', rating: 'e' })
+
+  await setRating('abc', null)
+  expect(calls).toHaveBeenCalledWith('set_rating', { id: 'abc', rating: null })
+})
+
+it('tag_suggestions passes the prefix and the limit', async () => {
+  const suggestions = [{ name: 'cathedral', count: 4 }]
+  const calls = spyIPC(suggestions)
+  await expect(tagSuggestions('cat', 8)).resolves.toEqual(suggestions)
+  expect(calls).toHaveBeenCalledWith('tag_suggestions', { prefix: 'cat', limit: 8 })
+})
+
+it('tag_counts wraps the same request as search in a `req` argument', async () => {
+  const counts: TagCounts = {
+    tags: [{ name: 'cat', count: 3 }],
+    ratings: { g: 0, s: 3, q: 0, e: 1, unrated: 2 },
+  }
+  const calls = spyIPC(counts)
+  await expect(tagCounts(request)).resolves.toEqual(counts)
+  expect(calls).toHaveBeenCalledWith('tag_counts', { req: request })
 })
 
 it('a rejected command reaches the caller', async () => {

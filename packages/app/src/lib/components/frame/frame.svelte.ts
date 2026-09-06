@@ -9,6 +9,12 @@ import type { Snippet } from 'svelte'
  */
 class Frame {
   toolbar = $state.raw<Snippet | null>(null)
+  /**
+   * Slot "Sidebar · filters": the tag list and the rating pills of the current
+   * result set. Absent rather than empty (app-shell) — only a screen that has a
+   * result set to describe fills it, so /settings shows nav and library alone.
+   */
+  filters = $state.raw<Snippet | null>(null)
 }
 
 export const frame = new Frame()

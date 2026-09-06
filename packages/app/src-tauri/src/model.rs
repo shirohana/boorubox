@@ -229,6 +229,58 @@ pub struct ParsedTagSearch {
     pub exclude_accounts: Vec<String>,
 }
 
+/// What the four sorts compare. An enum rather than the legacy's `field-direction`
+/// string: it arrives from IPC and names a column expression, and this file's
+/// rule is that nothing but a placeholder is ever formatted into SQL. The enum
+/// cannot spell a column that does not exist (design D6).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SortField {
+    #[default]
+    Captured,
+    Updated,
+    Size,
+    Dimensions,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SortDirection {
+    Asc,
+    #[default]
+    Desc,
+}
+
+/// Newest capture first is the default the grid opens on (spec `sort-and-group`).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Sort {
+    pub field: SortField,
+    pub direction: SortDirection,
+}
+
+/// How the result set is divided. A grouping also restricts it: `XAccount`
+/// admits only pages naming an account, `Duplicates` only images sharing their
+/// dimensions and byte size with another (design D7).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum GroupBy {
+    #[default]
+    None,
+    XAccount,
+    Duplicates,
+}
+
+/// One group of the whole result set, in the order the result is returned in.
+/// `key` is raw — the account handle, or `WIDTHxHEIGHT-SIZE` — because a display
+/// label is UI and §6 keeps UI out of the storage layer (design D7).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GroupSlice {
+    pub key: String,
+    pub count: i64,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SearchRequest {
@@ -236,6 +288,8 @@ pub struct SearchRequest {
     /// Free text matched against page title and URLs through FTS5 (design D14).
     pub text: String,
     pub include_deleted: bool,
+    pub sort: Sort,
+    pub group: GroupBy,
     pub limit: i64,
     pub offset: i64,
 }
@@ -246,6 +300,36 @@ pub struct SearchResult {
     pub images: Vec<ImageRecord>,
     /// Matches before `limit`/`offset`.
     pub total: i64,
+    /// Every group of the result; empty when ungrouped.
+    pub groups: Vec<GroupSlice>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TagCount {
+    pub name: String,
+    pub count: i64,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RatingCounts {
+    pub g: i64,
+    pub s: i64,
+    pub q: i64,
+    pub e: i64,
+    pub unrated: i64,
+}
+
+/// What the sidebar draws. The two halves answer different questions and are
+/// counted differently on purpose (design D8): `tags` over the fully filtered
+/// result, `ratings` with the rating clause dropped, so a pill says how many the
+/// search would return if that rating were asked for instead.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TagCounts {
+    pub tags: Vec<TagCount>,
+    pub ratings: RatingCounts,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -417,6 +501,113 @@ mod tests {
         assert_eq!(
             serde_json::to_value(without).unwrap(),
             serde_json::json!({ "id": "c-1" }),
+        );
+    }
+
+    /// `x-account` is the one spelling in this file that a `rename_all` could
+    /// silently get wrong (`xAccount`, `x_account`), and the webview matches on
+    /// the string. Pinned in both directions with the rest of the view types.
+    #[test]
+    fn the_view_types_cross_the_wire_in_the_spellings_the_webview_matches_on() {
+        for (group, name) in [
+            (GroupBy::None, "none"),
+            (GroupBy::XAccount, "x-account"),
+            (GroupBy::Duplicates, "duplicates"),
+        ] {
+            assert_eq!(serde_json::to_value(group).unwrap(), name);
+            assert_eq!(
+                serde_json::from_value::<GroupBy>(serde_json::json!(name)).unwrap(),
+                group,
+            );
+        }
+
+        for (field, name) in [
+            (SortField::Captured, "captured"),
+            (SortField::Updated, "updated"),
+            (SortField::Size, "size"),
+            (SortField::Dimensions, "dimensions"),
+        ] {
+            assert_eq!(serde_json::to_value(field).unwrap(), name);
+            assert_eq!(
+                serde_json::from_value::<SortField>(serde_json::json!(name)).unwrap(),
+                field,
+            );
+        }
+
+        assert_eq!(
+            serde_json::to_value(Sort::default()).unwrap(),
+            serde_json::json!({ "field": "captured", "direction": "desc" }),
+        );
+    }
+
+    #[test]
+    fn a_search_carries_its_sort_and_group_and_answers_with_slices() {
+        let req = SearchRequest {
+            query: ParsedTagSearch::default(),
+            text: String::new(),
+            include_deleted: false,
+            sort: Sort {
+                field: SortField::Size,
+                direction: SortDirection::Asc,
+            },
+            group: GroupBy::XAccount,
+            limit: 200,
+            offset: 0,
+        };
+
+        let json = serde_json::to_value(&req).unwrap();
+        assert_eq!(
+            json["sort"],
+            serde_json::json!({ "field": "size", "direction": "asc" })
+        );
+        assert_eq!(json["group"], "x-account");
+        assert_eq!(json["includeDeleted"], false);
+        assert_eq!(
+            serde_json::from_value::<SearchRequest>(json).unwrap(),
+            req,
+            "the request must round-trip through the wire form the webview sends",
+        );
+
+        let result = SearchResult {
+            images: Vec::new(),
+            total: 3,
+            groups: vec![GroupSlice {
+                key: "alice".to_string(),
+                count: 3,
+            }],
+        };
+        assert_eq!(
+            serde_json::to_value(result).unwrap(),
+            serde_json::json!({
+                "images": [],
+                "total": 3,
+                "groups": [{ "key": "alice", "count": 3 }],
+            }),
+        );
+    }
+
+    #[test]
+    fn the_sidebar_counts_cross_the_wire_in_camel_case() {
+        let counts = TagCounts {
+            tags: vec![TagCount {
+                name: "cat".to_string(),
+                count: 12,
+            }],
+            ratings: RatingCounts {
+                g: 1,
+                s: 2,
+                q: 3,
+                e: 4,
+                unrated: 5,
+            },
+        };
+
+        assert_eq!(
+            serde_json::to_value(counts).unwrap(),
+            serde_json::json!({
+                "tags": [{ "name": "cat", "count": 12 }],
+                "ratings": { "g": 1, "s": 2, "q": 3, "e": 4, "unrated": 5 },
+            }),
         );
     }
 

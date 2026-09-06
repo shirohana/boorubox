@@ -131,11 +131,40 @@ export interface ParsedTagSearch {
   excludeAccounts: string[]
 }
 
+/** What the four sorts compare. Rust maps each to a fixed column expression. */
+export type SortField = 'captured' | 'updated' | 'size' | 'dimensions'
+
+export type SortDirection = 'asc' | 'desc'
+
+export interface Sort {
+  field: SortField
+  direction: SortDirection
+}
+
+/**
+ * How the result set is divided. A grouping also restricts it: `x-account`
+ * admits only pages naming an account, `duplicates` only images sharing their
+ * dimensions and byte size with another (design D7).
+ */
+export type GroupBy = 'none' | 'x-account' | 'duplicates'
+
+/**
+ * One group of the whole result set, in the order the result is returned in.
+ * `key` is raw — the account handle, or `WIDTHxHEIGHT-SIZE` — because a display
+ * label is UI and the storage layer does not write one (design D7).
+ */
+export interface GroupSlice {
+  key: string
+  count: number
+}
+
 export interface SearchRequest {
   query: ParsedTagSearch
   /** Free text matched against page title and URLs through FTS5. */
   text: string
   includeDeleted: boolean
+  sort: Sort
+  group: GroupBy
   limit: number
   offset: number
 }
@@ -144,6 +173,32 @@ export interface SearchResult {
   images: ImageRecord[]
   /** Matches before `limit`/`offset`. */
   total: number
+  /** Every group of the result; empty when ungrouped. */
+  groups: GroupSlice[]
+}
+
+export interface TagCount {
+  name: string
+  count: number
+}
+
+export interface RatingCounts {
+  g: number
+  s: number
+  q: number
+  e: number
+  unrated: number
+}
+
+/**
+ * What the sidebar draws. The two halves answer different questions and are
+ * counted differently on purpose (design D8): `tags` over the fully filtered
+ * result, `ratings` with the rating clause dropped, so a pill says how many the
+ * search would return if that rating were asked for instead.
+ */
+export interface TagCounts {
+  tags: TagCount[]
+  ratings: RatingCounts
 }
 
 export interface ImageCounts {

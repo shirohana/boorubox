@@ -8,7 +8,7 @@
   // Outside the scroll container also means it stays in view while the user
   // scrolls, which is what "the thing I just asked for is coming" needs.
   import { imports, pendingCaptures } from '$lib/api'
-  import { EDGE, GAP, gridWindow } from './grid-window'
+  import { columnsFor, EDGE, GAP } from './grid-window'
   import ImportRunTile from './ImportRunTile.svelte'
   import PendingCaptureTile from './PendingCaptureTile.svelte'
 
@@ -19,11 +19,9 @@
 
   const showing = $derived(imports.runs.length > 0 || pendingCaptures.entries.length > 0)
   // The same module the grid lays its rows out with, at the same width: the
-  // wrapper is measured unpadded and `gridWindow` takes `EDGE` off itself,
+  // wrapper is measured unpadded and the column count takes `EDGE` off itself,
   // exactly as the grid's scroll container does.
-  const columns = $derived(
-    gridWindow({ total: 0, scrollTop: 0, width, height: 0, tile }).columns,
-  )
+  const columns = $derived(columnsFor(width, tile))
 </script>
 
 <!-- Measured even while empty, so the first tile is laid out on a real width. -->

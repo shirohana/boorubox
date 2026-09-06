@@ -2,9 +2,14 @@
 //! rating, `is:`, `tagcount:`, `account:` and the FTS5 free-text match — and
 //! owns the `x_account()` scalar those account filters need (design D3).
 //!
-//! `src/lib/domain/filters.ts` is the tested statement of what each clause
-//! means; where it and this file disagree, it is right and this file is the
-//! bug. Read `filterByTagSearch` before changing anything here.
+//! It also compiles the sort and the grouping (design D6, D7), so nothing in
+//! the webview decides membership of a result, its order or its groups.
+//!
+//! The rules were lifted from the legacy `filters.ts` and `grouping.ts`, whose
+//! cases live in this file's tests now that those modules are gone. The comments
+//! below name their functions where a clause reproduces a JavaScript answer
+//! (`[].some()` is false, `!img.rating` is falsiness) rather than an obvious
+//! SQL one.
 
 use rusqlite::functions::FunctionFlags;
 use rusqlite::types::Value;
@@ -12,7 +17,10 @@ use rusqlite::{Connection, params_from_iter};
 
 use crate::error::Result;
 use crate::ingest;
-use crate::model::{ParsedTagSearch, SearchRequest, SearchResult, TagCountOperator};
+use crate::model::{
+    GroupBy, GroupSlice, ParsedTagSearch, RatingCounts, SearchRequest, SearchResult, Sort,
+    SortDirection, SortField, TagCount, TagCountOperator, TagCounts,
+};
 
 /// Register the SQL functions the compiled queries call. `db::open` calls this
 /// for every connection, so a query may assume they are there.
@@ -36,37 +44,251 @@ pub fn placeholders(count: usize) -> String {
 }
 
 pub fn search(conn: &Connection, req: &SearchRequest) -> Result<SearchResult> {
-    let filter = compile(req);
-    let where_sql = filter.sql();
+    let plan = Plan::for_request(req, RatingClause::Included);
+    let ids = plan.page(conn, req.limit, req.offset)?;
 
-    let total: i64 = conn.query_row(
-        &format!("SELECT COUNT(*) FROM images WHERE {where_sql}"),
-        params_from_iter(&filter.params),
-        |row| row.get(0),
-    )?;
-
-    // `id` breaks the tie on equal `captured_at`. Without it SQLite may order
-    // two same-instant rows differently between the page-1 and page-2 queries,
-    // and a row then repeats on one page and is skipped on the other.
-    let mut stmt = conn.prepare(&format!(
-        "SELECT id FROM images
-         WHERE {where_sql}
-         ORDER BY images.captured_at DESC, images.id DESC
-         LIMIT ? OFFSET ?"
-    ))?;
-    let mut page_params = filter.params.clone();
-    page_params.push(Value::Integer(req.limit));
-    page_params.push(Value::Integer(req.offset));
-    let ids: Vec<String> = stmt
-        .query_map(params_from_iter(&page_params), |row| row.get(0))?
-        .collect::<rusqlite::Result<_>>()?;
-
-    // `load_records` keeps the order it is given and fills the tags in one
-    // extra statement, so the page costs three queries however large it is.
     Ok(SearchResult {
+        total: plan.total(conn)?,
+        // `load_records` keeps the order it is given and fills the tags in one
+        // extra statement, so the page costs three queries however large it is.
         images: ingest::load_records(conn, &ids)?,
-        total,
+        groups: plan.groups(conn)?,
     })
+}
+
+/// The sidebar's two halves for one request (design D8). Both ignore `limit`
+/// and `offset` — the panel describes the whole result set, never the pages that
+/// happen to be loaded — and both honour the group restriction.
+///
+/// One command rather than two: the halves are one panel refreshed as one unit,
+/// and two commands would let the pills and the tag list describe different
+/// queries while one was in flight.
+pub fn tag_counts(conn: &Connection, req: &SearchRequest) -> Result<TagCounts> {
+    Ok(TagCounts {
+        // Counted over the result *as filtered*, rating clause included: a tag
+        // count answers "how many of what I am looking at also carry this",
+        // which is the narrowing move.
+        tags: Plan::for_request(req, RatingClause::Included).tag_counts(conn)?,
+        // Counted with the rating clause dropped: a pill answers "how many would
+        // I get if I switched to this", which is a sideways move. Counting these
+        // after the rating filter would show the selected rating's own count and
+        // four zeros. Making the two halves uniform breaks one of the two
+        // questions, whichever direction is chosen — the asymmetry is the point.
+        ratings: Plan::for_request(req, RatingClause::Dropped).rating_counts(conn)?,
+    })
+}
+
+/// One request compiled: the CTEs that name the matched set and its groups, what
+/// the row queries read from, and the order they read it in.
+///
+/// The filter text — and so its bound values — appears exactly once, inside the
+/// `matched` CTE, however many times a grouped query reads the set back. Two
+/// copies of it would be two positional parameter lists to keep in step, which
+/// is the hazard `Filter` exists to remove.
+struct Plan {
+    ctes: String,
+    /// `FROM` for the row queries: the matched set, or its grouped join.
+    rows: &'static str,
+    /// Group key and size ordering, ahead of the sort (design D7). `None` when
+    /// nothing is grouped, which is also what makes `groups` empty.
+    group_order: Option<&'static str>,
+    sort: String,
+    params: Vec<Value>,
+}
+
+/// The columns the sort, the group key, the rating counts and the page load
+/// read out of the matched set.
+const MATCHED_COLUMNS: &str = "id, page_url, rating, width, height, size, captured_at, updated_at";
+
+/// The account whose page the image came from. A page naming none is not in the
+/// group at all, so grouping by account also restricts the result (design D7).
+const GROUPED_BY_ACCOUNT: &str = "grouped AS (
+       SELECT matched.*, x_account(page_url) AS group_key
+       FROM matched
+       WHERE x_account(page_url) IS NOT NULL
+     )";
+
+/// "Duplicates" keeps the legacy meaning — same pixel dimensions, same byte size
+/// — because a content hash is a new column, a migration and a backfill over
+/// every image, which is its own change with its own argument.
+const GROUPED_BY_DUPLICATE_KEY: &str = "grouped AS (
+       SELECT matched.*, width || 'x' || height || '-' || size AS group_key
+       FROM matched
+     )";
+
+const EVERY_SLICE: &str = "slices AS (
+       SELECT group_key, COUNT(*) AS group_size FROM grouped GROUP BY group_key
+     )";
+
+/// A duplicate needs a twin: a triple only one image carries is no group, and
+/// that image is not in the result either.
+const SLICES_OF_TWO_OR_MORE: &str = "slices AS (
+       SELECT group_key, COUNT(*) AS group_size
+       FROM grouped GROUP BY group_key HAVING COUNT(*) > 1
+     )";
+
+/// The join is the group restriction: a row whose key made no slice is gone.
+const GROUPED_ROWS: &str = "grouped JOIN slices USING (group_key)";
+
+/// The legacy viewer's group order: accounts by size descending then name,
+/// duplicate keys by key.
+const ACCOUNTS_LARGEST_FIRST: &str = "group_size DESC, group_key";
+const DUPLICATE_KEYS_BY_KEY: &str = "group_key";
+
+impl Plan {
+    fn for_request(req: &SearchRequest, rating: RatingClause) -> Plan {
+        let filter = compile(req, rating);
+        let matched = format!(
+            "WITH matched AS (SELECT {MATCHED_COLUMNS} FROM images WHERE {})",
+            filter.sql()
+        );
+        let (ctes, rows, group_order) = match req.group {
+            GroupBy::None => (matched, "matched", None),
+            GroupBy::XAccount => (
+                format!("{matched},\n     {GROUPED_BY_ACCOUNT},\n     {EVERY_SLICE}"),
+                GROUPED_ROWS,
+                Some(ACCOUNTS_LARGEST_FIRST),
+            ),
+            GroupBy::Duplicates => (
+                format!(
+                    "{matched},\n     {GROUPED_BY_DUPLICATE_KEY},\n     {SLICES_OF_TWO_OR_MORE}"
+                ),
+                GROUPED_ROWS,
+                Some(DUPLICATE_KEYS_BY_KEY),
+            ),
+        };
+        Plan {
+            ctes,
+            rows,
+            group_order,
+            sort: sort_sql(req.sort),
+            params: filter.params,
+        }
+    }
+
+    /// Matches before `limit`/`offset`, the group restriction included — what is
+    /// counted is what is shown (spec `library-browse`).
+    fn total(&self, conn: &Connection) -> Result<i64> {
+        let total = conn.query_row(
+            &format!("{} SELECT COUNT(*) FROM {}", self.ctes, self.rows),
+            params_from_iter(&self.params),
+            |row| row.get(0),
+        )?;
+        Ok(total)
+    }
+
+    fn page(&self, conn: &Connection, limit: i64, offset: i64) -> Result<Vec<String>> {
+        let mut stmt = conn.prepare(&format!(
+            "{} SELECT id FROM {} ORDER BY {} LIMIT ? OFFSET ?",
+            self.ctes,
+            self.rows,
+            self.order_by()
+        ))?;
+        let mut params = self.params.clone();
+        params.push(Value::Integer(limit));
+        params.push(Value::Integer(offset));
+        let ids = stmt.query_map(params_from_iter(&params), |row| row.get(0))?;
+        Ok(ids.collect::<rusqlite::Result<_>>()?)
+    }
+
+    fn order_by(&self) -> String {
+        match self.group_order {
+            Some(group) => format!("{group}, {}", self.sort),
+            None => self.sort.clone(),
+        }
+    }
+
+    /// Every group of the whole result, which is what makes the grid's layout
+    /// computable before a page is loaded: headings, counts and the row a group
+    /// starts on are arithmetic over these (design D7).
+    fn groups(&self, conn: &Connection) -> Result<Vec<GroupSlice>> {
+        let Some(order) = self.group_order else {
+            return Ok(Vec::new());
+        };
+        let mut stmt = conn.prepare(&format!(
+            "{} SELECT group_key, group_size FROM slices ORDER BY {order}",
+            self.ctes
+        ))?;
+        let slices = stmt.query_map(params_from_iter(&self.params), |row| {
+            Ok(GroupSlice {
+                key: row.get(0)?,
+                count: row.get(1)?,
+            })
+        })?;
+        Ok(slices.collect::<rusqlite::Result<_>>()?)
+    }
+
+    fn tag_counts(&self, conn: &Connection) -> Result<Vec<TagCount>> {
+        let mut stmt = conn.prepare(&format!(
+            "{} SELECT tags.name, COUNT(*) AS carriers
+             FROM image_tags
+             JOIN tags ON tags.id = image_tags.tag_id
+             WHERE image_tags.image_id IN (SELECT id FROM {})
+             GROUP BY image_tags.tag_id
+             ORDER BY carriers DESC, tags.name",
+            self.ctes, self.rows
+        ))?;
+        let counts = stmt.query_map(params_from_iter(&self.params), |row| {
+            Ok(TagCount {
+                name: row.get(0)?,
+                count: row.get(1)?,
+            })
+        })?;
+        Ok(counts.collect::<rusqlite::Result<_>>()?)
+    }
+
+    fn rating_counts(&self, conn: &Connection) -> Result<RatingCounts> {
+        let mut stmt = conn.prepare(&format!(
+            "{} SELECT rating, COUNT(*) FROM {} GROUP BY rating",
+            self.ctes, self.rows
+        ))?;
+        let mut rows = stmt.query(params_from_iter(&self.params))?;
+
+        let mut counts = RatingCounts::default();
+        while let Some(row) = rows.next()? {
+            let rating: Option<String> = row.get(0)?;
+            let count: i64 = row.get(1)?;
+            match rating.as_deref() {
+                // `!img.rating` is JS falsiness, so an empty rating string is
+                // unrated here too, exactly as the filter reads it.
+                None | Some("") => counts.unrated += count,
+                Some("g") => counts.g += count,
+                Some("s") => counts.s += count,
+                Some("q") => counts.q += count,
+                Some("e") => counts.e += count,
+                // A rating a legacy-bundle import carried and no pill offers
+                // (design D11). It belongs to no control, so it is counted
+                // nowhere — which is what the lifted `computeRatingCounts` did
+                // with the same value.
+                Some(_) => {}
+            }
+        }
+        Ok(counts)
+    }
+}
+
+/// The sort as an `ORDER BY` tail. The field is an enum rather than a string
+/// split at a hyphen: it arrives from IPC, and nothing but a placeholder is ever
+/// formatted into SQL here — an enum cannot spell a column that does not exist
+/// (design D6).
+///
+/// `id` breaks every tie, and that is not decoration: without it SQLite may
+/// order two rows with equal sort values differently between the page-1 and
+/// page-2 queries, and a row then repeats on one page and is skipped on the
+/// other. Every column here has ties by nature, `size` and `dimensions` most.
+fn sort_sql(sort: Sort) -> String {
+    let column = match sort.field {
+        SortField::Captured => "captured_at",
+        SortField::Updated => "updated_at",
+        SortField::Size => "size",
+        // The area, which is what the lifted `sortImages` compared.
+        SortField::Dimensions => "width * height",
+    };
+    let direction = match sort.direction {
+        SortDirection::Asc => "ASC",
+        SortDirection::Desc => "DESC",
+    };
+    format!("{column} {direction}, id DESC")
 }
 
 /// A `WHERE` fragment and the values its placeholders consume, kept together so
@@ -99,23 +321,33 @@ impl Filter {
 }
 
 /// Stands in for a clause that can never be true. `IN ()` is not valid SQLite,
-/// and filters.ts reaches the same answer for the cases that produce it: an
-/// empty OR group (`[].some()` is false) and a `tagcount:` whose operand is
-/// missing (every comparison against `undefined` is false).
+/// and the lifted `filterByTagSearch` reached the same answer for the two cases
+/// that produce it: an empty OR group (`[].some()` is false) and a `tagcount:`
+/// whose operand is missing (every comparison against `undefined` is false).
 const MATCHES_NOTHING: &str = "1 = 0";
 
-/// The image's tag count, as a correlated subquery. filters.ts compares
-/// `img.tags.length`; `image_tags` is that list.
+/// The image's tag count, as a correlated subquery — `image_tags` is the list
+/// the lifted `filterByTagSearch` took `img.tags.length` of.
 const TAG_COUNT: &str = "(SELECT COUNT(*) FROM image_tags WHERE image_tags.image_id = images.id)";
 
-fn compile(req: &SearchRequest) -> Filter {
+/// Whether the rating clause is part of the compiled filter. The rating half of
+/// `tag_counts` is the one caller that drops it (design D8).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum RatingClause {
+    Included,
+    Dropped,
+}
+
+fn compile(req: &SearchRequest, rating: RatingClause) -> Filter {
     let query = &req.query;
     let mut filter = Filter::default();
 
     if !req.include_deleted {
         filter.add("images.deleted_at IS NULL");
     }
-    push_rating(&mut filter, query);
+    if rating == RatingClause::Included {
+        push_rating(&mut filter, query);
+    }
     push_file_types(&mut filter, query);
     push_tag_count(&mut filter, query);
     push_accounts(&mut filter, query);
@@ -124,10 +356,10 @@ fn compile(req: &SearchRequest) -> Filter {
     filter
 }
 
-/// filters.ts keeps "unrated" and the rating list in ONE predicate: an image
-/// passes if `includeUnrated` and it has no rating, OR its rating is listed.
-/// Two AND-ed clauses would make `rating:s` plus unrated match nothing.
-/// `!img.rating` is JS falsiness, so an empty rating string is unrated too.
+/// "Unrated" and the rating list are ONE predicate: an image passes if
+/// `includeUnrated` and it has no rating, OR its rating is listed. Two AND-ed
+/// clauses would make `rating:s` plus unrated match nothing. `!img.rating` was
+/// JS falsiness, so an empty rating string is unrated here too.
 fn push_rating(filter: &mut Filter, query: &ParsedTagSearch) {
     if query.ratings.is_empty() && !query.include_unrated {
         return;
@@ -248,7 +480,7 @@ fn push_tags(filter: &mut Filter, query: &ParsedTagSearch) {
 
 /// "this image carries at least one of these tag names" — the shape every tag
 /// clause is built from. Tag names compare with SQLite's BINARY collation,
-/// which is the case-sensitive `Array.includes` filters.ts uses.
+/// which is the case-sensitive `Array.includes` the rule was lifted from.
 fn has_any_tag(count: usize) -> String {
     format!(
         "EXISTS (SELECT 1 FROM image_tags
@@ -297,15 +529,11 @@ const X_RESERVED: [&str; 6] = [
     "search",
 ];
 
-/// The Rust half of a two-language pair: `getXAccountFromUrl` in
-/// `src/lib/domain/grouping.ts` is the same rule, and it is what builds the
-/// X-account groups in the webview while this one backs `account:` in SQL.
-/// Change one alone and `account:alice` and the alice group show different
-/// images, with nothing failing.
-///
-/// FIXME: one rule, two implementations, no shared fixture. The right shape is
-/// the webview asking Rust for its groups so this is the only copy; short of
-/// that, one table of URLs both sides are tested against.
+/// The account an X page names, in its one implementation: this backs both the
+/// `account:` filter and the X-account grouping, which are the same question
+/// asked twice. The webview had a second copy of this rule (`getXAccountFromUrl`
+/// in `grouping.ts`) for as long as it grouped its own results; its URL table is
+/// the `x_account` tests below.
 fn x_account(url: &str) -> Option<&str> {
     let (host, path) = host_and_path(url)?;
     if !X_HOSTS.contains(&host.to_lowercase().as_str()) {
@@ -495,6 +723,8 @@ mod tests {
             query,
             text: String::new(),
             include_deleted: false,
+            sort: Sort::default(),
+            group: GroupBy::default(),
             limit: 100,
             offset: 0,
         }
@@ -658,7 +888,7 @@ mod tests {
             }),
         );
 
-        // `no-account` carries `''`, which filters.ts reads as unrated.
+        // `no-account` carries `''`, which the rule reads as unrated.
         assert_eq!(ids, vec!["dog-e", "untagged", "no-account"]);
     }
 
@@ -957,9 +1187,582 @@ mod tests {
         assert_eq!(fixture.library.image_count().unwrap(), 5);
     }
 
+    /// Three images whose capture time, byte size and pixel area each put them in
+    /// a different order, so a sort reading the wrong column cannot pass by
+    /// coincidence. Sizes are what the encoder produces: a blank PNG is tiny
+    /// however large it is, while a JPEG carries its tables.
+    ///
+    /// | id      | captured | size | area |
+    /// | ------- | -------- | ---- | ---- |
+    /// | `flat`  | 200      | 139  | 64   |
+    /// | `later` | 300      | 217  | 1024 |
+    /// | `heavy` | 100      | 634  | 256  |
+    fn sortable() -> Fixture {
+        let dir = tempfile::tempdir().unwrap();
+        let library = Library::open_or_create(dir.path()).unwrap();
+        let page = Some("https://x.com/alice/status/1");
+
+        store(
+            &library,
+            "flat",
+            &png_bytes(8, 8),
+            &[],
+            None,
+            page,
+            "flat",
+            200,
+        );
+        store(
+            &library,
+            "later",
+            &png_bytes(32, 32),
+            &[],
+            None,
+            page,
+            "later",
+            300,
+        );
+        store(
+            &library,
+            "heavy",
+            &jpeg_bytes(16, 16),
+            &[],
+            None,
+            page,
+            "heavy",
+            100,
+        );
+
+        Fixture { _dir: dir, library }
+    }
+
+    fn sorted(fixture: &Fixture, field: SortField, direction: SortDirection) -> Vec<String> {
+        found(
+            fixture,
+            &SearchRequest {
+                sort: Sort { field, direction },
+                ..request(ParsedTagSearch::default())
+            },
+        )
+    }
+
+    #[test]
+    fn sorting_by_capture_time_runs_both_ways() {
+        let fixture = sortable();
+
+        assert_eq!(
+            sorted(&fixture, SortField::Captured, SortDirection::Desc),
+            vec!["later", "flat", "heavy"],
+        );
+        assert_eq!(
+            sorted(&fixture, SortField::Captured, SortDirection::Asc),
+            vec!["heavy", "flat", "later"],
+        );
+    }
+
+    #[test]
+    fn sorting_by_file_size_reads_the_bytes_not_the_pixels() {
+        let fixture = sortable();
+
+        assert_eq!(
+            sorted(&fixture, SortField::Size, SortDirection::Asc),
+            vec!["flat", "later", "heavy"],
+        );
+        assert_eq!(
+            sorted(&fixture, SortField::Size, SortDirection::Desc),
+            vec!["heavy", "later", "flat"],
+        );
+    }
+
+    /// The area, as the lifted `sortImages` compared it — not either edge, and
+    /// not the byte size, which orders these three differently.
+    #[test]
+    fn sorting_by_dimensions_compares_the_pixel_area() {
+        let fixture = sortable();
+
+        assert_eq!(
+            sorted(&fixture, SortField::Dimensions, SortDirection::Asc),
+            vec!["flat", "heavy", "later"],
+        );
+        assert_eq!(
+            sorted(&fixture, SortField::Dimensions, SortDirection::Desc),
+            vec!["later", "heavy", "flat"],
+        );
+    }
+
+    /// The `sort-and-group` scenario "Sorting by last change": an old capture
+    /// edited now comes first. The edit goes through the real write path, which
+    /// is what stamps `updated_at` (design D9).
+    #[test]
+    fn sorting_by_last_change_follows_an_edit_rather_than_the_capture() {
+        let fixture = sortable();
+
+        crate::tags::update_tags(&fixture.library, "heavy", &["cat".to_string()]).unwrap();
+
+        assert_eq!(
+            sorted(&fixture, SortField::Updated, SortDirection::Desc)[0],
+            "heavy",
+            "the oldest capture is the newest change",
+        );
+    }
+
+    /// Every sort column has ties by nature, and `id DESC` is what keeps a page
+    /// boundary from repeating one row and skipping another (design D6).
+    #[test]
+    fn paging_a_sort_whose_values_are_all_equal_shows_every_row_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let library = Library::open_or_create(dir.path()).unwrap();
+        let png = png_bytes(8, 8);
+        for index in 0..6 {
+            store(
+                &library,
+                &format!("same-{index}"),
+                &png,
+                &[],
+                None,
+                None,
+                "identical",
+                1_000,
+            );
+        }
+        let fixture = Fixture { _dir: dir, library };
+
+        let mut seen: Vec<String> = Vec::new();
+        for offset in (0..6).step_by(2) {
+            seen.extend(found(
+                &fixture,
+                &SearchRequest {
+                    sort: Sort {
+                        field: SortField::Size,
+                        direction: SortDirection::Desc,
+                    },
+                    limit: 2,
+                    offset,
+                    ..request(ParsedTagSearch::default())
+                },
+            ));
+        }
+
+        let mut unique = seen.clone();
+        unique.sort();
+        unique.dedup();
+        assert_eq!(unique.len(), 6, "each row exactly once, got {seen:?}");
+    }
+
+    fn grouped(fixture: &Fixture, group: GroupBy) -> SearchResult {
+        search(
+            &fixture.library.conn,
+            &SearchRequest {
+                group,
+                ..request(ParsedTagSearch::default())
+            },
+        )
+        .unwrap()
+    }
+
+    fn slices(result: &SearchResult) -> Vec<(String, i64)> {
+        result
+            .groups
+            .iter()
+            .map(|slice| (slice.key.clone(), slice.count))
+            .collect()
+    }
+
+    fn ids(result: &SearchResult) -> Vec<String> {
+        result
+            .images
+            .iter()
+            .map(|record| record.id.clone())
+            .collect()
+    }
+
+    /// `alice` has three, `bob` and `carol` one each, and two pages name no
+    /// account at all — one a foreign host, one of X's own pages.
+    fn accounts() -> Fixture {
+        let dir = tempfile::tempdir().unwrap();
+        let library = Library::open_or_create(dir.path()).unwrap();
+        let png = png_bytes(8, 8);
+        let pages = [
+            ("a1", "https://x.com/alice/status/1"),
+            ("a2", "https://x.com/alice/status/2"),
+            ("a3", "https://x.com/alice/status/3"),
+            ("b1", "https://twitter.com/bob/status/1"),
+            ("c1", "https://www.x.com/carol/status/1"),
+            ("n1", "https://example.test/gallery/1"),
+            ("n2", "https://x.com/i/status/1"),
+        ];
+        for (index, (id, page)) in pages.iter().enumerate() {
+            store(
+                &library,
+                id,
+                &png,
+                &[],
+                None,
+                Some(page),
+                "a page",
+                1_000 - index as i64,
+            );
+        }
+
+        Fixture { _dir: dir, library }
+    }
+
+    #[test]
+    fn grouping_by_account_drops_pages_naming_none_and_puts_the_largest_group_first() {
+        let fixture = accounts();
+
+        let result = grouped(&fixture, GroupBy::XAccount);
+
+        assert_eq!(
+            slices(&result),
+            vec![
+                ("alice".to_string(), 3),
+                ("bob".to_string(), 1),
+                ("carol".to_string(), 1),
+            ],
+            "largest first, equal sizes by name",
+        );
+        assert_eq!(ids(&result), vec!["a1", "a2", "a3", "b1", "c1"]);
+    }
+
+    /// What is counted is what is shown (spec `library-browse`): the two images
+    /// no account names are not in the result at all, so `total` cannot be the
+    /// ungrouped count.
+    #[test]
+    fn a_grouping_that_admits_only_some_images_is_reflected_in_the_total() {
+        let fixture = accounts();
+
+        let ungrouped = grouped(&fixture, GroupBy::None);
+        let result = grouped(&fixture, GroupBy::XAccount);
+
+        assert_eq!(ungrouped.total, 7);
+        assert!(ungrouped.groups.is_empty(), "nothing grouped, no slices");
+        assert_eq!(result.total, 5);
+        assert_eq!(
+            result.total,
+            result.groups.iter().map(|slice| slice.count).sum::<i64>(),
+        );
+    }
+
+    /// A duplicate is the legacy pair of values: same pixel dimensions and same
+    /// byte size. `twin-jpeg` shares its dimensions with the PNG pair and not
+    /// its size, so dimensions alone would wrongly put it in their group.
+    fn duplicates() -> Fixture {
+        let dir = tempfile::tempdir().unwrap();
+        let library = Library::open_or_create(dir.path()).unwrap();
+        let small = png_bytes(8, 8);
+        let large = png_bytes(32, 32);
+        let rows: [(&str, &Vec<u8>); 6] = [
+            ("small-1", &small),
+            ("small-2", &small),
+            ("large-1", &large),
+            ("large-2", &large),
+            ("lonely", &png_bytes(64, 64)),
+            ("twin-jpeg", &jpeg_bytes(8, 8)),
+        ];
+        for (index, (id, bytes)) in rows.iter().enumerate() {
+            store(
+                &library,
+                id,
+                bytes,
+                &[],
+                None,
+                None,
+                "a page",
+                1_000 - index as i64,
+            );
+        }
+
+        Fixture { _dir: dir, library }
+    }
+
+    #[test]
+    fn grouping_by_duplicates_keeps_only_triples_two_or_more_images_share() {
+        let fixture = duplicates();
+
+        let result = grouped(&fixture, GroupBy::Duplicates);
+
+        // By key, as the lifted `getVisualOrder` ordered them — string order, so
+        // `32x32-…` comes before `8x8-…`.
+        assert_eq!(
+            slices(&result),
+            vec![("32x32-217".to_string(), 2), ("8x8-139".to_string(), 2)],
+        );
+        assert_eq!(
+            ids(&result),
+            vec!["large-1", "large-2", "small-1", "small-2"]
+        );
+        assert_eq!(result.total, 4, "the singletons are not in the result");
+    }
+
+    /// The membership question a duplicates grouping asks is about the *matched*
+    /// set, not the library: an image whose twin the search filtered out has no
+    /// twin left to be a duplicate of.
+    #[test]
+    fn a_duplicate_needs_its_twin_to_have_survived_the_filter() {
+        let fixture = duplicates();
+
+        let result = search(
+            &fixture.library.conn,
+            &SearchRequest {
+                group: GroupBy::Duplicates,
+                ..request(ParsedTagSearch {
+                    exclude_tags: vec!["nothing".into()],
+                    ..Default::default()
+                })
+            },
+        )
+        .unwrap();
+        assert_eq!(result.total, 4, "a filter matching everything changes none");
+
+        let text_narrowed = search(
+            &fixture.library.conn,
+            &SearchRequest {
+                group: GroupBy::Duplicates,
+                ..text_request("page")
+            },
+        )
+        .unwrap();
+        assert_eq!(text_narrowed.total, 4);
+
+        crate::tags::update_tags(&fixture.library, "small-2", &["gone".to_string()]).unwrap();
+        let one_twin_filtered_out = search(
+            &fixture.library.conn,
+            &SearchRequest {
+                group: GroupBy::Duplicates,
+                ..request(ParsedTagSearch {
+                    exclude_tags: vec!["gone".into()],
+                    ..Default::default()
+                })
+            },
+        )
+        .unwrap();
+
+        assert_eq!(
+            slices(&one_twin_filtered_out),
+            vec![("32x32-217".to_string(), 2)],
+            "`small-1` is alone in the matched set and so is no duplicate",
+        );
+    }
+
+    #[test]
+    fn a_group_orders_its_own_images_by_the_chosen_sort() {
+        let fixture = accounts();
+
+        let result = search(
+            &fixture.library.conn,
+            &SearchRequest {
+                group: GroupBy::XAccount,
+                sort: Sort {
+                    field: SortField::Captured,
+                    direction: SortDirection::Asc,
+                },
+                ..request(ParsedTagSearch::default())
+            },
+        )
+        .unwrap();
+
+        assert_eq!(
+            ids(&result),
+            vec!["a3", "a2", "a1", "b1", "c1"],
+            "the group order is still largest-first; the sort orders within it",
+        );
+    }
+
+    #[test]
+    fn a_grouped_page_is_a_window_on_the_same_order() {
+        let fixture = accounts();
+
+        let result = search(
+            &fixture.library.conn,
+            &SearchRequest {
+                group: GroupBy::XAccount,
+                limit: 2,
+                offset: 2,
+                ..request(ParsedTagSearch::default())
+            },
+        )
+        .unwrap();
+
+        assert_eq!(ids(&result), vec!["a3", "b1"]);
+        assert_eq!(
+            result.groups.len(),
+            3,
+            "the slices describe the whole result, not the page",
+        );
+    }
+
+    /// The `computeRatingCounts` block of the deleted `filters.test.ts`, on the
+    /// same four images: `cat` on three of them with three different ratings,
+    /// `dog` on the fourth.
+    fn rated() -> Fixture {
+        let dir = tempfile::tempdir().unwrap();
+        let library = Library::open_or_create(dir.path()).unwrap();
+        let png = png_bytes(8, 8);
+        let rows = [
+            ("a", vec!["cat"], Some("s")),
+            ("b", vec!["cat"], Some("e")),
+            ("c", vec!["cat"], None),
+            ("d", vec!["dog"], Some("s")),
+        ];
+        for (index, (id, tags, rating)) in rows.iter().enumerate() {
+            store(
+                &library,
+                id,
+                &png,
+                tags,
+                *rating,
+                None,
+                "a page",
+                1_000 - index as i64,
+            );
+        }
+
+        Fixture { _dir: dir, library }
+    }
+
+    fn counts(fixture: &Fixture, req: &SearchRequest) -> TagCounts {
+        tag_counts(&fixture.library.conn, req).unwrap()
+    }
+
+    fn tag_pairs(counts: &TagCounts) -> Vec<(String, i64)> {
+        counts
+            .tags
+            .iter()
+            .map(|tag| (tag.name.clone(), tag.count))
+            .collect()
+    }
+
+    #[test]
+    fn rating_counts_describe_the_filtered_set() {
+        let fixture = rated();
+
+        let counts = counts(&fixture, &request(ParsedTagSearch::default()));
+
+        assert_eq!(
+            counts.ratings,
+            RatingCounts {
+                g: 0,
+                s: 2,
+                q: 0,
+                e: 1,
+                unrated: 1,
+            }
+        );
+    }
+
+    /// Design D8's asymmetry, ported from `computeRatingCounts(…, includeRating:
+    /// false)`: the pills answer "how many if I switch", so the search's own
+    /// `rating:` is the one clause they ignore — while the tag list beside them
+    /// counts over the result the rating filter produced.
+    #[test]
+    fn the_rating_half_ignores_the_searchs_own_rating_and_the_tag_half_does_not() {
+        let fixture = rated();
+
+        let counts = counts(
+            &fixture,
+            &request(ParsedTagSearch {
+                include_tags: vec!["cat".into()],
+                ratings: vec!["s".into()],
+                ..Default::default()
+            }),
+        );
+
+        assert_eq!(
+            counts.ratings,
+            RatingCounts {
+                g: 0,
+                s: 1,
+                q: 0,
+                e: 1,
+                unrated: 1,
+            },
+            "every `cat`, whatever it is rated",
+        );
+        assert_eq!(
+            tag_pairs(&counts),
+            vec![("cat".to_string(), 1)],
+            "only the one `cat` the rating filter left",
+        );
+    }
+
+    #[test]
+    fn unrated_counts_a_blank_rating_as_no_rating() {
+        let fixture = rated();
+        fixture
+            .library
+            .conn
+            .execute("UPDATE images SET rating = '' WHERE id = 'd'", [])
+            .unwrap();
+
+        let counts = counts(&fixture, &request(ParsedTagSearch::default()));
+
+        assert_eq!(counts.ratings.unrated, 2);
+        assert_eq!(counts.ratings.s, 1);
+    }
+
+    #[test]
+    fn counts_describe_the_whole_result_and_not_the_page_asked_for() {
+        let fixture = rated();
+
+        let whole = counts(&fixture, &request(ParsedTagSearch::default()));
+        let one_row = counts(
+            &fixture,
+            &SearchRequest {
+                limit: 1,
+                offset: 0,
+                ..request(ParsedTagSearch::default())
+            },
+        );
+
+        assert_eq!(
+            tag_pairs(&whole),
+            vec![("cat".to_string(), 3), ("dog".to_string(), 1)],
+            "most carried first, then by name",
+        );
+        assert_eq!(tag_pairs(&one_row), tag_pairs(&whole));
+        assert_eq!(one_row.ratings, whole.ratings);
+    }
+
+    #[test]
+    fn counts_honour_the_group_restriction() {
+        let fixture = accounts();
+        crate::tags::update_tags(&fixture.library, "n1", &["offsite".to_string()]).unwrap();
+        crate::tags::update_tags(&fixture.library, "a1", &["onsite".to_string()]).unwrap();
+
+        let ungrouped = counts(&fixture, &request(ParsedTagSearch::default()));
+        let by_account = counts(
+            &fixture,
+            &SearchRequest {
+                group: GroupBy::XAccount,
+                ..request(ParsedTagSearch::default())
+            },
+        );
+
+        assert_eq!(ungrouped.ratings.unrated, 7);
+        assert_eq!(
+            by_account.ratings.unrated, 5,
+            "the two account-less pages go"
+        );
+        assert_eq!(
+            tag_pairs(&by_account),
+            vec![("onsite".to_string(), 1)],
+            "`offsite` is on a page the grouping does not admit",
+        );
+    }
+
+    /// The URL table of the deleted `getXAccountFromUrl`, which is what closes
+    /// the two-implementations question: there is one rule now, and this is the
+    /// fixture it answers to.
     #[test]
     fn x_account_reads_the_first_path_segment() {
-        assert_eq!(x_account("https://x.com/alice/status/1"), Some("alice"));
+        assert_eq!(x_account("https://x.com/alice/status/123"), Some("alice"));
+        assert_eq!(x_account("https://twitter.com/bob/status/1"), Some("bob"));
+        assert_eq!(x_account("https://www.x.com/carol"), Some("carol"));
+        assert_eq!(
+            x_account("https://www.twitter.com/dave/photo"),
+            Some("dave")
+        );
         assert_eq!(x_account("https://twitter.com/Bob"), Some("Bob"));
         assert_eq!(x_account("https://www.x.com/carol/"), Some("carol"));
         assert_eq!(
@@ -970,23 +1773,71 @@ mod tests {
     }
 
     #[test]
-    fn x_account_ignores_other_hosts_and_x_own_pages() {
+    fn x_account_ignores_x_own_pages_whatever_case_they_are_written_in() {
+        for reserved in [
+            "i",
+            "home",
+            "explore",
+            "notifications",
+            "messages",
+            "search",
+        ] {
+            let url = format!("https://x.com/{reserved}/status/1");
+            assert_eq!(x_account(&url), None, "{url:?} names no account");
+            let shouted = format!("https://x.com/{}/status/1", reserved.to_uppercase());
+            assert_eq!(x_account(&shouted), None, "{shouted:?} names no account");
+        }
+    }
+
+    #[test]
+    fn x_account_ignores_other_hosts_and_anything_that_is_not_a_url() {
         for url in [
+            "https://example.com/alice",
             "https://example.test/alice",
             "https://notx.com/alice",
             "https://x.com",
             "https://x.com/",
             "https://x.com/?q=1",
-            "https://x.com/i/status/1",
-            "https://x.com/home",
-            "https://x.com/EXPLORE",
-            "https://x.com/notifications",
-            "https://x.com/messages",
-            "https://x.com/search?q=cat",
+            "not a url",
             "x.com/alice",
             "",
         ] {
             assert_eq!(x_account(url), None, "expected no account in {url:?}");
         }
+    }
+
+    /// The last row of that table: a record with no page URL. It reaches SQL as
+    /// NULL rather than as a string, so the scalar function is what has to
+    /// answer it — `x_account(NULL)` is NULL, and the image is in no group.
+    #[test]
+    fn an_image_with_no_page_url_is_in_no_account_group() {
+        let dir = tempfile::tempdir().unwrap();
+        let library = Library::open_or_create(dir.path()).unwrap();
+        store(
+            &library,
+            "nowhere",
+            &png_bytes(8, 8),
+            &[],
+            None,
+            None,
+            "a page",
+            100,
+        );
+        store(
+            &library,
+            "somewhere",
+            &png_bytes(8, 8),
+            &[],
+            None,
+            Some("https://x.com/alice/status/1"),
+            "a page",
+            200,
+        );
+        let fixture = Fixture { _dir: dir, library };
+
+        let result = grouped(&fixture, GroupBy::XAccount);
+
+        assert_eq!(slices(&result), vec![("alice".to_string(), 1)]);
+        assert_eq!(ids(&result), vec!["somewhere"]);
     }
 }

@@ -1,5 +1,5 @@
 <script lang="ts">
-  import type { ImageRecord } from '@boorubox/shared'
+  import type { ImageRecord, Rating } from '@boorubox/shared'
   import { GRID_TILE_DEFAULT, GRID_TILE_MAX, GRID_TILE_MIN } from '@boorubox/shared'
   import PanelRightIcon from '@lucide/svelte/icons/panel-right'
   import {
@@ -14,6 +14,8 @@
     type SearchInputs,
   } from '$lib/api'
   import { frame } from '$lib/components/frame/frame.svelte'
+  import RatingPills from '$lib/components/tags/RatingPills.svelte'
+  import TagSidebar from '$lib/components/tags/TagSidebar.svelte'
   import EmptyState from '$lib/components/library/EmptyState.svelte'
   import ImportMenu from '$lib/components/library/ImportMenu.svelte'
   import ImportReportCard from '$lib/components/library/ImportReportCard.svelte'
@@ -22,6 +24,7 @@
   import Lightbox from '$lib/components/library/Lightbox.svelte'
   import PendingBand from '$lib/components/library/PendingBand.svelte'
   import SearchBar from '$lib/components/library/SearchBar.svelte'
+  import ViewControls from '$lib/components/library/ViewControls.svelte'
   import { Button } from '$lib/components/ui/button'
   import { Slider } from '$lib/components/ui/slider'
   import { isTypingTarget, KEY_SEARCH } from '$lib/keyboard'
@@ -29,7 +32,12 @@
   const results = new SearchResults()
 
   const noQuery: SearchInputs = { tagQuery: '', text: '' }
-  let inputs = $state<SearchInputs>(noQuery)
+  // The query lives here, not in the search bar: the sidebar, the rating pills
+  // and the inspector rewrite it too (design D14), and the field has to show
+  // what ran.
+  let tagQuery = $state('')
+  let text = $state('')
+  const inputs = $derived<SearchInputs>({ tagQuery, text })
   /** The current card, `-1` for none; the inspector shows whatever it names. */
   let focusIndex = $state(-1)
   /** Session state, not a setting (design D9 / Non-Goals): open until hidden. */
@@ -47,11 +55,24 @@
   const focused = $derived(results.at(focusIndex) ?? null)
 
   function runSearch(next: SearchInputs) {
-    inputs = next
+    tagQuery = next.tagQuery
+    text = next.text
     // A new list: the old index names a different image, or none at all.
     focusIndex = -1
     lightboxOpen = false
     void results.run(next)
+  }
+
+  /** Every tag and rating click rewrites the query and runs it (design D14). */
+  const searchFor = (next: string) => runSearch({ tagQuery: next, text })
+
+  /** Slot Grid · tile: the menu rates its own image, not the inspector's. */
+  async function rate(image: ImageRecord, rating: Rating | null) {
+    try {
+      await results.saveRating(image.id, rating)
+    } catch (error) {
+      actionError = errorText(error)
+    }
   }
 
   // Spec `library-switching`: everything reading the library follows a switch,
@@ -127,12 +148,16 @@
     }
   }
 
-  // The route's controls in the frame's top bar, for as long as this route is
-  // mounted (see `frame.svelte.ts`).
+  // The route's controls in the frame's top bar and its filters region, for as
+  // long as this route is mounted (see `frame.svelte.ts`). The sidebar's
+  // filters are absent rather than empty on every other screen, which is what
+  // unsetting them here means.
   $effect(() => {
     frame.toolbar = toolbar
+    frame.filters = filters
     return () => {
       frame.toolbar = null
+      frame.filters = null
     }
   })
 
@@ -142,7 +167,20 @@
 <svelte:window onkeydown={focusSearch} />
 
 {#snippet toolbar()}
-  <SearchBar onsearch={runSearch} />
+  <SearchBar bind:tagQuery bind:text onsearch={runSearch} />
+
+  <ViewControls
+    sort={results.sort}
+    group={results.group}
+    onsort={(sort) => {
+      focusIndex = -1
+      void results.setSort(sort)
+    }}
+    ongroup={(group) => {
+      focusIndex = -1
+      void results.setGroup(group)
+    }}
+  />
 
   <Slider
     type="single"
@@ -169,6 +207,17 @@
   </Button>
 
   <ImportMenu />
+{/snippet}
+
+{#snippet filters()}
+  <!--
+    Slot Sidebar · filters. Both panels stay mounted while a search runs:
+    unmounting them flickers the whole region on every click. Blank counts
+    (`null`) are still honest (design D8) — the last query's numbers never
+    show, only their own headings do until the new counts arrive.
+  -->
+  <RatingPills counts={results.counts?.ratings ?? null} {tagQuery} onquery={searchFor} />
+  <TagSidebar tags={results.counts?.tags ?? null} {tagQuery} onquery={searchFor} />
 {/snippet}
 
 {#each imports.reports as report (report)}
@@ -215,6 +264,7 @@
             lightboxOpen = true
           }}
           onforget={forget}
+          onrate={rate}
           ontoggleinspector={() => (inspectorOpen = !inspectorOpen)}
         />
       {/if}
@@ -223,7 +273,7 @@
 
   {#if inspectorOpen}
     <aside class="w-80 shrink-0 border-s border-border">
-      <Inspector image={focused} />
+      <Inspector image={focused} {results} {tagQuery} onquery={searchFor} />
     </aside>
   {/if}
 </div>
@@ -232,6 +282,8 @@
   <Lightbox
     {results}
     {libraryPath}
+    {tagQuery}
+    onquery={searchFor}
     bind:index={lightboxIndex}
     onclose={() => {
       lightboxOpen = false

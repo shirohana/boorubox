@@ -4,7 +4,7 @@
   // bearing: only the rows inside the scroll window are rendered (`gridWindow`,
   // which is where that is tested), and only the `search` pages those rows fall
   // in are fetched.
-  import type { ImageRecord } from '@boorubox/shared'
+  import type { ImageRecord, Rating } from '@boorubox/shared'
   import type { SearchResults } from '$lib/api'
   import {
     isTypingTarget,
@@ -13,7 +13,8 @@
     KEY_SPACE,
   } from '$lib/keyboard'
   import { moveFocus } from './grid-focus'
-  import { EDGE, GAP, gridWindow } from './grid-window'
+  import { EDGE, GAP, gridWindow, imageTop } from './grid-window'
+  import { groupLabel } from './group-label'
   import ImageCard from './ImageCard.svelte'
 
   interface Props {
@@ -28,6 +29,7 @@
     focusIndex: number
     onactivate: (index: number) => void
     onforget: (image: ImageRecord) => void
+    onrate: (image: ImageRecord, rating: Rating | null) => void
     ontoggleinspector: () => void
   }
 
@@ -37,6 +39,7 @@
     focusIndex = $bindable(),
     onactivate,
     onforget,
+    onrate,
     ontoggleinspector,
   }: Props = $props()
 
@@ -47,14 +50,12 @@
 
   const shown = $derived(gridWindow({
     total: results.total,
+    groups: results.groups,
     scrollTop,
     width: viewportWidth,
     height: viewportHeight,
     tile,
   }))
-  const windowRows = $derived(
-    Array.from({ length: shown.endIndex - shown.firstIndex }, (_, i) => shown.firstIndex + i),
-  )
 
   // `ensureRange` reads the result generation itself, so a new query re-runs
   // this effect and the window is asked for again.
@@ -83,7 +84,7 @@
 
   $effect(() => {
     // Reading the window makes this run again once the row it names is mounted.
-    const mounted = windowRows.length
+    const mounted = shown.rows.length
     if (!focusWanted || focusIndex < 0 || !viewport || mounted === 0) return
     const card = viewport.querySelector<HTMLElement>('[data-card-focus][tabindex="0"]')
     if (!card) return
@@ -93,8 +94,10 @@
 
   function scrollIntoView(index: number) {
     if (!viewport) return
-    const { columns, rowHeight } = shown
-    const top = EDGE + Math.floor(index / columns) * rowHeight
+    const { columns, rowHeight, sections } = shown
+    // Group headings push every row below them down, so the offset comes from
+    // the layout rather than from the index alone (design D7).
+    const top = EDGE + imageTop(sections, index, columns, rowHeight)
     const bottom = top + rowHeight - GAP
 
     if (top < viewport.scrollTop) viewport.scrollTop = top - EDGE
@@ -116,7 +119,13 @@
   function onkeydown(event: KeyboardEvent) {
     if (isTypingTarget(event)) return
 
-    const destination = moveFocus(focusIndex, event.key, shown.columns, results.total)
+    const destination = moveFocus(
+      focusIndex,
+      event.key,
+      shown.columns,
+      results.total,
+      results.groups,
+    )
     if (destination !== null) {
       event.preventDefault()
       focusCard(destination)
@@ -154,26 +163,49 @@
   style="padding: {EDGE}px"
 >
   <div class="relative" style="height: {shown.contentHeight}px">
-    <div
-      class="absolute inset-x-0 grid"
-      style="
-        top: {shown.offsetTop}px;
-          gap: {GAP}px;
-          grid-template-columns: repeat({shown.columns}, minmax(0, 1fr));
-      "
-    >
-      {#each windowRows as index (index)}
-        <ImageCard
-          image={results.at(index)}
-          focused={index === focusIndex}
-          onfocus={() => (focusIndex = index)}
-          onactivate={() => onactivate(index)}
-          onforget={() => {
-            const image = results.at(index)
-            if (image) onforget(image)
-          }}
-        />
-      {/each}
-    </div>
+    {#each shown.rows as row (row.kind === 'heading' ? `h${row.key}` : `t${row.first}`)}
+      {#if row.kind === 'heading'}
+        <!--
+          The heading and its count come from the group slices, so both are right
+          before the page holding the group's images has arrived (design D7).
+        -->
+        <h2
+          class="
+            absolute inset-x-0 flex items-end gap-2 truncate pb-1 text-xs font-medium
+            text-muted-foreground
+          "
+          style="top: {row.top}px; height: {shown.headingHeight}px"
+        >
+          <span class="truncate">{groupLabel(results.group, row.key)}</span>
+          <span class="tabular-nums">{row.count.toLocaleString()}</span>
+        </h2>
+      {:else}
+        <div
+          class="absolute inset-x-0 grid"
+          style="
+            top: {row.top}px;
+              gap: {GAP}px;
+              grid-template-columns: repeat({shown.columns}, minmax(0, 1fr));
+          "
+        >
+          {#each Array.from({ length: row.count }, (_, i) => row.first + i) as index (index)}
+            <ImageCard
+              image={results.at(index)}
+              focused={index === focusIndex}
+              onfocus={() => (focusIndex = index)}
+              onactivate={() => onactivate(index)}
+              onforget={() => {
+                const image = results.at(index)
+                if (image) onforget(image)
+              }}
+              onrate={(rating) => {
+                const image = results.at(index)
+                if (image) onrate(image, rating)
+              }}
+            />
+          {/each}
+        </div>
+      {/if}
+    {/each}
   </div>
 </div>

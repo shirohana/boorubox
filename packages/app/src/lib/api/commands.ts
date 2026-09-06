@@ -9,12 +9,16 @@
 import type {
   AppSettings,
   ImageCounts,
+  ImageRecord,
   ImportReport,
   LibraryStatus,
   ListenerStatus,
+  Rating,
   RecentLibrary,
   SearchRequest,
   SearchResult,
+  TagCount,
+  TagCounts,
   Theme,
 } from '@boorubox/shared'
 import { invoke } from '@tauri-apps/api/core'
@@ -96,4 +100,37 @@ export function thumbnailPath(id: string): Promise<string> {
 /** Imports files and folders; progress arrives on the `import:progress` event. */
 export function importPaths(paths: string[]): Promise<ImportReport> {
   return invoke('import_paths', { paths })
+}
+
+/**
+ * Replaces the image's whole tag set (design D2) and returns the row as it now
+ * stands, so the caller can redraw the tile and the inspector without re-running
+ * the search (design D10). A `rating:g|s|q|e` among the tags sets the rating
+ * instead of being stored; Rust owns that rule, since bulk edits and auto-tag
+ * rules write tags without passing through this editor (design D3).
+ */
+export function updateTags(id: string, tags: string[]): Promise<ImageRecord> {
+  return invoke('update_tags', { id, tags })
+}
+
+/** `null` clears the rating. Anything but `g`/`s`/`q`/`e`/null is refused (D11). */
+export function setRating(id: string, rating: Rating | null): Promise<ImageRecord> {
+  return invoke('set_rating', { id, rating })
+}
+
+/**
+ * Tag names starting with `prefix`, most used first then by name (design D12).
+ * Tags already in the input are dropped by the caller, not by SQL: the input is
+ * a query string, and the parser that reads one is in the webview.
+ */
+export function tagSuggestions(prefix: string, limit: number): Promise<TagCount[]> {
+  return invoke('tag_suggestions', { prefix, limit })
+}
+
+/**
+ * The sidebar's two halves for one search, over the whole result set rather
+ * than the loaded pages: `limit` and `offset` are ignored (design D8).
+ */
+export function tagCounts(req: SearchRequest): Promise<TagCounts> {
+  return invoke('tag_counts', { req })
 }

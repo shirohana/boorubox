@@ -24,10 +24,13 @@
     results: SearchResults
     index: number
     libraryPath: string | null
+    /** Forwarded to the inspector, which edits here exactly as it does beside the grid. */
+    tagQuery: string
+    onquery: (next: string) => void
     onclose: () => void
   }
 
-  let { results, index = $bindable(), libraryPath, onclose }: Props = $props()
+  let { results, index = $bindable(), libraryPath, tagQuery, onquery, onclose }: Props = $props()
 
   let dialog = $state<HTMLDialogElement | null>(null)
   // Which mode the viewer opens in is session state, not a setting (Non-Goals),
@@ -154,7 +157,7 @@
           text-foreground
         "
       >
-        <Inspector image={image ?? null} />
+        <Inspector image={image ?? null} {results} {tagQuery} {onquery} />
       </aside>
     {/if}
   </div>

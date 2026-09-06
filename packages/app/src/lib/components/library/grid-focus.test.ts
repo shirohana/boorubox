@@ -68,3 +68,41 @@ describe('moveFocus', () => {
     expect(moveFocus(3, KEY_DOWN, 0, 40)).toBe(4)
   })
 })
+
+// Design D7: a grouped result draws a heading row between groups, so a vertical
+// move that ignored the slices would cross one and land in the wrong column.
+describe('moveFocus over group slices', () => {
+  /** Three groups of five, at indices 0-4, 5-9 and 10-14, in three columns. */
+  const groups = [
+    { key: 'a', count: 5 },
+    { key: 'b', count: 5 },
+    { key: 'c', count: 5 },
+  ]
+  const total = 15
+
+  it('moves down inside a group', () => {
+    expect(moveFocus(0, KEY_DOWN, 3, total, groups)).toBe(3)
+  })
+
+  it('steps into the next group at the same column from its last row', () => {
+    // Index 3 is the first card of group a's short second row.
+    expect(moveFocus(3, KEY_DOWN, 3, total, groups)).toBe(5)
+    expect(moveFocus(4, KEY_DOWN, 3, total, groups)).toBe(6)
+  })
+
+  it('steps back into the previous group at its last row', () => {
+    expect(moveFocus(5, KEY_UP, 3, total, groups)).toBe(3)
+    // Column 2 of the previous group's last row does not exist; its last card does.
+    expect(moveFocus(7, KEY_UP, 3, total, groups)).toBe(4)
+  })
+
+  it('clamps at the first and the last group', () => {
+    expect(moveFocus(0, KEY_UP, 3, total, groups)).toBe(0)
+    expect(moveFocus(14, KEY_DOWN, 3, total, groups)).toBe(14)
+  })
+
+  it('moves left and right straight through a group boundary', () => {
+    expect(moveFocus(4, KEY_RIGHT, 3, total, groups)).toBe(5)
+    expect(moveFocus(5, KEY_LEFT, 3, total, groups)).toBe(4)
+  })
+})

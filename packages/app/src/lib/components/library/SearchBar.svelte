@@ -8,16 +8,26 @@
   // There is no Search button: the query runs after a typing pause and on
   // Enter, so a button would only ever repeat a search that had already run.
   import type { SearchInputs } from '$lib/api'
+  import TagInput from '$lib/components/tags/TagInput.svelte'
   import { Button } from '$lib/components/ui/button'
   import { Input } from '$lib/components/ui/input'
   import { KEY_ESCAPE } from '$lib/keyboard'
 
-  let { onsearch }: { onsearch: (inputs: SearchInputs) => void } = $props()
+  interface Props {
+    /**
+     * Bound to the route, because the sidebar, the rating pills and the
+     * inspector rewrite the query too (design D14) and this field has to show
+     * what ran.
+     */
+    tagQuery: string
+    text: string
+    onsearch: (inputs: SearchInputs) => void
+  }
+
+  let { tagQuery = $bindable(), text = $bindable(), onsearch }: Props = $props()
 
   const TYPING_PAUSE_MS = 250
 
-  let tagQuery = $state('')
-  let text = $state('')
   let timer: ReturnType<typeof setTimeout> | undefined
 
   function searchNow() {
@@ -53,16 +63,16 @@
     searchNow()
   }}
 >
-  <Input
+  <!-- Slot Toolbar · search: the same editor the inspector uses (design D17). -->
+  <TagInput
     id="tag-query"
     class="h-8 min-w-0 flex-1"
-    aria-label="Tags"
+    label="Tags"
     bind:value={tagQuery}
     oninput={searchAfterPause}
-    onkeydown={leaveOnEscape}
+    onsubmit={searchNow}
+    onescape={leaveOnEscape}
     placeholder="Tags — cat -dog · cat or dog · rating:s,q"
-    autocomplete="off"
-    spellcheck={false}
   />
 
   <Input

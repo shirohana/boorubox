@@ -15,12 +15,14 @@ use tauri_plugin_opener::OpenerExt;
 use crate::error::{AppError, Result};
 use crate::library::{self, Library, SharedLibrary, with_library, with_library_if_open};
 use crate::model::{
-    AppSettings, GRID_TILE_MAX, GRID_TILE_MIN, ImageCounts, ImportReport, LibraryStatus,
-    ListenerStatus, RecentLibrary, SearchRequest, SearchResult, Theme,
+    AppSettings, GRID_TILE_MAX, GRID_TILE_MIN, ImageCounts, ImageRecord, ImportReport,
+    LibraryStatus, ListenerStatus, RecentLibrary, SearchRequest, SearchResult, TagCount, TagCounts,
+    Theme,
 };
 use crate::settings::Settings;
 use crate::{
-    AppState, VERSION, from_tauri, http, import, ingest, lock, maintenance, query, settings, thumbs,
+    AppState, VERSION, from_tauri, http, import, ingest, lock, maintenance, query, settings, tags,
+    thumbs,
 };
 
 /// Progress while `import_paths` runs. The webview subscribes under this name;
@@ -272,7 +274,58 @@ pub async fn search(req: SearchRequest, state: State<'_, AppState>) -> Result<Se
         Ok(SearchResult {
             images: ingest::load_records(&library.conn, &ids)?,
             total: page.total,
+            groups: page.groups,
         })
+    })
+    .await
+}
+
+/// The sidebar's tag list and rating pills for one search (design D8).
+#[tauri::command]
+pub async fn tag_counts(req: SearchRequest, state: State<'_, AppState>) -> Result<TagCounts> {
+    with_library_off_main_thread(&state.library, move |library| {
+        query::tag_counts(&library.conn, &req)
+    })
+    .await
+}
+
+/// Replace the image's whole tag set (design D2) and answer with the row as it
+/// now stands, so the webview can redraw the tile and the inspector without
+/// re-running the search (design D10).
+#[tauri::command]
+pub async fn update_tags(
+    id: String,
+    tags: Vec<String>,
+    state: State<'_, AppState>,
+) -> Result<ImageRecord> {
+    with_library_off_main_thread(&state.library, move |library| {
+        tags::update_tags(library, &id, &tags)
+    })
+    .await
+}
+
+/// `None` clears the rating; anything but `g`/`s`/`q`/`e` is refused (D11).
+#[tauri::command]
+pub async fn set_rating(
+    id: String,
+    rating: Option<String>,
+    state: State<'_, AppState>,
+) -> Result<ImageRecord> {
+    with_library_off_main_thread(&state.library, move |library| {
+        tags::set_rating(library, &id, rating.as_deref())
+    })
+    .await
+}
+
+/// The autocomplete's vocabulary, straight out of the library's own tags (D12).
+#[tauri::command]
+pub async fn tag_suggestions(
+    prefix: String,
+    limit: i64,
+    state: State<'_, AppState>,
+) -> Result<Vec<TagCount>> {
+    with_library_off_main_thread(&state.library, move |library| {
+        tags::suggestions(&library.conn, &prefix, limit)
     })
     .await
 }
@@ -460,7 +513,9 @@ mod tests {
 
     use super::*;
     use crate::http::test_support::{ask_for_status, free_port, nothing_answers_on, png_bytes};
-    use crate::model::{GRID_TILE_DEFAULT, ImportProgress, ImportStatus, ParsedTagSearch};
+    use crate::model::{
+        GRID_TILE_DEFAULT, GroupBy, ImportProgress, ImportStatus, ParsedTagSearch, Sort,
+    };
     use crate::test_support::mock_app;
 
     type App = tauri::App<MockRuntime>;
@@ -470,6 +525,8 @@ mod tests {
             query: ParsedTagSearch::default(),
             text: String::new(),
             include_deleted: false,
+            sort: Sort::default(),
+            group: GroupBy::default(),
             limit: 100,
             offset: 0,
         }
@@ -861,6 +918,101 @@ mod tests {
 
         assert_eq!(status.image_count, 1);
         assert!(status.opened);
+    }
+
+    fn tag(app: &App, id: &str, tags: &[&str]) -> ImageRecord {
+        now(update_tags(
+            id.to_string(),
+            tags.iter().map(|tag| (*tag).to_string()).collect(),
+            app.state(),
+        ))
+        .unwrap()
+    }
+
+    #[test]
+    fn an_edit_answers_with_the_row_it_changed() {
+        let (_library, app) = app_with_library();
+        import(&app, &folder_of_images(1));
+        let id = ids_in_library(&app).remove(0);
+
+        let tagged = tag(&app, &id, &["cat", "rating:e"]);
+        assert_eq!(tagged.tags, vec!["cat".to_string()]);
+        assert_eq!(tagged.rating.as_deref(), Some("e"));
+
+        let rated = now(set_rating(id.clone(), Some("s".to_string()), app.state())).unwrap();
+        assert_eq!(rated.rating.as_deref(), Some("s"));
+
+        let cleared = now(set_rating(id, None, app.state())).unwrap();
+        assert_eq!(cleared.rating, None);
+    }
+
+    #[test]
+    fn suggestions_and_counts_read_the_open_library() {
+        let (_library, app) = app_with_library();
+        import(&app, &folder_of_images(2));
+        let ids = ids_in_library(&app);
+        tag(&app, &ids[0], &["cat"]);
+        tag(&app, &ids[1], &["cat", "cathedral", "rating:s"]);
+
+        let suggested = now(tag_suggestions("cat".to_string(), 8, app.state())).unwrap();
+        let names: Vec<&str> = suggested.iter().map(|tag| tag.name.as_str()).collect();
+        assert_eq!(names, vec!["cat", "cathedral"], "most used first");
+
+        let counts = now(tag_counts(everything(), app.state())).unwrap();
+        assert_eq!(counts.tags.first().map(|tag| tag.count), Some(2));
+        assert_eq!(counts.ratings.s, 1);
+        assert_eq!(counts.ratings.unrated, 1);
+    }
+
+    #[test]
+    fn an_edit_naming_no_image_is_not_found() {
+        let (_library, app) = app_with_library();
+
+        for error in [
+            now(update_tags(
+                "no-such-id".to_string(),
+                vec!["cat".to_string()],
+                app.state(),
+            ))
+            .unwrap_err(),
+            now(set_rating(
+                "no-such-id".to_string(),
+                Some("s".to_string()),
+                app.state(),
+            ))
+            .unwrap_err(),
+        ] {
+            assert!(matches!(error, AppError::NotFound(_)), "{error:?}");
+        }
+    }
+
+    /// Design D11: the value comes from this app's own UI, so one that is not a
+    /// rating is a bug here rather than a foreign library's row.
+    #[test]
+    fn a_rating_outside_the_alphabet_is_refused() {
+        let (_library, app) = app_with_library();
+        import(&app, &folder_of_images(1));
+        let id = ids_in_library(&app).remove(0);
+
+        let error = now(set_rating(id, Some("safe".to_string()), app.state())).unwrap_err();
+
+        assert!(matches!(error, AppError::BadRequest(_)), "{error:?}");
+    }
+
+    #[test]
+    fn the_tag_commands_need_a_library_before_they_answer() {
+        let app = mock_app();
+
+        let errors = [
+            now(update_tags("a".to_string(), vec![], app.state())).unwrap_err(),
+            now(set_rating("a".to_string(), None, app.state())).unwrap_err(),
+            now(tag_suggestions("cat".to_string(), 8, app.state())).unwrap_err(),
+            now(tag_counts(everything(), app.state())).unwrap_err(),
+        ];
+
+        for error in errors {
+            assert!(matches!(error, AppError::NoLibrary), "{error:?}");
+        }
     }
 
     #[test]

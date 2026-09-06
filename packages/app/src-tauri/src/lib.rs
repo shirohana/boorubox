@@ -9,6 +9,7 @@ pub mod maintenance;
 pub mod model;
 pub mod query;
 pub mod settings;
+pub mod tags;
 pub mod thumbs;
 
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
@@ -123,6 +124,10 @@ pub fn run() {
             commands::set_theme,
             commands::set_grid_tile_size,
             commands::search,
+            commands::tag_counts,
+            commands::update_tags,
+            commands::set_rating,
+            commands::tag_suggestions,
             commands::image_counts,
             commands::drop_image_record,
             commands::thumbnail_path,

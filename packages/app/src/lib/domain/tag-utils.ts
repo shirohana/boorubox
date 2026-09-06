@@ -1,7 +1,22 @@
 // The one definition of the query language (design D3): Rust never sees a query
 // string, only the `ParsedTagSearch` this produces.
 
-import type { ParsedTagSearch } from '@boorubox/shared'
+import type { ParsedTagSearch, Rating } from '@boorubox/shared'
+
+/**
+ * The `rating:` metatag in every spelling the parser accepts. Shared with
+ * `toggleRatingInQuery`, which rewrites the whole metatag (design D14): a
+ * second copy that drifted would silently leave a query that parses to
+ * something other than what the pill shows.
+ *
+ * Global, so only `String.match` and `String.replace` may use it — both reset
+ * `lastIndex`. An `exec` here would carry its position into the next call.
+ */
+const RATING_METATAG
+  = /rating:([gsqe](?:,[gsqe])+|general|sensitive|questionable|explicit|[gsqe])/gi
+
+/** `is:unrated` alone, which `toggleRatingInQuery` adds and removes by itself. */
+const UNRATED_METATAG = /\bis:unrated\b/gi
 
 /**
  * Sorts tags alphabetically (case-insensitive).
@@ -79,8 +94,7 @@ export function parseTagSearch(query: string): ParsedTagSearch {
   }
 
   // 2. Extract rating: metatags (match comma-separated list first, then single values)
-  const ratingRegex = /rating:([gsqe](?:,[gsqe])+|general|sensitive|questionable|explicit|[gsqe])/gi
-  const ratingMatches = remainingQuery.match(ratingRegex)
+  const ratingMatches = remainingQuery.match(RATING_METATAG)
   if (ratingMatches) {
     ratingMatches.forEach((match) => {
       const value = match.substring(7).toLowerCase() // Remove "rating:"
@@ -91,7 +105,7 @@ export function parseTagSearch(query: string): ParsedTagSearch {
         addUnique(result.ratings, value.charAt(0)) // First char only
       }
     })
-    remainingQuery = remainingQuery.replace(ratingRegex, '').trim()
+    remainingQuery = remainingQuery.replace(RATING_METATAG, '').trim()
   }
 
   // 3. Extract is: metatags
@@ -223,4 +237,75 @@ export function removeTagFromQuery(query: string, tagToRemove: string): string {
   }
 
   return newTokens.join(' ').trim()
+}
+
+// Every click in the sidebar, the rating pills and the inspector rewrites the
+// query string through the functions below (design D14), so the query the user
+// can read is always the one that ran.
+
+/** Collapses the runs of spaces a removal leaves behind. */
+function tidy(query: string): string {
+  return query.replace(/\s+/g, ' ').trim()
+}
+
+function append(query: string, term: string): string {
+  const base = query.trim()
+  return base ? `${base} ${term}` : term
+}
+
+function isIncluded(parsed: ParsedTagSearch, tag: string): boolean {
+  return parsed.includeTags.includes(tag) || parsed.orGroups.some((group) => group.includes(tag))
+}
+
+/** `removeTagFromQuery` reads a bare token; an exclusion is a token of its own. */
+function removeExclusionFromQuery(query: string, tag: string): string {
+  return tidy(query.split(/\s+/).filter((token) => token !== `-${tag}`).join(' '))
+}
+
+/**
+ * Adds `tag` as an included term. A tag the query excludes stops being excluded
+ * rather than being asked for and refused in the same breath.
+ */
+export function addTagToQuery(query: string, tag: string): string {
+  const parsed = parseTagSearch(query)
+  if (isIncluded(parsed, tag)) return query
+  const base = parsed.excludeTags.includes(tag) ? removeExclusionFromQuery(query, tag) : query
+  return append(base, tag)
+}
+
+/** Adds `tag` as an exclusion, dropping the inclusion it would contradict. */
+export function excludeTagFromQuery(query: string, tag: string): string {
+  const parsed = parseTagSearch(query)
+  if (parsed.excludeTags.includes(tag)) return query
+  const base = isIncluded(parsed, tag) ? removeTagFromQuery(query, tag) : query
+  return append(base, `-${tag}`)
+}
+
+/** Clicking a tag: included or excluded, it leaves; otherwise it is asked for. */
+export function toggleTagInQuery(query: string, tag: string): string {
+  const parsed = parseTagSearch(query)
+  if (parsed.excludeTags.includes(tag)) return removeExclusionFromQuery(query, tag)
+  if (isIncluded(parsed, tag)) return removeTagFromQuery(query, tag)
+  return append(query, tag)
+}
+
+/**
+ * Adds or removes one rating, rewriting the whole `rating:` metatag from what
+ * the parser read: the metatag holds every asked-for rating in one comma list,
+ * so there is nothing to edit in place. `unrated` is its own `is:` term.
+ */
+export function toggleRatingInQuery(query: string, rating: Rating | 'unrated'): string {
+  const parsed = parseTagSearch(query)
+
+  if (rating === 'unrated') {
+    if (!parsed.includeUnrated) return append(query, 'is:unrated')
+    return tidy(query.replace(UNRATED_METATAG, ''))
+  }
+
+  const kept = parsed.ratings.includes(rating)
+    ? parsed.ratings.filter((value) => value !== rating)
+    : [...parsed.ratings, rating]
+  const withoutRatings = tidy(query.replace(RATING_METATAG, ''))
+  if (kept.length === 0) return withoutRatings
+  return append(withoutRatings, `rating:${[...kept].sort().join(',')}`)
 }

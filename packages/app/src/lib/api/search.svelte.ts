@@ -5,15 +5,29 @@
 // It sits beside the command wrappers because this is the one place the two
 // search inputs of design D14 become a `SearchRequest`: the tag box goes through
 // `parseTagSearch` (the only definition of the query language, D3) and the free
-// text goes to Rust unparsed, for FTS5 to match.
+// text goes to Rust unparsed, for FTS5 to match. The order, the grouping and the
+// sidebar's counts join it here for the same reason — they are inputs to and
+// answers about the same request.
 
-import type { ImageRecord, SearchRequest } from '@boorubox/shared'
+import type {
+  GroupBy,
+  GroupSlice,
+  ImageRecord,
+  Rating,
+  SearchRequest,
+  Sort,
+  TagCounts,
+} from '@boorubox/shared'
 import { parseTagSearch } from '$lib/domain/tag-utils'
-import { search } from './commands'
+import { search, setRating, tagCounts, updateTags } from './commands'
 import { errorText } from './errors'
 
 /** Records per `search` call. */
 export const PAGE_SIZE = 200
+
+/** Newest capture first, ungrouped (spec `sort-and-group`). */
+export const DEFAULT_SORT: Sort = { field: 'captured', direction: 'desc' }
+export const DEFAULT_GROUP: GroupBy = 'none'
 
 export interface SearchInputs {
   /** Danbooru-style tag query, parsed in the webview. */
@@ -22,8 +36,15 @@ export interface SearchInputs {
   text: string
 }
 
+/** How the result set is ordered and divided: session state, never a setting. */
+export interface SearchView {
+  sort: Sort
+  group: GroupBy
+}
+
 export function buildSearchRequest(
   inputs: SearchInputs,
+  view: SearchView,
   offset: number,
   limit: number = PAGE_SIZE,
 ): SearchRequest {
@@ -31,6 +52,8 @@ export function buildSearchRequest(
     query: parseTagSearch(inputs.tagQuery),
     text: inputs.text.trim(),
     includeDeleted: false,
+    sort: view.sort,
+    group: view.group,
     limit,
     offset,
   }
@@ -47,17 +70,24 @@ export function pageOf(index: number): number {
  */
 export class SearchResults {
   inputs = $state<SearchInputs>({ tagQuery: '', text: '' })
+  /** Part of every request; changing either is a new list (design D6, D7). */
+  sort = $state<Sort>({ ...DEFAULT_SORT })
+  group = $state<GroupBy>(DEFAULT_GROUP)
   /** Matches for the current query, from the newest answer. */
   total = $state(0)
+  /** Every group of the whole result set; empty while ungrouped (design D7). */
+  groups = $state<GroupSlice[]>([])
+  /** What the sidebar draws; `null` until the current query has answered (D8). */
+  counts = $state<TagCounts | null>(null)
   /** True until the first page of the current query has answered. */
   loading = $state(true)
   error = $state<string | null>(null)
   /** Bumped by every load from scratch; a consumer re-asks for its window. */
   generation = $state(0)
   /**
-   * Bumped only when the query itself changed. A refresh after a command is the
-   * same list the user was looking at, so scroll position survives it; a new
-   * query is a different list and does not.
+   * Bumped only when the list itself changed — a new query, a new order, a new
+   * grouping. A refresh after a command is the same list the user was looking
+   * at, so scroll position survives it; a different list does not.
    */
   queryGeneration = $state(0)
 
@@ -76,12 +106,56 @@ export class SearchResults {
   /** Runs `inputs` from the top, discarding what the previous query loaded. */
   run(inputs: SearchInputs): Promise<void> {
     this.queryGeneration++
+    // Design D8: counts describe a query, so they go the moment it does. A
+    // refresh keeps the old ones on screen until the new ones land, because it
+    // is the same query.
+    this.counts = null
     return this.#start(inputs)
   }
 
   /** Re-runs the current query, for after a command changed the library. */
   refresh(): Promise<void> {
     return this.#start(this.inputs)
+  }
+
+  /** A different order is a different list: the rows moved (design D6). */
+  setSort(sort: Sort): Promise<void> {
+    this.sort = sort
+    this.queryGeneration++
+    return this.#start(this.inputs)
+  }
+
+  /** A grouping also decides membership, not only order (design D7). */
+  setGroup(group: GroupBy): Promise<void> {
+    this.group = group
+    this.queryGeneration++
+    return this.#start(this.inputs)
+  }
+
+  /**
+   * Swaps one edited record for the row it already occupies and refetches the
+   * counts. The search is deliberately not re-run (design D10): an image that
+   * no longer matches stays on screen until the next search, rather than
+   * vanishing from under the hands of whoever is tagging it.
+   */
+  replace(record: ImageRecord): void {
+    const index = this.#images.findIndex((image) => image?.id === record.id)
+    if (index !== -1) this.#images[index] = record
+    void this.#loadCounts(this.generation)
+  }
+
+  /** Writes the whole tag set of one image and redraws it (design D2, D10). */
+  async saveTags(id: string, tags: string[]): Promise<ImageRecord> {
+    const record = await updateTags(id, tags)
+    this.replace(record)
+    return record
+  }
+
+  /** Writes or clears one image's rating and redraws it (design D11). */
+  async saveRating(id: string, rating: Rating | null): Promise<ImageRecord> {
+    const record = await setRating(id, rating)
+    this.replace(record)
+    return record
   }
 
   async #start(inputs: SearchInputs): Promise<void> {
@@ -93,7 +167,9 @@ export class SearchResults {
     this.loading = true
     const generation = ++this.generation
 
-    await this.#loadPage(0, generation)
+    // Both halves of one run: the sidebar and the grid describe the same
+    // request, so they are asked for together and superseded together.
+    await Promise.all([this.#loadPage(0, generation), this.#loadCounts(generation)])
     if (generation === this.generation) this.loading = false
   }
 
@@ -109,14 +185,21 @@ export class SearchResults {
     }
   }
 
+  get #view(): SearchView {
+    return { sort: this.sort, group: this.group }
+  }
+
   async #loadPage(page: number, generation: number): Promise<void> {
     if (this.#loaded.has(page) || this.#pending.has(page)) return
     this.#pending.add(page)
     try {
-      const result = await search(buildSearchRequest(this.inputs, page * PAGE_SIZE))
+      const result = await search(
+        buildSearchRequest(this.inputs, this.#view, page * PAGE_SIZE),
+      )
       // A query that started while this one was in flight owns the state now.
       if (generation !== this.generation) return
       this.total = result.total
+      this.groups = result.groups
       if (this.#images.length !== result.total) this.#images.length = result.total
       result.images.forEach((image, i) => {
         this.#images[page * PAGE_SIZE + i] = image
@@ -126,6 +209,24 @@ export class SearchResults {
       if (generation === this.generation) this.error = errorText(error)
     } finally {
       this.#pending.delete(page)
+    }
+  }
+
+  /**
+   * `limit` and `offset` are ignored by the command (design D8): the counts
+   * describe the whole result set, not a page of it.
+   *
+   * A failure leaves the sidebar with nothing rather than a message of its own.
+   * The count query compiles the same filter the search does, so what breaks it
+   * breaks the search too, and that failure is on screen.
+   */
+  async #loadCounts(generation: number): Promise<void> {
+    try {
+      const counts = await tagCounts(buildSearchRequest(this.inputs, this.#view, 0))
+      if (generation !== this.generation) return
+      this.counts = counts
+    } catch {
+      if (generation === this.generation) this.counts = null
     }
   }
 }

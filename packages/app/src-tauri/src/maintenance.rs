@@ -9,6 +9,7 @@ use crate::error::{AppError, Result};
 use crate::library::Library;
 use crate::model::{ImageCounts, ImageSource};
 use crate::query::placeholders;
+use crate::tags;
 use crate::thumbs::thumbnail_path;
 
 /// Total plus one count per source, from one `GROUP BY source` (design D2).
@@ -99,16 +100,23 @@ fn images_whose_file_state_changed(
 /// undo a deletion, so unlinking the image here would make the action the one
 /// unrecoverable thing in the app; a destructive variant is a later decision.
 pub fn drop_image_record(library: &Library, id: &str) -> Result<()> {
+    let tx = library.conn.unchecked_transaction()?;
+    // Read before the delete: the cascade takes the `image_tags` rows with the
+    // image, and nothing afterwards can say which tags they named.
+    let tags = tags::tag_ids_of(&tx, id)?;
     // `image_tags` and `posts` cascade off this row (`foreign_keys` is ON from
     // `db::open`), and the `images_fts_delete` trigger drops the search-index
     // entry. Reach past this statement and the index keeps matching an image
     // the library no longer has.
-    let deleted = library
-        .conn
-        .execute("DELETE FROM images WHERE id = ?1", [id])?;
+    let deleted = tx.execute("DELETE FROM images WHERE id = ?1", [id])?;
     if deleted == 0 {
         return Err(AppError::NotFound(format!("image {id}")));
     }
+    // Same transaction as the unlink (design D5): a `tags` row with no use is
+    // an autocomplete suggestion that matches nothing.
+    tags::collect_orphans(&tx, &tags)?;
+    tx.commit()?;
+
     remove_if_present(&thumbnail_path(&library.paths, id))
 }
 
@@ -287,6 +295,8 @@ mod tests {
                     query: Default::default(),
                     text: "kyoto".to_string(),
                     include_deleted: true,
+                    sort: Default::default(),
+                    group: Default::default(),
                     limit: 10,
                     offset: 0,
                 },
@@ -299,6 +309,29 @@ mod tests {
         drop_image_record(&library, "a").unwrap();
 
         assert_eq!(hits(&library), 0);
+    }
+
+    /// Design D5: the invariant is "a row in `tags` has at least one use", and
+    /// this is the second write that can break it — the cascade takes the links
+    /// without touching `tags`.
+    #[test]
+    fn dropping_a_record_collects_the_tags_it_was_the_last_use_of() {
+        let (_dir, library) = library();
+        store(&library, "a", ImageSource::Extension, &["cat", "solo"]);
+        store(&library, "b", ImageSource::Extension, &["cat"]);
+
+        drop_image_record(&library, "a").unwrap();
+
+        let mut stmt = library
+            .conn
+            .prepare("SELECT name FROM tags ORDER BY name")
+            .unwrap();
+        let names: Vec<String> = stmt
+            .query_map([], |row| row.get::<_, String>(0))
+            .unwrap()
+            .map(std::result::Result::unwrap)
+            .collect();
+        assert_eq!(names, vec!["cat".to_string()], "`solo` had no other use");
     }
 
     #[test]
