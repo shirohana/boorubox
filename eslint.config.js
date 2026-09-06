@@ -1,5 +1,6 @@
 import js from '@eslint/js'
 import stylistic from '@stylistic/eslint-plugin'
+import tailwindcss from 'eslint-plugin-better-tailwindcss'
 import tseslint from 'typescript-eslint'
 import svelte from 'eslint-plugin-svelte'
 import globals from 'globals'
@@ -54,6 +55,23 @@ export default tseslint.config(
       // @stylistic/indent only understands the script block.
       '@stylistic/indent': 'off',
       'svelte/indent': ['error', { indent: 2 }],
+    },
+  },
+  {
+    files: ['packages/app/**/*.{svelte,ts,js}'],
+    plugins: { 'better-tailwindcss': tailwindcss },
+    rules: {
+      ...tailwindcss.configs.recommended.rules,
+      'better-tailwindcss/no-unknown-classes': 'off',
+      'better-tailwindcss/enforce-consistent-line-wrapping': ['warn', {
+        printWidth: 100, indent: 2, preferSingleLine: true,
+      }],
+    },
+    settings: {
+      'better-tailwindcss': {
+        entryPoint: 'packages/app/src/app.css',
+        messageStyle: 'compact',
+      },
     },
   },
   {
