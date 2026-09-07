@@ -5,8 +5,8 @@
 import type { CaptureMeta } from '@boorubox/shared'
 
 import { captureImageBytes } from './capture.js'
-import { capturesEndpoint, getPort } from '../settings.js'
-import { postCapture } from '../delivery/client.js'
+import { capturesEndpoint, getPort, pendingEndpoint } from '../settings.js'
+import { announceCapture, postCapture, withdrawCapture } from '../delivery/client.js'
 import { beginDelivery, createEntry, type CaptureEntry } from '../delivery/state.js'
 import { makeThumbnail } from '../history/thumbnail.js'
 import { getBytes } from '../history/blobs.js'
@@ -36,21 +36,19 @@ export interface ClickedImage {
 /**
  * Capture the clicked image and hand it to the app.
  *
+ * The bytes are the slow part — a download off the site's own host — so the app
+ * is told the capture is coming before that starts, and only the page, a DOM
+ * read, comes first (design D5). The announcement is awaited: the app emits its
+ * pending event before answering, so an un-awaited one could be overtaken by a
+ * fast POST and leave a placeholder nothing settles.
+ *
  * Both routes failing is the one case that leaves no entry: there are no bytes
  * to keep, so there is nothing to retry and nothing to show (spec
  * `capture-delivery`, "Both routes fail").
  */
 export async function captureAndDeliver(clicked: ClickedImage): Promise<void> {
-  let blob: Blob
-  try {
-    blob = await captureImageBytes(clicked.tabId, clicked.imageUrl, clicked.pageUrl)
-  } catch (error) {
-    notify(`Could not capture that image: ${reasonOf(error)}`)
-    return
-  }
-
   const page = await askThePage(clicked)
-  const entry = createEntry({
+  const meta: CaptureMeta = {
     id: crypto.randomUUID(),
     imageUrl: clicked.imageUrl,
     pageUrl: clicked.pageUrl,
@@ -58,10 +56,28 @@ export async function captureAndDeliver(clicked: ClickedImage): Promise<void> {
     // `document.title`, and a site that never rewrites that on a route still
     // names the screen the user came from.
     pageTitle: page?.pageTitle || clicked.pageTitle,
+    // When the user clicked, not when the bytes landed — which is what the
+    // field has always meant and what the placeholder is ordered by.
     capturedAt: Date.now(),
+    ...(page?.record ? { adapter: page.record } : {}),
+  }
+  const port = await getPort()
+  await announceCapture(pendingEndpoint(port), meta)
+
+  let blob: Blob
+  try {
+    blob = await captureImageBytes(clicked.tabId, clicked.imageUrl, clicked.pageUrl)
+  } catch (error) {
+    const reason = reasonOf(error)
+    await withdrawCapture(pendingEndpoint(port, meta.id), reason)
+    notify(`Could not capture that image: ${reason}`)
+    return
+  }
+
+  const entry = createEntry({
+    ...meta,
     size: blob.size,
     thumbnail: await makeThumbnail(blob),
-    ...(page?.record ? { adapter: page.record } : {}),
   })
 
   await beginCapture(entry, blob)
@@ -71,7 +87,8 @@ export async function captureAndDeliver(clicked: ClickedImage): Promise<void> {
 /**
  * Post the bytes already kept, under the original id, and never ask the image
  * host again (design D5): the page may be closed, the URL may be single-use,
- * and the bytes on disk are what the user saw.
+ * and the bytes on disk are what the user saw. Nothing is announced either —
+ * the bytes are in hand, so the app hears the outcome within the request.
  */
 export async function retryCapture(id: string): Promise<void> {
   const entry = await readEntry(id)

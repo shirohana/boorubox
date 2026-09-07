@@ -8,10 +8,11 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 
 use crate::error::Result;
-use crate::http::{HttpState, error_response, reason, with_library};
+use crate::http::{CaptureEvent, HttpState, error_response, reason};
 use crate::ingest::{self, IngestInput, Ingested};
-use crate::library::SharedLibrary;
-use crate::model::{CaptureMeta, ImageSource};
+use crate::library::{SharedLibrary, with_library};
+use crate::model::{CaptureMeta, CaptureWithdrawn, ImageSource};
+use crate::thumbs;
 
 /// Design D15 pins these two names; the bridge extension sends exactly them, and
 /// any other name is a 400 rather than a capture that silently never arrives.
@@ -114,28 +115,44 @@ fn malformed(error: MultipartError) -> Refusal {
 /// request scheduled onto that worker waits on a lock that cannot be released:
 /// the whole listener stops, with nothing at the call site to show why.
 async fn store(state: HttpState, capture: Capture) -> Response {
+    let id = capture.meta.id.clone();
     let library = state.library.clone();
     match tokio::task::spawn_blocking(move || store_now(&library, &capture)).await {
         Ok(Ok(Ingested::Created(record))) => {
-            // Only a new row is announced. A re-post under a known id changed
+            // Only a new row is announced as stored. A re-post under a known id changed
             // nothing, and telling the webview otherwise would reload the grid
             // under the user for an image already in it.
-            (state.on_stored)(&record);
+            (state.on_event)(CaptureEvent::Stored(record.clone()));
             (StatusCode::CREATED, Json(record)).into_response()
         }
-        Ok(Ok(Ingested::Existing(record))) => (StatusCode::OK, Json(record)).into_response(),
-        Ok(Err(error)) => error_response(&error),
-        Err(panicked) => reason(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("storing the capture failed: {panicked}"),
-        ),
+        Ok(Ok(Ingested::Existing(record))) => {
+            withdraw(&state, id, None);
+            (StatusCode::OK, Json(record)).into_response()
+        }
+        Ok(Err(error)) => {
+            withdraw(&state, id, Some(error.to_string()));
+            error_response(&error)
+        }
+        Err(panicked) => {
+            let message = format!("storing the capture failed: {panicked}");
+            withdraw(&state, id, Some(message.clone()));
+            reason(StatusCode::INTERNAL_SERVER_ERROR, message)
+        }
     }
+}
+
+/// Settle the announcement the extension made before it had the bytes, on the
+/// same answer it is about to read (design D6). Without this the placeholder
+/// would hang until its timeout on every answer that is not a new row, and the
+/// extension would need a second request to clear it.
+fn withdraw(state: &HttpState, id: String, reason: Option<String>) {
+    (state.on_event)(CaptureEvent::Withdrawn(CaptureWithdrawn { id, reason }));
 }
 
 fn store_now(library: &SharedLibrary, capture: &Capture) -> Result<Ingested> {
     let meta = &capture.meta;
-    with_library(library, |library| {
-        ingest::store_image(
+    let (paths, ingested) = with_library(library, |library| {
+        let ingested = ingest::store_image(
             library,
             IngestInput {
                 id: &meta.id,
@@ -155,8 +172,16 @@ fn store_now(library: &SharedLibrary, capture: &Capture) -> Result<Ingested> {
                 tags: &[],
                 captured_at: meta.captured_at,
             },
-        )
-    })
+        )?;
+        Ok((library.paths.clone(), ingested))
+    })?;
+
+    // Outside the lock: the encode is the largest part of the hold, and the
+    // window is scrolling a grid served by the same connection (design D13).
+    if let Ingested::Created(record) = &ingested {
+        thumbs::warm_thumbnail(&paths, record);
+    }
+    Ok(ingested)
 }
 
 #[cfg(test)]
@@ -164,6 +189,7 @@ mod tests {
     use axum::http::StatusCode;
 
     use crate::http::test_support::*;
+    use crate::model::CaptureWithdrawn;
 
     #[tokio::test]
     async fn a_new_capture_is_stored_and_returned() {
@@ -186,6 +212,25 @@ mod tests {
         assert_eq!(body["pageTitle"], "a page");
         assert!(stored_file_exists(&state, "id-1", "png"));
         assert_eq!(image_count(&state), 1);
+    }
+
+    /// The guarantee used to sit inside `ingest::store_image`; it moved out to
+    /// keep the encode off the library lock (design D13), so it is pinned here,
+    /// where the capture path now does it.
+    #[tokio::test]
+    async fn a_stored_capture_is_thumbnailed_before_the_answer() {
+        let (_dir, state) = open_state();
+        let png = png_bytes(400, 300);
+        let meta = meta_json("id-1");
+
+        let (status, _) = send(
+            &state,
+            capture_request(Some(EXTENSION_ORIGIN), &[file_part(&png), meta_part(&meta)]),
+        )
+        .await;
+
+        assert_eq!(status, StatusCode::CREATED);
+        assert!(thumbnail_exists(&state, "id-1"));
     }
 
     fn meta_with_adapter(id: &str, adapter: serde_json::Value) -> String {
@@ -285,24 +330,33 @@ mod tests {
 
     #[tokio::test]
     async fn a_stored_capture_is_announced_once_and_a_re_post_is_not() {
-        let (_dir, state, stored) = open_state_recording();
+        let (_dir, state, events) = open_state_recording();
         let png = png_bytes(4, 7);
         let meta = meta_json("id-1");
         let request =
             || capture_request(Some(EXTENSION_ORIGIN), &[file_part(&png), meta_part(&meta)]);
 
         send(&state, request()).await;
-        assert_eq!(stored.lock().unwrap().as_slice(), ["id-1"]);
+        assert_eq!(events.stored_ids(), ["id-1"]);
+        assert!(events.withdrawals().is_empty());
 
-        // The retry of a delivery the app already accepted. Nothing changed, so
-        // nothing is announced and the grid stays where the user left it.
+        // The retry of a delivery the app already accepted. Nothing was stored,
+        // so the grid stays where the user left it — and the announcement that
+        // came with the retry is settled as withdrawn.
         send(&state, request()).await;
-        assert_eq!(stored.lock().unwrap().as_slice(), ["id-1"]);
+        assert_eq!(events.stored_ids(), ["id-1"]);
+        assert_eq!(
+            events.withdrawals(),
+            [CaptureWithdrawn {
+                id: "id-1".to_string(),
+                reason: None,
+            }],
+        );
     }
 
     #[tokio::test]
     async fn a_refused_capture_is_never_announced() {
-        let (_dir, state, stored) = open_state_recording();
+        let (_dir, state, events) = open_state_recording();
 
         send(
             &state,
@@ -310,7 +364,51 @@ mod tests {
         )
         .await;
 
-        assert!(stored.lock().unwrap().is_empty());
+        assert!(events.stored_ids().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_refusal_the_id_could_be_read_from_withdraws_it_with_the_reason() {
+        let (_dir, state, events) = open_state_recording();
+
+        let (status, body) = send(
+            &state,
+            capture_request(
+                Some(EXTENSION_ORIGIN),
+                &[
+                    file_part(b"not an image at all"),
+                    meta_part(&meta_json("id-1")),
+                ],
+            ),
+        )
+        .await;
+
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+        assert!(events.stored_ids().is_empty());
+        // The same words the extension is about to read, so the app and the
+        // popup entry never name two different failures.
+        assert_eq!(
+            events.withdrawals(),
+            [CaptureWithdrawn {
+                id: "id-1".to_string(),
+                reason: Some(body["error"].as_str().unwrap().to_string()),
+            }],
+        );
+    }
+
+    #[tokio::test]
+    async fn a_request_refused_before_its_id_was_read_settles_nothing() {
+        let (_dir, state, events) = open_state_recording();
+        let png = png_bytes(4, 7);
+
+        let (status, _) = send(
+            &state,
+            capture_request(Some(EXTENSION_ORIGIN), &[file_part(&png)]),
+        )
+        .await;
+
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(events.all().is_empty(), "there is no id to settle");
     }
 
     #[tokio::test]

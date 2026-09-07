@@ -17,6 +17,14 @@ const META_FIELD = 'meta'
  */
 export const REQUEST_TIMEOUT_MS = 30_000
 
+/**
+ * The announcement is a placeholder, not the capture. Its own bound, far under
+ * the delivery timeout: the capture must not wait seconds on a relay whose
+ * whole point is that the first visible change happens on the click (design
+ * D5).
+ */
+export const ANNOUNCE_TIMEOUT_MS = 2_000
+
 export type DeliveryOutcome
   = | { delivered: true }
     | { delivered: false, reason: string }
@@ -53,6 +61,39 @@ export async function postCapture(
     return { delivered: true }
   }
   return { delivered: false, reason: await refusalReason(response) }
+}
+
+/**
+ * Tell the app a capture is coming, before there are any bytes to send it. The
+ * body is the `meta` the capture will be posted with, so the placeholder names
+ * the same page the image will.
+ */
+export async function announceCapture(endpoint: string, meta: CaptureMeta): Promise<void> {
+  await tellTheApp(endpoint, 'POST', meta)
+}
+
+/** The announced capture will not arrive, and its placeholder should go. */
+export async function withdrawCapture(endpoint: string, reason: string): Promise<void> {
+  await tellTheApp(endpoint, 'DELETE', { reason })
+}
+
+/**
+ * Both relays are told, not asked: the app not running is the ordinary failure
+ * here, and the capture path already reports that when the POST fails. Nothing
+ * here may throw into the capture, and nothing here has an answer worth reading
+ * (design D5).
+ */
+async function tellTheApp(endpoint: string, method: string, body: unknown): Promise<void> {
+  try {
+    await fetch(endpoint, {
+      method,
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(ANNOUNCE_TIMEOUT_MS),
+    })
+  } catch {
+    // An app that cannot take the announcement will fail the capture too.
+  }
 }
 
 export type ConnectionState

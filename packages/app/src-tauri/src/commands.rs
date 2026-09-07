@@ -13,7 +13,7 @@ use tauri_plugin_dialog::DialogExt;
 use tauri_plugin_opener::OpenerExt;
 
 use crate::error::{AppError, Result};
-use crate::library::{self, Library};
+use crate::library::{self, Library, SharedLibrary, with_library, with_library_if_open};
 use crate::model::{
     AppSettings, GRID_TILE_MAX, GRID_TILE_MIN, ImageCounts, ImportReport, LibraryStatus,
     ListenerStatus, RecentLibrary, SearchRequest, SearchResult, Theme,
@@ -32,6 +32,53 @@ const IMPORT_PROGRESS_EVENT: &str = "import:progress";
 /// from the browser stays invisible until something else reloads the grid.
 pub const CAPTURE_STORED_EVENT: &str = "capture:stored";
 
+/// A capture the extension says is coming, relayed with the `CaptureMeta` it
+/// announced. The library screen puts a placeholder up on this and takes it
+/// down on one of the two below, so all three names are one contract with
+/// `lib/api/events.ts`.
+pub const CAPTURE_PENDING_EVENT: &str = "capture:pending";
+
+/// An announced capture that will not arrive, stored or refused. Every answer
+/// to `POST /captures` settles the announcement (design D6); without this the
+/// placeholder would hang until its timeout.
+pub const CAPTURE_WITHDRAWN_EVENT: &str = "capture:withdrawn";
+
+/// Run `work` against the shared library on a blocking thread.
+///
+/// Tauri runs a synchronous command on the app's main thread, and on macOS that
+/// thread is also the window's run loop: a command that takes the library mutex
+/// there stops the window scrolling and repainting for as long as a capture or
+/// an import holds it (design D13). Every command that reads or writes through
+/// the open library goes through here, so none of them can put that back.
+///
+/// The two that swap the library itself — `open_library` and `close_library`,
+/// through `open_into_state` — still take the mutex where they stand: they are
+/// a deliberate move between libraries rather than work on the open one, and
+/// with the import locking per file the wait is one image at most.
+///
+/// `work` is a plain blocking closure, and the library is reached through its
+/// `Arc` rather than through `State`: it outlives this call's borrow of the
+/// managed state, and nothing holding a `std::sync::Mutex` may `.await` (see
+/// `http::captures::store`).
+async fn off_main_thread<T: Send + 'static>(
+    library: &SharedLibrary,
+    work: impl FnOnce(&SharedLibrary) -> Result<T> + Send + 'static,
+) -> Result<T> {
+    let library = library.clone();
+    tauri::async_runtime::spawn_blocking(move || work(&library))
+        .await
+        .map_err(from_tauri)?
+}
+
+/// `off_main_thread` for the commands that need a library open, and hold it for
+/// exactly the one piece of work they do.
+async fn with_library_off_main_thread<T: Send + 'static>(
+    library: &SharedLibrary,
+    work: impl FnOnce(&Library) -> Result<T> + Send + 'static,
+) -> Result<T> {
+    off_main_thread(library, |library| with_library(library, work)).await
+}
+
 /// Ask for a folder and open it. Cancelling returns the status unchanged.
 #[tauri::command]
 pub async fn pick_library<R: Runtime>(
@@ -42,23 +89,23 @@ pub async fn pick_library<R: Runtime>(
     // blocking pickers wait on the thread that owns the UI, which is the thread
     // that would have to show the dialog.
     match pick_folder(&app).await {
-        Some(path) => open_and_remember(&app, &state, &path),
-        None => status(&state),
+        Some(path) => open_and_remember(&app, &state, &path).await,
+        None => status(&state).await,
     }
 }
 
 #[tauri::command]
-pub fn open_library<R: Runtime>(
+pub async fn open_library<R: Runtime>(
     path: String,
     app: AppHandle<R>,
     state: State<'_, AppState>,
 ) -> Result<LibraryStatus> {
-    open_and_remember(&app, &state, Path::new(&path))
+    open_and_remember(&app, &state, Path::new(&path)).await
 }
 
 #[tauri::command]
-pub fn library_status(state: State<'_, AppState>) -> Result<LibraryStatus> {
-    status(&state)
+pub async fn library_status(state: State<'_, AppState>) -> Result<LibraryStatus> {
+    status(&state).await
 }
 
 /// Close the open library and forget the remembered path, so the next launch
@@ -66,7 +113,7 @@ pub fn library_status(state: State<'_, AppState>) -> Result<LibraryStatus> {
 /// is what `status` would derive from a path with no library open (design D3).
 /// The folder is not forgotten: it is the first entry of the recent list.
 #[tauri::command]
-pub fn close_library<R: Runtime>(
+pub async fn close_library<R: Runtime>(
     app: AppHandle<R>,
     state: State<'_, AppState>,
 ) -> Result<LibraryStatus> {
@@ -74,7 +121,7 @@ pub fn close_library<R: Runtime>(
     // one on that database (§7).
     *lock(&state.library) = None;
     write_settings(&app, &state, |settings| settings.library_path = None)?;
-    status(&state)
+    status(&state).await
 }
 
 /// The start screen's list. Availability is read here rather than at startup:
@@ -140,8 +187,13 @@ pub async fn rebind_listener<R: Runtime>(
 /// Show the open library's folder in the file manager, so it can be backed up
 /// or copied (docs/requirements.md §6).
 #[tauri::command]
-pub fn reveal_library<R: Runtime>(app: AppHandle<R>, state: State<'_, AppState>) -> Result<()> {
-    let root = http::with_library(&state.library, |library| Ok(library.root.clone()))?;
+pub async fn reveal_library<R: Runtime>(
+    app: AppHandle<R>,
+    state: State<'_, AppState>,
+) -> Result<()> {
+    let root =
+        with_library_off_main_thread(&state.library, |library| Ok(library.paths.root.clone()))
+            .await?;
     app.opener().reveal_item_in_dir(root).map_err(from_tauri)
 }
 
@@ -206,8 +258,8 @@ fn write_settings<R: Runtime>(
 }
 
 #[tauri::command]
-pub fn search(req: SearchRequest, state: State<'_, AppState>) -> Result<SearchResult> {
-    http::with_library(&state.library, |library| {
+pub async fn search(req: SearchRequest, state: State<'_, AppState>) -> Result<SearchResult> {
+    with_library_off_main_thread(&state.library, move |library| {
         let page = query::search(&library.conn, &req)?;
         let ids: Vec<String> = page.images.iter().map(|image| image.id.clone()).collect();
         // The page, never the library: this stats one file per id, and a
@@ -222,31 +274,40 @@ pub fn search(req: SearchRequest, state: State<'_, AppState>) -> Result<SearchRe
             total: page.total,
         })
     })
+    .await
 }
 
 #[tauri::command]
-pub fn image_counts(state: State<'_, AppState>) -> Result<ImageCounts> {
-    http::with_library(&state.library, maintenance::image_counts)
+pub async fn image_counts(state: State<'_, AppState>) -> Result<ImageCounts> {
+    with_library_off_main_thread(&state.library, maintenance::image_counts).await
 }
 
 #[tauri::command]
-pub fn drop_image_record(id: String, state: State<'_, AppState>) -> Result<LibraryStatus> {
-    http::with_library(&state.library, |library| {
+pub async fn drop_image_record(id: String, state: State<'_, AppState>) -> Result<LibraryStatus> {
+    with_library_off_main_thread(&state.library, move |library| {
         maintenance::drop_image_record(library, &id)
-    })?;
-    status(&state)
+    })
+    .await?;
+    status(&state).await
 }
 
 /// Absolute path; the thumbnail is generated if it is not there yet.
 #[tauri::command]
-pub fn thumbnail_path(id: String, state: State<'_, AppState>) -> Result<String> {
-    http::with_library(&state.library, |library| {
-        let record = ingest::load_record(&library.conn, &id)?
-            .ok_or_else(|| AppError::NotFound(format!("image {id}")))?;
-        Ok(thumbs::ensure_thumbnail(library, &record)?
+pub async fn thumbnail_path(id: String, state: State<'_, AppState>) -> Result<String> {
+    off_main_thread(&state.library, move |library| {
+        // Only reading the record needs the library. Generating the thumbnail
+        // is a read, a decode, a downscale and an encode of the full image, and
+        // the grid asks for one per tile as it scrolls (design D13).
+        let (paths, record) = with_library(library, |library| {
+            let record = ingest::load_record(&library.conn, &id)?
+                .ok_or_else(|| AppError::NotFound(format!("image {id}")))?;
+            Ok((library.paths.clone(), record))
+        })?;
+        Ok(thumbs::ensure_thumbnail(&paths, &record)?
             .display()
             .to_string())
     })
+    .await
 }
 
 /// Emits `import:progress` while it runs.
@@ -257,24 +318,17 @@ pub async fn import_paths<R: Runtime>(
     state: State<'_, AppState>,
 ) -> Result<ImportReport> {
     let paths: Vec<PathBuf> = paths.into_iter().map(PathBuf::from).collect();
-    // The library is reached through its `Arc`, not through `State`: the closure
-    // below outlives this call's borrow of the managed state.
-    let library = state.library.clone();
-
-    // `import::import_paths` decodes and copies every file it is given, one at a
-    // time behind the library mutex. Off the async runtime's worker threads, or
-    // a dropped folder freezes the window it is reporting progress to.
-    tauri::async_runtime::spawn_blocking(move || {
-        http::with_library(&library, |library| {
-            import::import_paths(library, &paths, &mut |progress| {
-                // A dropped tick is a progress bar that skips a number; the
-                // import itself is unaffected, so it is not worth failing over.
-                let _ = app.emit(IMPORT_PROGRESS_EVENT, progress);
-            })
+    off_main_thread(&state.library, move |library| {
+        // The whole run is one blocking call, but it takes the library one file
+        // at a time (design D13), so a search or a thumbnail asked for while it
+        // goes is answered between two files rather than after the last.
+        import::import_paths(library, &paths, &mut |progress| {
+            // A dropped tick is a progress bar that skips a number; the import
+            // itself is unaffected, so it is not worth failing over.
+            let _ = app.emit(IMPORT_PROGRESS_EVENT, progress);
         })
     })
     .await
-    .map_err(from_tauri)?
 }
 
 /// Open `path`, remember it, and let the webview read images out of it.
@@ -282,7 +336,7 @@ pub async fn import_paths<R: Runtime>(
 /// The path is stored only once the folder has actually opened: `status` reads a
 /// remembered path with no open library as `missing_path`, so storing it earlier
 /// would name a perfectly good folder as missing.
-fn open_and_remember<R: Runtime>(
+async fn open_and_remember<R: Runtime>(
     app: &AppHandle<R>,
     state: &AppState,
     path: &Path,
@@ -292,7 +346,7 @@ fn open_and_remember<R: Runtime>(
         settings.library_path = Some(path.to_path_buf());
         settings.remember_recent(path);
     })?;
-    status(state)
+    status(state).await
 }
 
 /// Whether opening a library folder may bring one into being.
@@ -337,7 +391,7 @@ pub fn open_into_state<R: Runtime>(
 /// alone also keeps `library.sqlite` and `inbox/` out of the webview's reach.
 fn grant_asset_scope<R: Runtime>(app: &AppHandle<R>, library: &Library) -> Result<()> {
     let scope = app.asset_protocol_scope();
-    for directory in [library.images_dir(), library.thumbs_dir()] {
+    for directory in [library.paths.images_dir(), library.paths.thumbs_dir()] {
         scope
             .allow_directory(&directory, true)
             .map_err(from_tauri)?;
@@ -345,23 +399,39 @@ fn grant_asset_scope<R: Runtime>(app: &AppHandle<R>, library: &Library) -> Resul
     Ok(())
 }
 
-fn status(state: &AppState) -> Result<LibraryStatus> {
-    let library = lock(&state.library);
-    let open = library.as_ref();
+/// What `LibraryStatus` reports about a library that is open. Read on a
+/// blocking thread with the count beside it, so a status poll during a capture
+/// never parks the main thread on the mutex (design D13).
+struct OpenLibrary {
+    path: String,
+    image_count: i64,
+}
+
+async fn status(state: &AppState) -> Result<LibraryStatus> {
+    let open = off_main_thread(&state.library, |library| {
+        with_library_if_open(library, |open| match open {
+            Some(library) => Ok(Some(OpenLibrary {
+                path: library.paths.root.display().to_string(),
+                image_count: library.image_count()?,
+            })),
+            None => Ok(None),
+        })
+    })
+    .await?;
     let remembered = lock(&state.settings).library_path.clone();
 
     Ok(LibraryStatus {
         opened: open.is_some(),
-        library_path: open.map(|library| library.root.display().to_string()),
+        library_path: open.as_ref().map(|library| library.path.clone()),
         // Derived, not stored: a remembered path with no library open is exactly
         // the path that would not open, which the spec keeps until the user
         // picks another. A second field would have to be cleared by hand
         // wherever a library opens, and one day would not be.
-        missing_path: match open {
+        missing_path: match &open {
             Some(_) => None,
             None => remembered.map(|path| path.display().to_string()),
         },
-        image_count: open.map_or(Ok(0), Library::image_count)?,
+        image_count: open.map_or(0, |library| library.image_count),
         listener: lock(&state.listener).clone(),
         version: VERSION.to_string(),
     })
@@ -381,6 +451,10 @@ async fn pick_folder<R: Runtime>(app: &AppHandle<R>) -> Option<PathBuf> {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::time::Duration;
+
     use tauri::Listener;
     use tauri::test::MockRuntime;
 
@@ -401,17 +475,35 @@ mod tests {
         }
     }
 
+    /// Drive a command to completion. They are `async` so that none of them
+    /// waits for the library on the app's main thread (design D13); a test has
+    /// no run loop to keep free, so it simply blocks here.
+    fn now<T>(command: impl std::future::Future<Output = T>) -> T {
+        tauri::async_runtime::block_on(command)
+    }
+
+    fn open(app: &App, path: &Path) -> Result<LibraryStatus> {
+        now(open_library(
+            path.display().to_string(),
+            app.handle().clone(),
+            app.state(),
+        ))
+    }
+
+    fn status_of(app: &App) -> LibraryStatus {
+        now(library_status(app.state())).unwrap()
+    }
+
+    fn search_all(app: &App) -> SearchResult {
+        now(search(everything(), app.state())).unwrap()
+    }
+
     /// An app with a library open in a temp folder. The `TempDir` comes back
     /// with it: dropping it deletes the library.
     fn app_with_library() -> (tempfile::TempDir, App) {
         let dir = tempfile::tempdir().unwrap();
         let app = mock_app();
-        open_library(
-            dir.path().display().to_string(),
-            app.handle().clone(),
-            app.state(),
-        )
-        .unwrap();
+        open(&app, dir.path()).unwrap();
         (dir, app)
     }
 
@@ -425,7 +517,7 @@ mod tests {
     }
 
     fn import(app: &App, dir: &tempfile::TempDir) -> ImportReport {
-        tauri::async_runtime::block_on(import_paths(
+        now(import_paths(
             vec![dir.path().display().to_string()],
             app.handle().clone(),
             app.state(),
@@ -434,8 +526,7 @@ mod tests {
     }
 
     fn ids_in_library(app: &App) -> Vec<String> {
-        search(everything(), app.state())
-            .unwrap()
+        search_all(app)
             .images
             .into_iter()
             .map(|image| image.id)
@@ -447,12 +538,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let app = mock_app();
 
-        let status = open_library(
-            dir.path().display().to_string(),
-            app.handle().clone(),
-            app.state(),
-        )
-        .unwrap();
+        let status = open(&app, dir.path()).unwrap();
 
         assert!(status.opened);
         assert_eq!(status.library_path, Some(dir.path().display().to_string()));
@@ -466,7 +552,7 @@ mod tests {
     fn library_status_without_a_library_offers_no_path() {
         let app = mock_app();
 
-        let status = library_status(app.state()).unwrap();
+        let status = status_of(&app);
 
         assert!(!status.opened);
         assert_eq!(status.library_path, None);
@@ -479,7 +565,7 @@ mod tests {
         let gone = PathBuf::from("/nonexistent/boorubox/library");
         lock(&app.state::<AppState>().settings).library_path = Some(gone.clone());
 
-        let status = library_status(app.state()).unwrap();
+        let status = status_of(&app);
 
         assert!(!status.opened);
         assert_eq!(status.missing_path, Some(gone.display().to_string()));
@@ -492,12 +578,7 @@ mod tests {
         lock(&app.state::<AppState>().settings).library_path =
             Some(PathBuf::from("/nonexistent/boorubox/library"));
 
-        let status = open_library(
-            dir.path().display().to_string(),
-            app.handle().clone(),
-            app.state(),
-        )
-        .unwrap();
+        let status = open(&app, dir.path()).unwrap();
 
         assert_eq!(status.missing_path, None);
         assert_eq!(status.library_path, Some(dir.path().display().to_string()));
@@ -547,12 +628,7 @@ mod tests {
         let app = mock_app();
 
         for dir in [&first, &second] {
-            open_library(
-                dir.path().display().to_string(),
-                app.handle().clone(),
-                app.state(),
-            )
-            .unwrap();
+            open(&app, dir.path()).unwrap();
         }
 
         let recent = recent_libraries(app.state());
@@ -575,7 +651,7 @@ mod tests {
     fn closing_a_library_leaves_nothing_open_and_nothing_missing() {
         let (dir, app) = app_with_library();
 
-        let status = close_library(app.handle().clone(), app.state()).unwrap();
+        let status = now(close_library(app.handle().clone(), app.state())).unwrap();
 
         assert!(!status.opened);
         assert_eq!(status.library_path, None);
@@ -597,12 +673,7 @@ mod tests {
         let gone = parent.path().join("moved-away");
         std::fs::create_dir(&gone).unwrap();
         let app = mock_app();
-        open_library(
-            gone.display().to_string(),
-            app.handle().clone(),
-            app.state(),
-        )
-        .unwrap();
+        open(&app, &gone).unwrap();
         std::fs::remove_dir_all(&gone).unwrap();
 
         let recent = recent_libraries(app.state());
@@ -640,14 +711,9 @@ mod tests {
         let blocked = dir.path().join("a-file");
         std::fs::write(&blocked, b"not a folder").unwrap();
 
-        let error = open_library(
-            blocked.join("library").display().to_string(),
-            app.handle().clone(),
-            app.state(),
-        )
-        .unwrap_err();
+        let error = open(&app, &blocked.join("library")).unwrap_err();
 
-        let status = library_status(app.state()).unwrap();
+        let status = status_of(&app);
         assert!(status.opened, "the working library must survive: {error:?}");
         assert_eq!(status.library_path, Some(dir.path().display().to_string()));
         assert_eq!(recent_libraries(app.state()).len(), 1);
@@ -659,14 +725,13 @@ mod tests {
     fn revealing_the_library_folder_needs_one_to_be_open() {
         let app = mock_app();
 
-        let error = reveal_library(app.handle().clone(), app.state()).unwrap_err();
+        let error = now(reveal_library(app.handle().clone(), app.state())).unwrap_err();
 
         assert!(matches!(error, AppError::NoLibrary), "{error:?}");
     }
 
     fn set_port(app: &App, port: u16) -> ListenerStatus {
-        tauri::async_runtime::block_on(set_listener_port(port, app.handle().clone(), app.state()))
-            .unwrap()
+        now(set_listener_port(port, app.handle().clone(), app.state())).unwrap()
     }
 
     /// The `capture-ingest` scenario "Port changed to a free one". The old port
@@ -690,7 +755,7 @@ mod tests {
             "the new port must serve the open library",
         );
         assert!(nothing_answers_on(was), "the old port must be released");
-        assert_eq!(library_status(app.state()).unwrap().listener.port, now);
+        assert_eq!(status_of(&app).listener.port, now);
     }
 
     /// The `capture-ingest` scenario "Port changed to one already in use": the
@@ -712,7 +777,7 @@ mod tests {
         );
         assert_eq!(settings::load(app.handle()).port, port);
         assert!(
-            library_status(app.state()).unwrap().opened,
+            status_of(&app).opened,
             "a listener that will not bind must not take the app down",
         );
     }
@@ -746,13 +811,13 @@ mod tests {
         let (_library, app) = app_with_library();
         import(&app, &folder_of_images(3));
 
-        let result = search(
+        let result = now(search(
             SearchRequest {
                 limit: 2,
                 ..everything()
             },
             app.state(),
-        )
+        ))
         .unwrap();
 
         assert_eq!(result.total, 3);
@@ -766,7 +831,7 @@ mod tests {
         let id = ids_in_library(&app).remove(0);
         std::fs::remove_file(library.path().join("images").join(format!("{id}.png"))).unwrap();
 
-        let result = search(everything(), app.state()).unwrap();
+        let result = search_all(&app);
 
         assert!(
             result.images[0].missing,
@@ -779,7 +844,7 @@ mod tests {
         let (_library, app) = app_with_library();
         import(&app, &folder_of_images(2));
 
-        let counts = image_counts(app.state()).unwrap();
+        let counts = now(image_counts(app.state())).unwrap();
 
         assert_eq!(counts.total, 2);
         assert_eq!(counts.local, 2);
@@ -792,7 +857,7 @@ mod tests {
         import(&app, &folder_of_images(2));
         let id = ids_in_library(&app).remove(0);
 
-        let status = drop_image_record(id, app.state()).unwrap();
+        let status = now(drop_image_record(id, app.state())).unwrap();
 
         assert_eq!(status.image_count, 1);
         assert!(status.opened);
@@ -803,10 +868,10 @@ mod tests {
         let (_library, app) = app_with_library();
         import(&app, &folder_of_images(1));
         let id = ids_in_library(&app).remove(0);
-        let path = PathBuf::from(thumbnail_path(id.clone(), app.state()).unwrap());
+        let path = PathBuf::from(now(thumbnail_path(id.clone(), app.state())).unwrap());
         std::fs::remove_file(&path).unwrap();
 
-        let again = thumbnail_path(id, app.state()).unwrap();
+        let again = now(thumbnail_path(id, app.state())).unwrap();
 
         assert_eq!(PathBuf::from(&again), path);
         assert!(path.is_file());
@@ -816,7 +881,7 @@ mod tests {
     fn a_thumbnail_for_an_unknown_image_is_not_found() {
         let (_library, app) = app_with_library();
 
-        let error = thumbnail_path("no-such-id".to_string(), app.state()).unwrap_err();
+        let error = now(thumbnail_path("no-such-id".to_string(), app.state())).unwrap_err();
 
         assert!(matches!(error, AppError::NotFound(_)), "{error:?}");
     }
@@ -825,7 +890,7 @@ mod tests {
     fn commands_needing_a_library_say_so_before_one_is_open() {
         let app = mock_app();
 
-        let error = search(everything(), app.state()).unwrap_err();
+        let error = now(search(everything(), app.state())).unwrap_err();
 
         assert!(matches!(error, AppError::NoLibrary), "{error:?}");
     }
@@ -895,8 +960,46 @@ mod tests {
         assert!(result.is_err(), "a library that is not there must not open");
         assert!(!gone.exists(), "and must not be conjured up at that path");
 
-        let status = library_status(app.state()).unwrap();
+        let status = status_of(&app);
         assert!(!status.opened);
         assert_eq!(status.missing_path, Some(gone.display().to_string()));
+    }
+
+    /// Design D13. No unit test can see the app's main thread being free — the
+    /// mock runtime has no run loop — so what is pinned is the other half: the
+    /// command really does wait for the mutex, and answers once it is released
+    /// rather than failing or racing past it. The freedom of the main thread
+    /// follows from the wait happening on a blocking thread, which the shape of
+    /// `off_main_thread` is what guarantees.
+    #[test]
+    fn a_search_answers_after_the_thread_holding_the_library_lets_go() {
+        let (_library, app) = app_with_library();
+        import(&app, &folder_of_images(1));
+        let library = app.state::<AppState>().library.clone();
+        let released = Arc::new(AtomicBool::new(false));
+
+        let (locked, is_locked) = std::sync::mpsc::channel();
+        let holder = {
+            let released = released.clone();
+            std::thread::spawn(move || {
+                with_library(&library, |_| {
+                    locked.send(()).unwrap();
+                    std::thread::sleep(Duration::from_millis(300));
+                    released.store(true, Ordering::SeqCst);
+                    Ok(())
+                })
+                .unwrap();
+            })
+        };
+        is_locked.recv().unwrap();
+
+        let result = search_all(&app);
+
+        assert!(
+            released.load(Ordering::SeqCst),
+            "the search answered out of a library another thread was holding",
+        );
+        assert_eq!(result.total, 1);
+        holder.join().unwrap();
     }
 }

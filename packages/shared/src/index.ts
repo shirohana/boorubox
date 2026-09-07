@@ -41,7 +41,13 @@ export interface SiteAdapterRecord {
   fields: Record<string, string | string[]>
 }
 
-/** The JSON part of a `POST /captures` multipart body. */
+/**
+ * The JSON part of a `POST /captures` multipart body, and the whole body of
+ * `POST /captures/pending`, where the extension announces the capture it is
+ * about to fetch bytes for (design D2). One shape for both: an announcement
+ * that could not be sent as the later `meta` would be a second type to mirror
+ * and a placeholder that names a different page than the image it becomes.
+ */
 export interface CaptureMeta {
   /** Caller-generated UUID. Delivery is idempotent on it. */
   id: string
@@ -51,6 +57,16 @@ export interface CaptureMeta {
   /** Epoch milliseconds. */
   capturedAt: number
   adapter?: SiteAdapterRecord
+}
+
+/**
+ * Body of `DELETE /captures/pending/{id}` and payload of `capture:withdrawn`:
+ * the announced capture will not arrive, so its placeholder goes.
+ */
+export interface CaptureWithdrawn {
+  id: string
+  /** Why, when the app or the extension knows; absent when nothing named one. */
+  reason?: string
 }
 
 /** Body of `GET /status` when a library is open. */

@@ -61,11 +61,21 @@ impl AppState {
         http::HttpState {
             library: self.library.clone(),
             version: VERSION.to_string(),
-            on_stored: Arc::new(move |record| {
+            on_event: Arc::new(move |event| {
                 // A dropped event is a grid that waits for the user's next
                 // action; the image is stored either way, so it is not worth
                 // failing the delivery the extension is still waiting on.
-                let _ = app.emit(commands::CAPTURE_STORED_EVENT, record);
+                let _ = match event {
+                    http::CaptureEvent::Pending(meta) => {
+                        app.emit(commands::CAPTURE_PENDING_EVENT, meta)
+                    }
+                    http::CaptureEvent::Withdrawn(withdrawn) => {
+                        app.emit(commands::CAPTURE_WITHDRAWN_EVENT, withdrawn)
+                    }
+                    http::CaptureEvent::Stored(record) => {
+                        app.emit(commands::CAPTURE_STORED_EVENT, record)
+                    }
+                };
             }),
         }
     }

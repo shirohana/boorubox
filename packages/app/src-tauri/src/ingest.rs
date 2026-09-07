@@ -62,31 +62,29 @@ struct Decoded {
     mime: &'static str,
 }
 
+/// Store `input` and return as soon as its row exists.
+///
+/// The thumbnail is deliberately not generated here: this whole function runs
+/// with the library mutex held, and the encode is the largest piece of that
+/// hold (design D13). Every caller calls `thumbs::warm_thumbnail` on the record
+/// once it has let the library go — a new caller that forgets leaves images
+/// whose thumbnail is only built the first time the grid asks for one.
 pub fn store_image(library: &Library, input: IngestInput) -> Result<Ingested> {
     if let Some(existing) = load_record(&library.conn, input.id)? {
         return Ok(Ingested::Existing(existing));
     }
 
     let decoded = decode(input.bytes)?;
-    let path = library.image_path(input.id, decoded.ext);
+    let path = library.paths.image_path(input.id, decoded.ext);
     write_through_inbox(library, input.id, input.bytes, &path)?;
 
-    let ingested = match insert_rows(library, &input, &decoded) {
-        Ok(ingested) => ingested,
+    match insert_rows(library, &input, &decoded) {
+        Ok(ingested) => Ok(ingested),
         Err(error) => {
             let _ = std::fs::remove_file(&path);
-            return Err(error);
+            Err(error)
         }
-    };
-
-    if let Ingested::Created(record) = &ingested {
-        // A thumbnail is a derived cache that `.thumbs/` can lose at any time
-        // (design D7), so it is regenerated on demand. Failing the ingest here
-        // would instead throw away an image the caller already handed us and
-        // cannot re-send — the capture is gone from the page by then.
-        let _ = crate::thumbs::ensure_thumbnail(library, record);
     }
-    Ok(ingested)
 }
 
 /// Undecodable bytes are an error before anything is written, so a rejected
@@ -106,7 +104,7 @@ fn decode(bytes: &[u8]) -> Result<Decoded> {
 /// `.part`, which `Library::open_or_create` sweeps; a crash after it leaves a
 /// file with no row, which the missing/orphan pass can see.
 fn write_through_inbox(library: &Library, id: &str, bytes: &[u8], dest: &Path) -> Result<()> {
-    let part = library.part_path(id);
+    let part = library.paths.part_path(id);
     let write = || -> Result<()> {
         let mut file = File::create(&part)?;
         file.write_all(bytes)?;
@@ -322,8 +320,8 @@ mod tests {
             record.tags,
             vec!["1girl".to_string(), "blue_sky".to_string()]
         );
-        assert!(library.image_path("id-1", "png").is_file());
-        assert_eq!(entry_count(&library.inbox_dir()), 0);
+        assert!(library.paths.image_path("id-1", "png").is_file());
+        assert_eq!(entry_count(&library.paths.inbox_dir()), 0);
         assert_eq!(library.image_count().unwrap(), 1);
     }
 
@@ -343,7 +341,7 @@ mod tests {
             4,
             "the retry must not replace the stored image"
         );
-        assert_eq!(entry_count(&library.images_dir()), 1);
+        assert_eq!(entry_count(&library.paths.images_dir()), 1);
         assert_eq!(library.image_count().unwrap(), 1);
     }
 
@@ -359,8 +357,8 @@ mod tests {
             matches!(error, AppError::Decode(_)),
             "unexpected error: {error}"
         );
-        assert_eq!(entry_count(&library.images_dir()), 0);
-        assert_eq!(entry_count(&library.inbox_dir()), 0);
+        assert_eq!(entry_count(&library.paths.images_dir()), 0);
+        assert_eq!(entry_count(&library.paths.inbox_dir()), 0);
         assert_eq!(library.image_count().unwrap(), 0);
     }
 

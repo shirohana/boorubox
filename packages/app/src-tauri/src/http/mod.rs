@@ -3,32 +3,50 @@
 
 pub mod captures;
 pub mod origin;
+pub mod pending;
 pub mod status;
 
 use axum::Json;
 use axum::extract::DefaultBodyLimit;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
-use axum::routing::{get, post};
+use axum::routing::{delete, get, post};
 
 use std::sync::Arc;
 
-use crate::error::{AppError, Result};
-use crate::library::{Library, SharedLibrary};
-use crate::model::{ImageRecord, ListenerStatus};
+use crate::error::AppError;
+use crate::library::SharedLibrary;
+use crate::model::{CaptureMeta, CaptureWithdrawn, ImageRecord, ListenerStatus};
 
 /// The largest request body the listener will read. A capture is one image off
 /// a page; anything past this is a mistake or a local process trying to grow the
 /// app's heap, and the body layer refuses it instead of buffering it.
 pub const MAX_BODY_BYTES: usize = 64 * 1024 * 1024;
 
-/// Told about each capture that became a new row.
+/// What the open window is told about a capture (design D6).
+///
+/// One enum rather than three callbacks because the three are one story told in
+/// order: a placeholder goes up on `Pending` and comes down on either of the
+/// others, so a listener that could subscribe to one without the rest would
+/// leave tiles up.
+#[derive(Debug, Clone, PartialEq)]
+pub enum CaptureEvent {
+    /// A capture the extension says is coming. Nothing is stored for it.
+    Pending(CaptureMeta),
+    /// It will not arrive: withdrawn by the extension, already stored under
+    /// that id, or refused.
+    Withdrawn(CaptureWithdrawn),
+    /// A new row exists.
+    Stored(ImageRecord),
+}
+
+/// Told about each capture event.
 ///
 /// The listener runs beside the webview, not under it: a capture changes the
 /// library with nothing on screen having asked for it, and a grid that only
 /// re-reads on its own actions goes on showing the library as it was until the
 /// route is remounted. This is the one wire back.
-pub type CaptureStored = Arc<dyn Fn(&ImageRecord) + Send + Sync>;
+pub type CaptureEvents = Arc<dyn Fn(CaptureEvent) + Send + Sync>;
 
 /// What the handlers need. The library is shared with the Tauri commands, so a
 /// capture and a UI action never see different databases.
@@ -36,12 +54,14 @@ pub type CaptureStored = Arc<dyn Fn(&ImageRecord) + Send + Sync>;
 pub struct HttpState {
     pub library: SharedLibrary,
     pub version: String,
-    pub on_stored: CaptureStored,
+    pub on_event: CaptureEvents,
 }
 
 pub fn router(state: HttpState) -> axum::Router {
     axum::Router::new()
         .route("/captures", post(captures::post_capture))
+        .route("/captures/pending", post(pending::post_pending))
+        .route("/captures/pending/{id}", delete(pending::delete_pending))
         .route("/status", get(status::get_status))
         .layer(DefaultBodyLimit::max(MAX_BODY_BYTES))
         // Applied last, so it wraps everything above: a request the origin check
@@ -128,36 +148,21 @@ pub fn reason(status: StatusCode, message: impl Into<String>) -> Response {
     (status, Json(serde_json::json!({ "error": message.into() }))).into_response()
 }
 
-/// Borrow the open library, or fail with `NoLibrary`. `work` is a plain closure
-/// on purpose: `SharedLibrary` is a `std::sync::Mutex`, so nothing holding this
-/// lock may `.await` (see `captures::store`).
-pub fn with_library<T>(
-    library: &SharedLibrary,
-    work: impl FnOnce(&Library) -> Result<T>,
-) -> Result<T> {
-    // A poisoned mutex means some earlier request panicked while holding the
-    // library. The connection survives that (an open transaction rolls back when
-    // it drops), and refusing every later capture would be the larger outage.
-    let guard = library
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    work(guard.as_ref().ok_or(AppError::NoLibrary)?)
-}
-
 /// Fixtures shared by the `http` test modules: a router-driving `send`, a temp
 /// library, and the multipart bodies the spec's scenarios describe.
 #[cfg(test)]
 pub mod test_support {
     use axum::body::Body;
     use axum::http::header::{CONTENT_TYPE, ORIGIN};
-    use axum::http::{Request, StatusCode};
+    use axum::http::{Method, Request, StatusCode};
     use http_body_util::BodyExt;
     use tower::ServiceExt;
 
     use std::sync::Arc;
 
-    use super::{HttpState, router, with_library};
-    use crate::library::{Library, SharedLibrary};
+    use super::{CaptureEvent, CaptureEvents, HttpState, router};
+    use crate::library::{Library, SharedLibrary, with_library};
+    use crate::model::{CaptureMeta, CaptureWithdrawn};
 
     pub const EXTENSION_ORIGIN: &str = "chrome-extension://abcdefghijklmnopabcdefghijklmnop";
     const BOUNDARY: &str = "boorubox-test-boundary";
@@ -167,25 +172,63 @@ pub mod test_support {
         state
     }
 
-    /// `empty_state` plus the ids the listener was told about, in order. Reach
-    /// for this when the test is about the notification rather than the answer.
-    pub fn empty_state_recording() -> (HttpState, StoredIds) {
-        let stored: StoredIds = Arc::new(std::sync::Mutex::new(Vec::new()));
-        let recorder = Arc::clone(&stored);
+    /// `empty_state` plus everything the listener told the window, in order.
+    /// Reach for this when the test is about the notification rather than the
+    /// answer.
+    pub fn empty_state_recording() -> (HttpState, Recorded) {
+        let recorded = Recorded::default();
         (
             HttpState {
                 library: SharedLibrary::default(),
                 version: "1.2.3".to_string(),
-                on_stored: Arc::new(move |record| {
-                    recorder.lock().unwrap().push(record.id.clone());
-                }),
+                on_event: recorded.sink(),
             },
-            stored,
+            recorded,
         )
     }
 
-    /// Ids of the captures the listener reported as newly stored.
-    pub type StoredIds = Arc<std::sync::Mutex<Vec<String>>>;
+    /// Every `CaptureEvent` the listener emitted, in the order it emitted them.
+    /// Order is the point: a settled announcement must not be told after the
+    /// stored row it settles.
+    #[derive(Clone, Default)]
+    pub struct Recorded(Arc<std::sync::Mutex<Vec<CaptureEvent>>>);
+
+    impl Recorded {
+        fn sink(&self) -> CaptureEvents {
+            let events = Arc::clone(&self.0);
+            Arc::new(move |event| events.lock().unwrap().push(event))
+        }
+
+        pub fn all(&self) -> Vec<CaptureEvent> {
+            self.0.lock().unwrap().clone()
+        }
+
+        /// Ids of the captures reported as newly stored.
+        pub fn stored_ids(&self) -> Vec<String> {
+            self.pick(|event| match event {
+                CaptureEvent::Stored(record) => Some(record.id.clone()),
+                _ => None,
+            })
+        }
+
+        pub fn announced(&self) -> Vec<CaptureMeta> {
+            self.pick(|event| match event {
+                CaptureEvent::Pending(meta) => Some(meta.clone()),
+                _ => None,
+            })
+        }
+
+        pub fn withdrawals(&self) -> Vec<CaptureWithdrawn> {
+            self.pick(|event| match event {
+                CaptureEvent::Withdrawn(withdrawn) => Some(withdrawn.clone()),
+                _ => None,
+            })
+        }
+
+        fn pick<T>(&self, of: impl Fn(&CaptureEvent) -> Option<T>) -> Vec<T> {
+            self.0.lock().unwrap().iter().filter_map(of).collect()
+        }
+    }
 
     /// A state with a library open in a temp folder. The `TempDir` comes back
     /// with it: dropping it deletes the library.
@@ -194,7 +237,7 @@ pub mod test_support {
         (dir, state)
     }
 
-    pub fn open_state_recording() -> (tempfile::TempDir, HttpState, StoredIds) {
+    pub fn open_state_recording() -> (tempfile::TempDir, HttpState, Recorded) {
         let dir = tempfile::tempdir().unwrap();
         let library = Library::open_or_create(dir.path()).unwrap();
         let (state, stored) = empty_state_recording();
@@ -208,7 +251,14 @@ pub mod test_support {
 
     pub fn stored_file_exists(state: &HttpState, id: &str, ext: &str) -> bool {
         with_library(&state.library, |library| {
-            Ok(library.image_path(id, ext).is_file())
+            Ok(library.paths.image_path(id, ext).is_file())
+        })
+        .unwrap()
+    }
+
+    pub fn thumbnail_exists(state: &HttpState, id: &str) -> bool {
+        with_library(&state.library, |library| {
+            Ok(crate::thumbs::thumbnail_path(&library.paths, id).is_file())
         })
         .unwrap()
     }
@@ -322,6 +372,42 @@ pub mod test_support {
             request = request.header(ORIGIN, origin);
         }
         request.body(Body::empty()).unwrap()
+    }
+
+    /// `POST /captures/pending` with `json` as the whole body.
+    pub fn announce_request(origin: Option<&str>, json: &str) -> Request<Body> {
+        json_request(Method::POST, "/captures/pending", origin, Some(json))
+    }
+
+    /// `DELETE /captures/pending/{id}`. No reason means no body at all, which is
+    /// what the extension sends when it has nothing to say.
+    pub fn withdraw_request(origin: Option<&str>, id: &str, reason: Option<&str>) -> Request<Body> {
+        let body = reason.map(|reason| serde_json::json!({ "reason": reason }).to_string());
+        json_request(
+            Method::DELETE,
+            &format!("/captures/pending/{id}"),
+            origin,
+            body.as_deref(),
+        )
+    }
+
+    fn json_request(
+        method: Method,
+        uri: &str,
+        origin: Option<&str>,
+        json: Option<&str>,
+    ) -> Request<Body> {
+        let mut request = Request::builder().method(method).uri(uri);
+        if let Some(origin) = origin {
+            request = request.header(ORIGIN, origin);
+        }
+        match json {
+            Some(json) => request
+                .header(CONTENT_TYPE, "application/json")
+                .body(Body::from(json.to_string()))
+                .unwrap(),
+            None => request.body(Body::empty()).unwrap(),
+        }
     }
 
     /// Drive one request through a fresh router over `state`, and read the JSON

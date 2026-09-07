@@ -103,7 +103,11 @@ pub struct SiteAdapterRecord {
     pub fields: serde_json::Value,
 }
 
-/// The JSON part of a `POST /captures` multipart body.
+/// The JSON part of a `POST /captures` multipart body, and the whole body of
+/// `POST /captures/pending`, where the extension announces the capture it is
+/// about to fetch bytes for (design D2). One shape for both: an announcement
+/// that could not be sent as the later `meta` would be a second type to mirror
+/// and a placeholder that names a different page than the image it becomes.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CaptureMeta {
@@ -116,6 +120,17 @@ pub struct CaptureMeta {
     pub captured_at: i64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub adapter: Option<SiteAdapterRecord>,
+}
+
+/// Body of `DELETE /captures/pending/{id}` and payload of `capture:withdrawn`:
+/// the announced capture will not arrive, so its placeholder goes.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CaptureWithdrawn {
+    pub id: String,
+    /// Why, when the app or the extension knows; absent when nothing named one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
 }
 
 /// Body of `GET /status` when a library is open.
@@ -380,6 +395,29 @@ mod tests {
                 theme,
             );
         }
+    }
+
+    #[test]
+    fn a_withdrawal_omits_the_reason_key_when_there_is_none() {
+        let with_reason = CaptureWithdrawn {
+            id: "c-1".to_string(),
+            reason: Some("image could not be decoded".to_string()),
+        };
+        let without = CaptureWithdrawn {
+            id: "c-1".to_string(),
+            reason: None,
+        };
+
+        assert_eq!(
+            serde_json::to_value(with_reason).unwrap(),
+            serde_json::json!({ "id": "c-1", "reason": "image could not be decoded" }),
+        );
+        // Not `"reason": null`: the webview tells "no reason given" from a
+        // reason by the key being absent, and a null would read as one.
+        assert_eq!(
+            serde_json::to_value(without).unwrap(),
+            serde_json::json!({ "id": "c-1" }),
+        );
     }
 
     #[test]

@@ -5,6 +5,7 @@
   import {
     dropImageRecord,
     errorText,
+    imports,
     library,
     onCaptureStored,
     onFileDrop,
@@ -16,17 +17,16 @@
   import EmptyState from '$lib/components/library/EmptyState.svelte'
   import ImportMenu from '$lib/components/library/ImportMenu.svelte'
   import ImportReportCard from '$lib/components/library/ImportReportCard.svelte'
-  import { Imports } from '$lib/components/library/imports.svelte'
   import Inspector from '$lib/components/library/Inspector.svelte'
   import LibraryGrid from '$lib/components/library/LibraryGrid.svelte'
   import Lightbox from '$lib/components/library/Lightbox.svelte'
+  import PendingBand from '$lib/components/library/PendingBand.svelte'
   import SearchBar from '$lib/components/library/SearchBar.svelte'
   import { Button } from '$lib/components/ui/button'
   import { Slider } from '$lib/components/ui/slider'
   import { isTypingTarget, KEY_SEARCH } from '$lib/keyboard'
 
   const results = new SearchResults()
-  const imports = new Imports(() => void results.refresh())
 
   const noQuery: SearchInputs = { tagQuery: '', text: '' }
   let inputs = $state<SearchInputs>(noQuery)
@@ -64,8 +64,8 @@
     shownPath = path
     focusIndex = -1
     lightboxOpen = false
-    // The report describes a run into the library that was open, not this one.
-    imports.dismiss()
+    // The reports describe runs into the library that was open, not this one.
+    imports.dismissAll()
     void results.run(inputs)
   })
 
@@ -81,6 +81,10 @@
     }
   })
 
+  // The runs outlive this route (design D9), so what they change is told to
+  // whoever is on screen rather than to whoever started them.
+  $effect(() => imports.onfinished(() => void results.refresh()))
+
   // Design D8: the subscription is the route's, not the Import menu's. A menu is
   // unmounted while its dropdown is closed, which is nearly always — registered
   // in there, drop-to-import would silently stop working.
@@ -90,7 +94,7 @@
       onleave: () => (hovering = false),
       ondrop: (paths) => {
         hovering = false
-        void imports.run(paths)
+        imports.enqueue(paths)
       },
     })
     subscription.catch((cause) => (actionError = errorText(cause)))
@@ -164,12 +168,12 @@
     <PanelRightIcon />
   </Button>
 
-  <ImportMenu {imports} />
+  <ImportMenu />
 {/snippet}
 
-{#if imports.report}
-  <ImportReportCard report={imports.report} ondismiss={() => imports.dismiss()} />
-{/if}
+{#each imports.reports as report (report)}
+  <ImportReportCard {report} ondismiss={() => imports.dismiss(report)} />
+{/each}
 
 {#if actionError || imports.error}
   <p class="border-b border-border px-4 py-2 text-xs text-destructive">
@@ -178,37 +182,43 @@
 {/if}
 
 <div class="flex min-h-0 flex-1">
-  <div class="min-w-0 flex-1">
-    {#if results.error}
-      <div class="flex h-full flex-col items-center justify-center gap-2 p-8 text-center">
-        <p class="text-sm font-medium">The search could not be run.</p>
-        <p class="text-sm text-muted-foreground">{results.error}</p>
-      </div>
-    {:else if results.total === 0}
-      <!--
-        `total` holds its last answer while a search runs, so the grid is only
-        replaced when there is genuinely nothing to show. Swapping it out on
-        every refresh would remount it and throw away the scroll position.
-      -->
-      {#if results.loading}
-        <p class="p-8 text-sm text-muted-foreground">Searching…</p>
+  <div class="flex min-w-0 flex-1 flex-col">
+    <!-- Above everything the results area can be: the grid, the empty library
+         and the search that found nothing (spec `pending-work`). -->
+    <PendingBand {tile} />
+
+    <div class="min-h-0 flex-1">
+      {#if results.error}
+        <div class="flex h-full flex-col items-center justify-center gap-2 p-8 text-center">
+          <p class="text-sm font-medium">The search could not be run.</p>
+          <p class="text-sm text-muted-foreground">{results.error}</p>
+        </div>
+      {:else if results.total === 0}
+        <!--
+          `total` holds its last answer while a search runs, so the grid is only
+          replaced when there is genuinely nothing to show. Swapping it out on
+          every refresh would remount it and throw away the scroll position.
+        -->
+        {#if results.loading}
+          <p class="p-8 text-sm text-muted-foreground">Searching…</p>
+        {:else}
+          <EmptyState inputs={results.inputs} />
+        {/if}
       {:else}
-        <EmptyState inputs={results.inputs} />
+        <LibraryGrid
+          bind:this={grid}
+          {results}
+          {tile}
+          bind:focusIndex
+          onactivate={(index) => {
+            lightboxIndex = index
+            lightboxOpen = true
+          }}
+          onforget={forget}
+          ontoggleinspector={() => (inspectorOpen = !inspectorOpen)}
+        />
       {/if}
-    {:else}
-      <LibraryGrid
-        bind:this={grid}
-        {results}
-        {tile}
-        bind:focusIndex
-        onactivate={(index) => {
-          lightboxIndex = index
-          lightboxOpen = true
-        }}
-        onforget={forget}
-        ontoggleinspector={() => (inspectorOpen = !inspectorOpen)}
-      />
-    {/if}
+    </div>
   </div>
 
   {#if inspectorOpen}

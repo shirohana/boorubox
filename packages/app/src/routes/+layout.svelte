@@ -2,7 +2,7 @@
   import { goto } from '$app/navigation'
   import { resolve } from '$app/paths'
   import { page } from '$app/state'
-  import { library, onCaptureStored, settings } from '$lib/api'
+  import { library, onCaptureStored, pendingCaptures, settings } from '$lib/api'
   import AppSidebar from '$lib/components/frame/Sidebar.svelte'
   import TopBar from '$lib/components/frame/TopBar.svelte'
   import * as Sidebar from '$lib/components/ui/sidebar'
@@ -34,6 +34,18 @@
   // library route has its own subscription for the grid.
   $effect(() => {
     const subscription = onCaptureStored(() => void library.refresh())
+    subscription.catch(() => {})
+    return () => {
+      void subscription.then((unlisten) => unlisten()).catch(() => {})
+    }
+  })
+
+  // Subscribed here and not on the library route (design D3): the route mounts
+  // and unmounts, and a capture announced while the user is on another screen
+  // has to be on the band when they come back — a Tauri event emitted with no
+  // listener is simply lost.
+  $effect(() => {
+    const subscription = pendingCaptures.subscribe()
     subscription.catch(() => {})
     return () => {
       void subscription.then((unlisten) => unlisten()).catch(() => {})

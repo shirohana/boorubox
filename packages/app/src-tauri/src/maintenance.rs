@@ -87,7 +87,7 @@ fn images_whose_file_state_changed(
     let mut changed = Vec::new();
     for row in rows {
         let (id, ext, was_missing) = row?;
-        let is_missing = !library.image_path(&id, &ext).exists();
+        let is_missing = !library.paths.image_path(&id, &ext).exists();
         if is_missing != was_missing {
             changed.push((id, is_missing));
         }
@@ -109,7 +109,7 @@ pub fn drop_image_record(library: &Library, id: &str) -> Result<()> {
     if deleted == 0 {
         return Err(AppError::NotFound(format!("image {id}")));
     }
-    remove_if_present(&thumbnail_path(library, id))
+    remove_if_present(&thumbnail_path(&library.paths, id))
 }
 
 /// A thumbnail is a derived cache `.thumbs/` may have lost at any time (design
@@ -209,7 +209,7 @@ mod tests {
         let (_dir, library) = library();
         store(&library, "a", ImageSource::Extension, &[]);
         let ids = vec!["a".to_string()];
-        let path = library.image_path("a", "png");
+        let path = library.paths.image_path("a", "png");
         let bytes = std::fs::read(&path).unwrap();
 
         std::fs::remove_file(&path).unwrap();
@@ -226,8 +226,8 @@ mod tests {
         let (_dir, library) = library();
         store(&library, "checked", ImageSource::Extension, &[]);
         store(&library, "ignored", ImageSource::Extension, &[]);
-        std::fs::remove_file(library.image_path("checked", "png")).unwrap();
-        std::fs::remove_file(library.image_path("ignored", "png")).unwrap();
+        std::fs::remove_file(library.paths.image_path("checked", "png")).unwrap();
+        std::fs::remove_file(library.paths.image_path("ignored", "png")).unwrap();
 
         refresh_missing_for(&library, &["checked".to_string()]).unwrap();
 
@@ -251,7 +251,7 @@ mod tests {
         let (_dir, library) = library();
         store(&library, "a", ImageSource::Extension, &["cat", "cute"]);
         store(&library, "b", ImageSource::Extension, &["cat"]);
-        let thumbnail = thumbnail_path(&library, "a");
+        let thumbnail = thumbnail_path(&library.paths, "a");
         std::fs::write(&thumbnail, b"a derived thumbnail").unwrap();
 
         drop_image_record(&library, "a").unwrap();
@@ -270,7 +270,7 @@ mod tests {
         );
         assert!(!thumbnail.exists());
         assert!(
-            library.image_path("a", "png").is_file(),
+            library.paths.image_path("a", "png").is_file(),
             "design D16: the file under images/ stays"
         );
         assert_eq!(library.image_count().unwrap(), 1);
@@ -314,7 +314,7 @@ mod tests {
     fn a_record_can_be_dropped_after_its_file_is_gone() {
         let (_dir, library) = library();
         store(&library, "a", ImageSource::Extension, &[]);
-        std::fs::remove_file(library.image_path("a", "png")).unwrap();
+        std::fs::remove_file(library.paths.image_path("a", "png")).unwrap();
         refresh_missing_for(&library, &["a".to_string()]).unwrap();
 
         drop_image_record(&library, "a").unwrap();

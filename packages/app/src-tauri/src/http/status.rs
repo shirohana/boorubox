@@ -6,7 +6,8 @@ use axum::extract::State;
 use axum::response::{IntoResponse, Response};
 
 use crate::error::Result;
-use crate::http::{HttpState, error_response, with_library};
+use crate::http::{HttpState, error_response};
+use crate::library::with_library;
 use crate::model::StatusResponse;
 
 pub async fn get_status(State(state): State<HttpState>) -> Response {
@@ -21,7 +22,7 @@ fn read_status(state: &HttpState) -> Result<StatusResponse> {
     with_library(&state.library, |library| {
         Ok(StatusResponse {
             version: state.version.clone(),
-            library_path: library.root.display().to_string(),
+            library_path: library.paths.root.display().to_string(),
             image_count: library.image_count()?,
         })
     })

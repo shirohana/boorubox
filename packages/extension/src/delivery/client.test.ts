@@ -1,9 +1,10 @@
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import type { CaptureMeta } from '@boorubox/shared'
 
-import { postCapture, probeStatus } from './client.js'
+import { announceCapture, postCapture, probeStatus, withdrawCapture } from './client.js'
 
 const CAPTURES = 'http://127.0.0.1:47201/captures'
+const PENDING = 'http://127.0.0.1:47201/captures/pending'
 const STATUS = 'http://127.0.0.1:47201/status'
 
 const META: CaptureMeta = {
@@ -133,4 +134,51 @@ it('treats a 200 that is not a status as nothing to talk to', async () => {
   fetchMock.mockResolvedValue(new Response('<html>a captive portal</html>', { status: 200 }))
 
   expect(await probeStatus(STATUS)).toEqual({ state: 'unreachable' })
+})
+
+it('announces a coming capture as the JSON the app will see again as the meta', async () => {
+  fetchMock.mockResolvedValue(new Response('', { status: 202 }))
+
+  await announceCapture(PENDING, META)
+
+  const [url, init] = fetchMock.mock.calls[0]!
+  expect(url).toBe(PENDING)
+  expect(init.method).toBe('POST')
+  expect(init.headers).toEqual({ 'Content-Type': 'application/json' })
+  expect(JSON.parse(init.body as string)).toEqual(META)
+})
+
+it('withdraws an announcement by id, with the reason', async () => {
+  // A 204 has no body by definition, and `Response` enforces that.
+  fetchMock.mockResolvedValue(new Response(null, { status: 204 }))
+
+  await withdrawCapture(`${PENDING}/${META.id}`, 'HTTP 403: Forbidden')
+
+  const [url, init] = fetchMock.mock.calls[0]!
+  expect(url).toBe(`${PENDING}/${META.id}`)
+  expect(init.method).toBe('DELETE')
+  expect(JSON.parse(init.body as string)).toEqual({ reason: 'HTTP 403: Forbidden' })
+})
+
+// Neither relay is worth failing a capture over: an older app answers 404, a
+// closed one answers nothing at all, and the capture goes on in both cases.
+it('resolves whatever the app answers or fails to answer', async () => {
+  for (const answer of [
+    new Response(JSON.stringify({ error: 'no library is open' }), { status: 503 }),
+    new Response('', { status: 404 }),
+  ]) {
+    fetchMock.mockResolvedValue(answer)
+    await expect(announceCapture(PENDING, META)).resolves.toBeUndefined()
+    await expect(withdrawCapture(`${PENDING}/${META.id}`, 'why')).resolves.toBeUndefined()
+  }
+
+  for (const failure of [
+    new TypeError('Failed to fetch'),
+    abortError('TimeoutError'),
+    abortError('AbortError'),
+  ]) {
+    fetchMock.mockRejectedValue(failure)
+    await expect(announceCapture(PENDING, META)).resolves.toBeUndefined()
+    await expect(withdrawCapture(`${PENDING}/${META.id}`, 'why')).resolves.toBeUndefined()
+  }
 })

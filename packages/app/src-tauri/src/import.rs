@@ -7,8 +7,9 @@ use std::path::{Path, PathBuf};
 use crate::db;
 use crate::error::AppError;
 use crate::ingest::{self, IngestInput};
-use crate::library::Library;
+use crate::library::{SharedLibrary, with_library};
 use crate::model::{ImageSource, ImportOutcome, ImportProgress, ImportReport, ImportStatus};
+use crate::thumbs;
 
 /// Import every decodable image under `paths`, recursing into folders, calling
 /// `on_progress` as it goes so the UI can show a running count.
@@ -16,14 +17,25 @@ use crate::model::{ImageSource, ImportOutcome, ImportProgress, ImportReport, Imp
 /// Blocking by design: the caller puts it on a thread and turns `on_progress`
 /// into the `import:progress` event (design D12).
 ///
+/// Takes the shared library and locks it one file at a time, never across the
+/// loop: a search or a thumbnail asked for while a folder of a few hundred
+/// files goes in has to be answered between two of them, or the window freezes
+/// until the last file is in (design D13). The walk and `on_progress` run with
+/// the library released.
+///
 /// The `Result` is the command surface's, not a way out of the loop — every
 /// per-item failure is an outcome in the report, so one bad file never ends the
 /// run. Do not reach for `?` inside the loop.
 pub fn import_paths(
-    library: &Library,
+    library: &SharedLibrary,
     paths: &[PathBuf],
     on_progress: &mut dyn FnMut(ImportProgress),
 ) -> crate::error::Result<ImportReport> {
+    // A closed library is one refusal the webview can show, not a report naming
+    // every dropped file as failed. Asked before the walk so nothing is counted
+    // for a run that cannot store anything.
+    with_library(library, |_| Ok(()))?;
+
     // The walk runs to completion first because `total` has to be right in the
     // very first progress event: a bar that grows its own denominator reads as
     // an import that keeps finding more work. Enumerating a folder is cheap
@@ -109,7 +121,7 @@ fn is_symlink(path: &Path) -> bool {
 /// Read the file and hand it to `ingest::store_image` with a fresh id. Phase 1
 /// does not deduplicate, so the same file imported twice becomes two images
 /// (spec `local-file-import`). The original is only ever read.
-fn import_file(library: &Library, path: &Path) -> ImportOutcome {
+fn import_file(library: &SharedLibrary, path: &Path) -> ImportOutcome {
     let bytes = match std::fs::read(path) {
         Ok(bytes) => bytes,
         Err(error) => return failed(path, error.to_string()),
@@ -121,25 +133,33 @@ fn import_file(library: &Library, path: &Path) -> ImportOutcome {
     let id = uuid::Uuid::new_v4().to_string();
     let title = file_name(path);
 
-    let stored = ingest::store_image(
-        library,
-        IngestInput {
-            id: &id,
-            bytes: &bytes,
-            source: ImageSource::Local,
-            source_ref: None,
-            image_url: None,
-            page_url: None,
-            page_title: Some(&title),
-            adapter: None,
-            rating: None,
-            tags: &[],
-            captured_at,
-        },
-    );
+    // The read, the decode-and-write and the thumbnail are three separate costs;
+    // only the middle one needs the library, so only it is inside the lock.
+    let stored = with_library(library, |library| {
+        let ingested = ingest::store_image(
+            library,
+            IngestInput {
+                id: &id,
+                bytes: &bytes,
+                source: ImageSource::Local,
+                source_ref: None,
+                image_url: None,
+                page_url: None,
+                page_title: Some(&title),
+                adapter: None,
+                rating: None,
+                tags: &[],
+                captured_at,
+            },
+        )?;
+        Ok((library.paths.clone(), ingested))
+    });
 
     match stored {
-        Ok(ingested) => imported(path, ingested.record().id.clone()),
+        Ok((paths, ingested)) => {
+            thumbs::warm_thumbnail(&paths, ingested.record());
+            imported(path, ingested.record().id.clone())
+        }
         // Undecodable is what the file is, not something that went wrong: the
         // text file in a dropped folder is skipped and named in the report,
         // never counted as a failure. `failed` is for a real attempt the
@@ -221,12 +241,40 @@ fn progress(report: &ImportReport, total: u32) -> ImportProgress {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use std::sync::mpsc;
+    use std::time::Duration;
 
-    fn library() -> (tempfile::TempDir, Library) {
+    use super::*;
+    use crate::library::Library;
+    use crate::model::ImageRecord;
+
+    /// Long enough that a machine under load does not fail the test, short
+    /// enough that a run that really is holding the library ends the suite
+    /// instead of hanging it.
+    const A_LOCK_IS_NOT_COMING: Duration = Duration::from_secs(5);
+
+    fn library() -> (tempfile::TempDir, SharedLibrary) {
         let dir = tempfile::tempdir().unwrap();
         let library = Library::open_or_create(dir.path()).unwrap();
-        (dir, library)
+        (
+            dir,
+            SharedLibrary::new(std::sync::Mutex::new(Some(library))),
+        )
+    }
+
+    fn image_count(library: &SharedLibrary) -> i64 {
+        with_library(library, |library| library.image_count()).unwrap()
+    }
+
+    fn record(library: &SharedLibrary, id: &str) -> Option<ImageRecord> {
+        with_library(library, |library| ingest::load_record(&library.conn, id)).unwrap()
+    }
+
+    fn thumbnail_of(library: &SharedLibrary, id: &str) -> PathBuf {
+        with_library(library, |library| {
+            Ok(thumbs::thumbnail_path(&library.paths, id))
+        })
+        .unwrap()
     }
 
     fn write_png(path: &Path, width: u32, height: u32) {
@@ -247,7 +295,7 @@ mod tests {
         vec![root.join("a.png"), root.join("b.png"), nested]
     }
 
-    fn run(library: &Library, paths: &[PathBuf]) -> (ImportReport, Vec<ImportProgress>) {
+    fn run(library: &SharedLibrary, paths: &[PathBuf]) -> (ImportReport, Vec<ImportProgress>) {
         let mut seen = Vec::new();
         let report = import_paths(library, paths, &mut |progress| seen.push(progress)).unwrap();
         (report, seen)
@@ -280,7 +328,7 @@ mod tests {
             skipped[0]
         );
         assert!(skipped[0].reason.is_some());
-        assert_eq!(library.image_count().unwrap(), 5);
+        assert_eq!(image_count(&library), 5);
     }
 
     #[test]
@@ -293,7 +341,7 @@ mod tests {
 
         for item in items_with(&report, ImportStatus::Imported) {
             let id = item.id.as_deref().expect("imported item without an id");
-            assert!(ingest::load_record(&library.conn, id).unwrap().is_some());
+            assert!(record(&library, id).is_some());
         }
     }
 
@@ -309,7 +357,7 @@ mod tests {
 
         assert_eq!((first.imported, second.imported), (1, 1));
         assert_ne!(first.items[0].id, second.items[0].id);
-        assert_eq!(library.image_count().unwrap(), 2);
+        assert_eq!(image_count(&library), 2);
     }
 
     #[test]
@@ -340,7 +388,7 @@ mod tests {
         let (report, _) = run(&library, &[file]);
 
         let id = report.items[0].id.as_deref().unwrap();
-        let record = ingest::load_record(&library.conn, id).unwrap().unwrap();
+        let record = record(&library, id).unwrap();
         assert_eq!(record.page_title.as_deref(), Some("cat.png"));
         assert_eq!(record.captured_at, mtime);
         assert_eq!(record.source, ImageSource::Local);
@@ -369,6 +417,76 @@ mod tests {
         );
     }
 
+    /// The guarantee used to sit inside `ingest::store_image`; it moved out to
+    /// keep the encode off the library lock (design D13), so it is pinned here,
+    /// where it now happens.
+    #[test]
+    fn an_imported_image_is_thumbnailed_without_being_asked() {
+        let source = tempfile::tempdir().unwrap();
+        let file = source.path().join("cat.png");
+        write_png(&file, 800, 600);
+        let (_dir, library) = library();
+
+        let (report, _) = run(&library, &[file]);
+
+        let id = report.items[0].id.as_deref().unwrap();
+        assert!(thumbnail_of(&library, id).is_file());
+    }
+
+    /// Design D13: a scroll that needs a thumbnail must be served between two
+    /// files, not after the last one. The run is parked in its progress
+    /// callback — which is outside the lock — and another thread has to be able
+    /// to read the library while it waits there.
+    #[test]
+    fn the_library_is_free_between_two_files() {
+        let source = tempfile::tempdir().unwrap();
+        for name in ["a.png", "b.png", "c.png"] {
+            write_png(&source.path().join(name), 8, 8);
+        }
+        let (_dir, library) = library();
+
+        let (parked, is_parked) = mpsc::channel();
+        let (release, go_on) = mpsc::channel();
+        let running = library.clone();
+        let paths = vec![source.path().to_path_buf()];
+        let run = std::thread::spawn(move || {
+            import_paths(&running, &paths, &mut |progress| {
+                if progress.done == 1 {
+                    parked.send(()).unwrap();
+                    go_on.recv().unwrap();
+                }
+            })
+        });
+        is_parked.recv_timeout(A_LOCK_IS_NOT_COMING).unwrap();
+
+        let (answered, answer) = mpsc::channel();
+        let reader = library.clone();
+        std::thread::spawn(move || {
+            let _ = answered.send(image_count(&reader));
+        });
+
+        let counted = answer
+            .recv_timeout(A_LOCK_IS_NOT_COMING)
+            .expect("the run held the library across its loop");
+        assert_eq!(counted, 1, "the first file is in and the rest are not");
+        release.send(()).unwrap();
+        assert_eq!(run.join().unwrap().unwrap().imported, 3);
+    }
+
+    #[test]
+    fn a_run_with_no_library_open_is_one_refusal_rather_than_a_report_of_failures() {
+        let source = tempfile::tempdir().unwrap();
+        write_png(&source.path().join("a.png"), 8, 8);
+        let closed = SharedLibrary::default();
+
+        let mut ticks = 0;
+        let error =
+            import_paths(&closed, &[source.path().to_path_buf()], &mut |_| ticks += 1).unwrap_err();
+
+        assert!(matches!(error, AppError::NoLibrary), "{error:?}");
+        assert_eq!(ticks, 0, "nothing is counted for a run that cannot store");
+    }
+
     #[test]
     fn a_folder_with_no_images_reports_nothing_rather_than_failing() {
         let source = tempfile::tempdir().unwrap();
@@ -377,7 +495,7 @@ mod tests {
         let (report, _) = run(&library, &[source.path().to_path_buf()]);
 
         assert_eq!(report, ImportReport::default());
-        assert_eq!(library.image_count().unwrap(), 0);
+        assert_eq!(image_count(&library), 0);
     }
 
     #[test]

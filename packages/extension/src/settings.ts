@@ -40,3 +40,12 @@ export function capturesEndpoint(port: number): string {
 export function statusEndpoint(port: number): string {
   return `http://${HOST}:${port}/status`
 }
+
+/**
+ * Where a coming capture is announced, and — given its id — where that
+ * announcement is withdrawn (design D2).
+ */
+export function pendingEndpoint(port: number, id?: string): string {
+  const announcements = `${capturesEndpoint(port)}/pending`
+  return id === undefined ? announcements : `${announcements}/${encodeURIComponent(id)}`
+}

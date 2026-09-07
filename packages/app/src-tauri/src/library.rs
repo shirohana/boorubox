@@ -18,13 +18,47 @@ const PART_EXT: &str = "part";
 /// One open library folder. Everything it needs lives inside `root`, so the
 /// folder can be copied to another machine and opened there unchanged.
 pub struct Library {
-    pub root: PathBuf,
+    pub paths: LibraryPaths,
     pub conn: Connection,
+}
+
+/// Where a library folder keeps its files, without the connection that reads
+/// them. Split out so work that only touches files — thumbnailing (design D13)
+/// — can be carried past the mutex and done with the library released.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LibraryPaths {
+    pub root: PathBuf,
 }
 
 /// `rusqlite::Connection` is `Send` but not `Sync`, so the mutex is what makes
 /// D1's "one connection, one writer" true rather than merely intended.
 pub type SharedLibrary = std::sync::Arc<std::sync::Mutex<Option<Library>>>;
+
+/// Borrow the open library, or fail with `NoLibrary`. `work` is a plain closure
+/// on purpose: `SharedLibrary` is a `std::sync::Mutex`, so nothing holding this
+/// lock may `.await` (see `http::captures::store`).
+pub fn with_library<T>(
+    library: &SharedLibrary,
+    work: impl FnOnce(&Library) -> Result<T>,
+) -> Result<T> {
+    with_library_if_open(library, |open| work(open.ok_or(AppError::NoLibrary)?))
+}
+
+/// Borrow whatever is open, `None` included. Only for the callers a closed
+/// library is an answer to rather than a refusal — `library_status` reports a
+/// closed library, it does not fail on one.
+pub fn with_library_if_open<T>(
+    library: &SharedLibrary,
+    work: impl FnOnce(Option<&Library>) -> Result<T>,
+) -> Result<T> {
+    // A poisoned mutex means some earlier request panicked while holding the
+    // library. The connection survives that (an open transaction rolls back when
+    // it drops), and refusing every later capture would be the larger outage.
+    let guard = library
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    work(guard.as_ref())
+}
 
 impl Library {
     /// Open the library at `root`, creating the folder layout and the database
@@ -32,7 +66,9 @@ impl Library {
     /// `open_existing` for a path that was merely remembered.
     pub fn open_or_create(root: &Path) -> Result<Library> {
         let library = Library {
-            root: root.to_path_buf(),
+            paths: LibraryPaths {
+                root: root.to_path_buf(),
+            },
             conn: create_layout_then_open(root)?,
         };
         library.sweep_inbox()?;
@@ -53,6 +89,31 @@ impl Library {
         Library::open_or_create(root)
     }
 
+    /// Rows the user still has, deleted ones excluded.
+    pub fn image_count(&self) -> Result<i64> {
+        let count = self.conn.query_row(
+            "SELECT COUNT(*) FROM images WHERE deleted_at IS NULL",
+            [],
+            |row| row.get(0),
+        )?;
+        Ok(count)
+    }
+
+    /// A crash between the part file and the rename leaves an orphan behind.
+    /// Nothing ever reads a `.part` back — the request that wrote it is long
+    /// gone and reported failed — so startup is the moment to drop them.
+    fn sweep_inbox(&self) -> Result<()> {
+        for entry in fs::read_dir(self.paths.inbox_dir())? {
+            let path = entry?.path();
+            if path.extension().is_some_and(|ext| ext == PART_EXT) {
+                fs::remove_file(path)?;
+            }
+        }
+        Ok(())
+    }
+}
+
+impl LibraryPaths {
     pub fn images_dir(&self) -> PathBuf {
         self.root.join(IMAGES_DIR)
     }
@@ -77,29 +138,6 @@ impl Library {
     /// (design D4).
     pub fn part_path(&self, id: &str) -> PathBuf {
         self.inbox_dir().join(format!("{id}.{PART_EXT}"))
-    }
-
-    /// Rows the user still has, deleted ones excluded.
-    pub fn image_count(&self) -> Result<i64> {
-        let count = self.conn.query_row(
-            "SELECT COUNT(*) FROM images WHERE deleted_at IS NULL",
-            [],
-            |row| row.get(0),
-        )?;
-        Ok(count)
-    }
-
-    /// A crash between the part file and the rename leaves an orphan behind.
-    /// Nothing ever reads a `.part` back — the request that wrote it is long
-    /// gone and reported failed — so startup is the moment to drop them.
-    fn sweep_inbox(&self) -> Result<()> {
-        for entry in fs::read_dir(self.inbox_dir())? {
-            let path = entry?.path();
-            if path.extension().is_some_and(|ext| ext == PART_EXT) {
-                fs::remove_file(path)?;
-            }
-        }
-        Ok(())
     }
 }
 
@@ -130,10 +168,10 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let library = Library::open_or_create(dir.path()).unwrap();
 
-        assert!(library.images_dir().is_dir());
-        assert!(library.inbox_dir().is_dir());
-        assert!(library.thumbs_dir().is_dir());
-        assert!(library.db_path().is_file());
+        assert!(library.paths.images_dir().is_dir());
+        assert!(library.paths.inbox_dir().is_dir());
+        assert!(library.paths.thumbs_dir().is_dir());
+        assert!(library.paths.db_path().is_file());
         assert_eq!(library.image_count().unwrap(), 0);
     }
 
@@ -167,8 +205,8 @@ mod tests {
         let library = Library::open_or_create(dir.path()).unwrap();
 
         assert_eq!(
-            library.image_path("abc", "png"),
-            library.images_dir().join("abc.png")
+            library.paths.image_path("abc", "png"),
+            library.paths.images_dir().join("abc.png")
         );
     }
 

@@ -2,7 +2,14 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import { DEFAULT_PORT } from '@boorubox/shared'
 
 import { installFakeChrome, type FakeChrome } from './test-support/chrome.js'
-import { capturesEndpoint, getPort, PORT_KEY, setPort, statusEndpoint } from './settings.js'
+import {
+  capturesEndpoint,
+  getPort,
+  pendingEndpoint,
+  PORT_KEY,
+  setPort,
+  statusEndpoint,
+} from './settings.js'
 
 let chrome: FakeChrome
 
@@ -41,4 +48,9 @@ it('ignores a stored value that is out of range rather than using it', async () 
 it('addresses the app on loopback only', () => {
   expect(capturesEndpoint(47201)).toBe('http://127.0.0.1:47201/captures')
   expect(statusEndpoint(51234)).toBe('http://127.0.0.1:51234/status')
+})
+
+it('announces under the captures path and withdraws under the id', () => {
+  expect(pendingEndpoint(47201)).toBe('http://127.0.0.1:47201/captures/pending')
+  expect(pendingEndpoint(47201, 'id-1')).toBe('http://127.0.0.1:47201/captures/pending/id-1')
 })
