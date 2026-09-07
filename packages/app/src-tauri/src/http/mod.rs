@@ -11,14 +11,24 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 
+use std::sync::Arc;
+
 use crate::error::{AppError, Result};
 use crate::library::{Library, SharedLibrary};
-use crate::model::ListenerStatus;
+use crate::model::{ImageRecord, ListenerStatus};
 
 /// The largest request body the listener will read. A capture is one image off
 /// a page; anything past this is a mistake or a local process trying to grow the
 /// app's heap, and the body layer refuses it instead of buffering it.
 pub const MAX_BODY_BYTES: usize = 64 * 1024 * 1024;
+
+/// Told about each capture that became a new row.
+///
+/// The listener runs beside the webview, not under it: a capture changes the
+/// library with nothing on screen having asked for it, and a grid that only
+/// re-reads on its own actions goes on showing the library as it was until the
+/// route is remounted. This is the one wire back.
+pub type CaptureStored = Arc<dyn Fn(&ImageRecord) + Send + Sync>;
 
 /// What the handlers need. The library is shared with the Tauri commands, so a
 /// capture and a UI action never see different databases.
@@ -26,6 +36,7 @@ pub const MAX_BODY_BYTES: usize = 64 * 1024 * 1024;
 pub struct HttpState {
     pub library: SharedLibrary,
     pub version: String,
+    pub on_stored: CaptureStored,
 }
 
 pub fn router(state: HttpState) -> axum::Router {
@@ -143,6 +154,8 @@ pub mod test_support {
     use http_body_util::BodyExt;
     use tower::ServiceExt;
 
+    use std::sync::Arc;
+
     use super::{HttpState, router, with_library};
     use crate::library::{Library, SharedLibrary};
 
@@ -150,20 +163,43 @@ pub mod test_support {
     const BOUNDARY: &str = "boorubox-test-boundary";
 
     pub fn empty_state() -> HttpState {
-        HttpState {
-            library: SharedLibrary::default(),
-            version: "1.2.3".to_string(),
-        }
+        let (state, _) = empty_state_recording();
+        state
     }
+
+    /// `empty_state` plus the ids the listener was told about, in order. Reach
+    /// for this when the test is about the notification rather than the answer.
+    pub fn empty_state_recording() -> (HttpState, StoredIds) {
+        let stored: StoredIds = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let recorder = Arc::clone(&stored);
+        (
+            HttpState {
+                library: SharedLibrary::default(),
+                version: "1.2.3".to_string(),
+                on_stored: Arc::new(move |record| {
+                    recorder.lock().unwrap().push(record.id.clone());
+                }),
+            },
+            stored,
+        )
+    }
+
+    /// Ids of the captures the listener reported as newly stored.
+    pub type StoredIds = Arc<std::sync::Mutex<Vec<String>>>;
 
     /// A state with a library open in a temp folder. The `TempDir` comes back
     /// with it: dropping it deletes the library.
     pub fn open_state() -> (tempfile::TempDir, HttpState) {
+        let (dir, state, _) = open_state_recording();
+        (dir, state)
+    }
+
+    pub fn open_state_recording() -> (tempfile::TempDir, HttpState, StoredIds) {
         let dir = tempfile::tempdir().unwrap();
         let library = Library::open_or_create(dir.path()).unwrap();
-        let state = empty_state();
+        let (state, stored) = empty_state_recording();
         *state.library.lock().unwrap() = Some(library);
-        (dir, state)
+        (dir, state, stored)
     }
 
     pub fn image_count(state: &HttpState) -> i64 {

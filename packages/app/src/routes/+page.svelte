@@ -6,6 +6,7 @@
     dropImageRecord,
     errorText,
     library,
+    onCaptureStored,
     onFileDrop,
     SearchResults,
     settings,
@@ -66,6 +67,18 @@
     // The report describes a run into the library that was open, not this one.
     imports.dismiss()
     void results.run(inputs)
+  })
+
+  // A capture from the browser extension lands in the library with nothing on
+  // this screen having asked for it. Without this the grid keeps the result set
+  // it last searched, and the image only appears once something else re-runs the
+  // search — leaving and coming back to the route, for instance.
+  $effect(() => {
+    const subscription = onCaptureStored(() => void results.refresh())
+    subscription.catch((cause) => (actionError = errorText(cause)))
+    return () => {
+      void subscription.then((unlisten) => unlisten()).catch(() => {})
+    }
   })
 
   // Design D8: the subscription is the route's, not the Import menu's. A menu is

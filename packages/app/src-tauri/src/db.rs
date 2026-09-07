@@ -92,9 +92,20 @@ CREATE TRIGGER images_fts_update AFTER UPDATE ON images BEGIN
 END;
 ";
 
+/// Schema v2 (design D11): the site-adapter record the capturing client sent,
+/// stored as it arrived.
+///
+/// Named `_json` because that is what the next reader has to know about it: it
+/// holds a document, not a value to compare with `=`, and the reader that wants
+/// one field out of it reaches in with SQLite's JSON functions. No FTS change —
+/// the adapter fields are storage in this schema, not search.
+const SCHEMA_V2: &str = r"
+ALTER TABLE images ADD COLUMN adapter_json TEXT;
+";
+
 /// One entry per schema version, applied in order. Appending is the only way to
 /// change the schema: `user_version` counts how many of these have run.
-const MIGRATIONS: &[&str] = &[SCHEMA_V1];
+const MIGRATIONS: &[&str] = &[SCHEMA_V1, SCHEMA_V2];
 
 /// Open (creating if needed) the library database with the pragmas D2 fixes,
 /// migrate it to the current schema, and register the SQL functions the query
@@ -176,14 +187,22 @@ mod tests {
         names.map(std::result::Result::unwrap).collect()
     }
 
+    fn column_names(conn: &Connection, table: &str) -> Vec<String> {
+        let mut stmt = conn
+            .prepare(&format!("SELECT name FROM pragma_table_info('{table}')"))
+            .unwrap();
+        let names = stmt.query_map([], |row| row.get::<_, String>(0)).unwrap();
+        names.map(std::result::Result::unwrap).collect()
+    }
+
     #[test]
-    fn open_applies_schema_v1() {
+    fn open_applies_every_migration() {
         let (_dir, conn) = temp_db();
 
         let version: i64 = conn
             .query_row("PRAGMA user_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 1);
+        assert_eq!(version, MIGRATIONS.len() as i64);
 
         let names = table_names(&conn);
         for expected in ["images", "tags", "image_tags", "posts", "images_fts"] {
@@ -192,6 +211,46 @@ mod tests {
                 "missing table {expected}: {names:?}"
             );
         }
+        assert!(
+            column_names(&conn, "images").contains(&"adapter_json".to_string()),
+            "schema v2 did not add adapter_json"
+        );
+    }
+
+    /// A library written by the shipped v1 build has to reach v2 with its rows,
+    /// which is the whole point of appending to `MIGRATIONS` rather than editing
+    /// `SCHEMA_V1`: edit v1 and this database never gets the column.
+    #[test]
+    fn a_v1_library_migrates_to_v2_keeping_its_rows() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("library.sqlite");
+
+        let conn = Connection::open(&path).unwrap();
+        conn.execute_batch(SCHEMA_V1).unwrap();
+        conn.pragma_update(None, "user_version", 1i64).unwrap();
+        insert_bare_image(&conn, "a", "sunset over kyoto");
+        drop(conn);
+
+        let conn = open(&path).unwrap();
+
+        let version: i64 = conn
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, 2);
+        assert!(column_names(&conn, "images").contains(&"adapter_json".to_string()));
+
+        let adapter: Option<String> = conn
+            .query_row(
+                "SELECT adapter_json FROM images WHERE id = 'a'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            adapter, None,
+            "an existing row reads the new column as NULL"
+        );
+        assert_eq!(fts_matches(&conn, "kyoto"), vec!["a".to_string()]);
     }
 
     #[test]
@@ -214,7 +273,7 @@ mod tests {
         let version: i64 = conn
             .query_row("PRAGMA user_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 1);
+        assert_eq!(version, MIGRATIONS.len() as i64);
     }
 
     #[test]
@@ -230,7 +289,7 @@ mod tests {
             error,
             AppError::SchemaTooNew {
                 found: 99,
-                known: 1
+                known: 2
             }
         ));
     }

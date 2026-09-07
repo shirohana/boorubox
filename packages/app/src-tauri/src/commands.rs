@@ -27,6 +27,11 @@ use crate::{
 /// change it here and the import screen sits at zero until the run finishes.
 const IMPORT_PROGRESS_EVENT: &str = "import:progress";
 
+/// A capture the listener stored, as the webview hears about it. The library
+/// screen re-runs its search on this; change the name here and an image saved
+/// from the browser stays invisible until something else reloads the grid.
+pub const CAPTURE_STORED_EVENT: &str = "capture:stored";
+
 /// Ask for a folder and open it. Cancelling returns the status unchanged.
 #[tauri::command]
 pub async fn pick_library<R: Runtime>(
@@ -106,7 +111,7 @@ pub async fn set_listener_port<R: Runtime>(
     app: AppHandle<R>,
     state: State<'_, AppState>,
 ) -> Result<ListenerStatus> {
-    let status = rebind_listener(&state, port).await;
+    let status = rebind_listener(&app, &state, port).await;
     write_settings(&app, &state, |settings| settings.port = port)?;
     Ok(status)
 }
@@ -114,7 +119,11 @@ pub async fn set_listener_port<R: Runtime>(
 /// Stop whatever is listening and bind `port`, leaving the outcome in the state.
 /// A port that will not bind is a state, not an error: the app opens, and keeps
 /// working, either way. `setup` binds the first listener through this too.
-pub async fn rebind_listener(state: &AppState, port: u16) -> ListenerStatus {
+pub async fn rebind_listener<R: Runtime>(
+    app: &AppHandle<R>,
+    state: &AppState,
+    port: u16,
+) -> ListenerStatus {
     // Taken out of the state before the `await`, not inside an `if let`: the
     // guard would otherwise be held across it, and a `MutexGuard` is not `Send`.
     let running = lock(&state.listener_shutdown).take();
@@ -122,7 +131,7 @@ pub async fn rebind_listener(state: &AppState, port: u16) -> ListenerStatus {
         handle.stop().await;
     }
 
-    let (status, handle) = http::start(state.http_state(), port).await;
+    let (status, handle) = http::start(state.http_state(app), port).await;
     *lock(&state.listener_shutdown) = handle;
     *lock(&state.listener) = status.clone();
     status

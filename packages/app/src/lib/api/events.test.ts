@@ -1,10 +1,10 @@
 // @vitest-environment jsdom
 
-import type { ImportProgress } from '@boorubox/shared'
+import type { ImageRecord, ImportProgress } from '@boorubox/shared'
 import { emit } from '@tauri-apps/api/event'
 import { clearMocks, mockIPC } from '@tauri-apps/api/mocks'
 import { afterEach, expect, it, vi } from 'vitest'
-import { IMPORT_PROGRESS_EVENT, onImportProgress } from './events'
+import { CAPTURE_STORED_EVENT, IMPORT_PROGRESS_EVENT, onCaptureStored, onImportProgress } from './events'
 
 afterEach(() => {
   clearMocks()
@@ -34,4 +34,15 @@ it('stops delivering once unlistened', async () => {
   await emit(IMPORT_PROGRESS_EVENT, progress)
 
   expect(handler).not.toHaveBeenCalled()
+})
+
+it('hands the subscriber the capture that was stored', async () => {
+  mockIPC(() => {}, { shouldMockEvents: true })
+  const handler = vi.fn()
+  const image = { id: 'cap-1', pageTitle: 'a page' } as ImageRecord
+
+  await onCaptureStored(handler)
+  await emit(CAPTURE_STORED_EVENT, image)
+
+  expect(handler).toHaveBeenCalledWith(image)
 })

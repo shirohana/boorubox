@@ -11,9 +11,9 @@ pub mod query;
 pub mod settings;
 pub mod thumbs;
 
-use std::sync::{Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
-use tauri::Manager;
+use tauri::{AppHandle, Emitter, Manager, Runtime};
 
 use crate::error::AppError;
 use crate::library::SharedLibrary;
@@ -52,10 +52,21 @@ impl AppState {
     /// What the listener's handlers see. Built from this state, so a capture and
     /// a UI action never reach two different libraries — including after a
     /// rebind, which builds a second router over the same `SharedLibrary`.
-    pub fn http_state(&self) -> http::HttpState {
+    ///
+    /// The app handle is here for one reason: a capture arrives with nothing on
+    /// screen having asked for it, and only an event tells the webview to read
+    /// the library again.
+    pub fn http_state<R: Runtime>(&self, app: &AppHandle<R>) -> http::HttpState {
+        let app = app.clone();
         http::HttpState {
             library: self.library.clone(),
             version: VERSION.to_string(),
+            on_stored: Arc::new(move |record| {
+                // A dropped event is a grid that waits for the user's next
+                // action; the image is stored either way, so it is not worth
+                // failing the delivery the extension is still waiting on.
+                let _ = app.emit(commands::CAPTURE_STORED_EVENT, record);
+            }),
         }
     }
 }
@@ -132,7 +143,7 @@ fn open_remembered_library_and_listen(app: &tauri::App) {
         let _ = commands::open_into_state(&handle, &state, path, commands::OpenMode::ExistingOnly);
     }
 
-    tauri::async_runtime::block_on(commands::rebind_listener(&state, settings.port));
+    tauri::async_runtime::block_on(commands::rebind_listener(&handle, &state, settings.port));
     *lock(&state.settings) = settings;
 }
 

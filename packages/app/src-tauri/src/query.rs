@@ -407,6 +407,7 @@ mod tests {
                 image_url: Some(&image_url),
                 page_url,
                 page_title: Some(page_title),
+                adapter: None,
                 rating,
                 tags: &tags,
                 captured_at,

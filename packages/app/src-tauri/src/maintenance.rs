@@ -149,6 +149,7 @@ mod tests {
                 image_url: None,
                 page_url: Some("https://x.com/alice/status/1"),
                 page_title: Some("sunset over kyoto"),
+                adapter: None,
                 rating: Some("s"),
                 tags: &tags,
                 captured_at: 1_700_000_000_000,

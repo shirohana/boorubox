@@ -129,6 +129,7 @@ mod tests {
                 image_url: None,
                 page_url: None,
                 page_title: Some("cat.png"),
+                adapter: None,
                 rating: None,
                 tags: &[],
                 captured_at: 1_700_000_000_000,

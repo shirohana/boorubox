@@ -131,6 +131,7 @@ fn import_file(library: &Library, path: &Path) -> ImportOutcome {
             image_url: None,
             page_url: None,
             page_title: Some(&title),
+            adapter: None,
             rating: None,
             tags: &[],
             captured_at,

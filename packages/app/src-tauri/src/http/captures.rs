@@ -30,7 +30,7 @@ pub async fn post_capture(State(state): State<HttpState>, multipart: Multipart) 
     // Awaited, so nothing answers before the record exists (spec
     // `capture-ingest`: "A response earlier than the stored record SHALL NOT be
     // sent").
-    store(state.library, capture).await
+    store(state, capture).await
 }
 
 struct Capture {
@@ -113,9 +113,16 @@ fn malformed(error: MultipartError) -> Refusal {
 /// it parks a runtime worker with the one connection in hand, and the next
 /// request scheduled onto that worker waits on a lock that cannot be released:
 /// the whole listener stops, with nothing at the call site to show why.
-async fn store(library: SharedLibrary, capture: Capture) -> Response {
+async fn store(state: HttpState, capture: Capture) -> Response {
+    let library = state.library.clone();
     match tokio::task::spawn_blocking(move || store_now(&library, &capture)).await {
-        Ok(Ok(Ingested::Created(record))) => (StatusCode::CREATED, Json(record)).into_response(),
+        Ok(Ok(Ingested::Created(record))) => {
+            // Only a new row is announced. A re-post under a known id changed
+            // nothing, and telling the webview otherwise would reload the grid
+            // under the user for an image already in it.
+            (state.on_stored)(&record);
+            (StatusCode::CREATED, Json(record)).into_response()
+        }
         Ok(Ok(Ingested::Existing(record))) => (StatusCode::OK, Json(record)).into_response(),
         Ok(Err(error)) => error_response(&error),
         Err(panicked) => reason(
@@ -134,15 +141,16 @@ fn store_now(library: &SharedLibrary, capture: &Capture) -> Result<Ingested> {
                 id: &meta.id,
                 bytes: &capture.bytes,
                 source: ImageSource::Extension,
-                // FIXME: the rest of the adapter record is dropped. The
-                // extension extracts `fields` (tags, rating) and the app owns
-                // the rules that read them; Phase 1 has no rules module and no
-                // column to park the raw record in, so only the site survives.
-                // Adding either is what turns this into tags and a rating.
+                // The site stays on `source_ref` so per-source counts and that
+                // column keep the meaning they have; the whole record goes to
+                // `adapter` beside it (design D11). Nothing here reads a field
+                // out of it — that is policy, and policy lives in the app's
+                // rules, not in the door every image enters by.
                 source_ref: meta.adapter.as_ref().map(|adapter| adapter.site.as_str()),
                 image_url: Some(&meta.image_url),
                 page_url: Some(&meta.page_url),
                 page_title: Some(&meta.page_title),
+                adapter: meta.adapter.as_ref(),
                 rating: None,
                 tags: &[],
                 captured_at: meta.captured_at,
@@ -178,6 +186,131 @@ mod tests {
         assert_eq!(body["pageTitle"], "a page");
         assert!(stored_file_exists(&state, "id-1", "png"));
         assert_eq!(image_count(&state), 1);
+    }
+
+    fn meta_with_adapter(id: &str, adapter: serde_json::Value) -> String {
+        serde_json::json!({
+            "id": id,
+            "imageUrl": "https://example.test/i.png",
+            "pageUrl": "https://example.test/p",
+            "pageTitle": "a page",
+            "capturedAt": 1_700_000_000_000i64,
+            "adapter": adapter,
+        })
+        .to_string()
+    }
+
+    #[tokio::test]
+    async fn the_adapter_record_survives_the_round_trip() {
+        let (_dir, state) = open_state();
+        let png = png_bytes(4, 7);
+        let meta = meta_with_adapter(
+            "id-1",
+            serde_json::json!({
+                "site": "x",
+                "fields": {
+                    "handle": "alice",
+                    "postUrl": "https://x.com/alice/status/1",
+                },
+            }),
+        );
+
+        let (status, body) = send(
+            &state,
+            capture_request(Some(EXTENSION_ORIGIN), &[file_part(&png), meta_part(&meta)]),
+        )
+        .await;
+
+        assert_eq!(status, StatusCode::CREATED);
+        assert_eq!(body["sourceRef"], "x");
+        assert_eq!(body["adapter"]["site"], "x");
+        assert_eq!(body["adapter"]["fields"]["handle"], "alice");
+        assert_eq!(
+            body["adapter"]["fields"]["postUrl"],
+            "https://x.com/alice/status/1"
+        );
+    }
+
+    #[tokio::test]
+    async fn adapter_fields_the_app_has_no_meaning_for_are_kept_as_sent() {
+        let (_dir, state) = open_state();
+        let png = png_bytes(4, 7);
+        let meta = meta_with_adapter(
+            "id-1",
+            serde_json::json!({
+                "site": "somewhere-new",
+                "fields": { "whatIsThis": ["one", "two"], "andThis": "a value" },
+            }),
+        );
+
+        let (status, body) = send(
+            &state,
+            capture_request(Some(EXTENSION_ORIGIN), &[file_part(&png), meta_part(&meta)]),
+        )
+        .await;
+
+        assert_eq!(status, StatusCode::CREATED);
+        assert_eq!(
+            body["adapter"]["fields"]["whatIsThis"],
+            serde_json::json!(["one", "two"])
+        );
+        assert_eq!(body["adapter"]["fields"]["andThis"], "a value");
+        assert_eq!(image_count(&state), 1);
+    }
+
+    #[tokio::test]
+    async fn a_capture_without_an_adapter_record_is_stored_without_one() {
+        let (_dir, state) = open_state();
+        let png = png_bytes(4, 7);
+        let meta = serde_json::json!({
+            "id": "id-1",
+            "imageUrl": "https://example.test/i.png",
+            "pageUrl": "https://example.test/p",
+            "pageTitle": "a page",
+            "capturedAt": 1_700_000_000_000i64,
+        })
+        .to_string();
+
+        let (status, body) = send(
+            &state,
+            capture_request(Some(EXTENSION_ORIGIN), &[file_part(&png), meta_part(&meta)]),
+        )
+        .await;
+
+        assert_eq!(status, StatusCode::CREATED);
+        assert!(body["adapter"].is_null());
+        assert!(body["sourceRef"].is_null());
+        assert_eq!(image_count(&state), 1);
+    }
+
+    #[tokio::test]
+    async fn a_stored_capture_is_announced_once_and_a_re_post_is_not() {
+        let (_dir, state, stored) = open_state_recording();
+        let png = png_bytes(4, 7);
+        let meta = meta_json("id-1");
+        let request =
+            || capture_request(Some(EXTENSION_ORIGIN), &[file_part(&png), meta_part(&meta)]);
+
+        send(&state, request()).await;
+        assert_eq!(stored.lock().unwrap().as_slice(), ["id-1"]);
+
+        // The retry of a delivery the app already accepted. Nothing changed, so
+        // nothing is announced and the grid stays where the user left it.
+        send(&state, request()).await;
+        assert_eq!(stored.lock().unwrap().as_slice(), ["id-1"]);
+    }
+
+    #[tokio::test]
+    async fn a_refused_capture_is_never_announced() {
+        let (_dir, state, stored) = open_state_recording();
+
+        send(
+            &state,
+            capture_request(Some(EXTENSION_ORIGIN), &[meta_part(&meta_json("id-1"))]),
+        )
+        .await;
+
+        assert!(stored.lock().unwrap().is_empty());
     }
 
     #[tokio::test]

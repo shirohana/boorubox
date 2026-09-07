@@ -30,6 +30,11 @@ export type Rating = 'g' | 's' | 'q' | 'e'
  * What a site adapter extracted, verbatim. The extension produces it; only the
  * app decides what the fields mean (CLAUDE.md: extraction in the extension,
  * policy in the app).
+ *
+ * A field value is text or a list of text, and the record is stored as it
+ * arrived (design D8, D11). Normalising it on the way in would make the stored
+ * record a second definition of what the adapter produced, and the extension's
+ * fixture tests would stop describing what the library holds.
  */
 export interface SiteAdapterRecord {
   site: string
@@ -69,6 +74,8 @@ export interface ImageRecord {
   imageUrl: string | null
   pageUrl: string | null
   pageTitle: string | null
+  /** What the capturing client's site adapter extracted, as received. */
+  adapter: SiteAdapterRecord | null
   rating: Rating | null
   tags: string[]
   capturedAt: number

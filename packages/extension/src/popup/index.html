@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>BooruBox Bridge</title>
+    <link rel="stylesheet" href="./popup.css" />
+  </head>
+  <body>
+    <div class="panel">
+      <div id="connection"></div>
+      <div class="toolbar">
+        <button id="retry-all" type="button" hidden>Retry all</button>
+        <button id="clear" type="button" hidden>Clear history</button>
+      </div>
+      <div id="history"></div>
+      <footer class="footer">
+        <label for="port">App port</label>
+        <input id="port" type="number" min="1" max="65535" inputmode="numeric" />
+        <span id="port-error" class="error" hidden></span>
+      </footer>
+    </div>
+    <script type="module" src="./main.ts"></script>
+  </body>
+</html>

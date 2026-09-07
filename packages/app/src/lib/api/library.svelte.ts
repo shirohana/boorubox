@@ -25,6 +25,19 @@ class Library {
     }
   }
 
+  /**
+   * Re-reads the status from Rust, for a change no command in the webview made
+   * — a capture arriving over the listener is the only one so far.
+   */
+  async refresh(): Promise<void> {
+    try {
+      this.status = await libraryStatus()
+    } catch {
+      // The status on screen is a moment old, not wrong. Replacing the frame
+      // with an error because one refresh failed would be the larger loss.
+    }
+  }
+
   set(status: LibraryStatus): void {
     this.status = status
     this.error = null

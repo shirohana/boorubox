@@ -13,7 +13,7 @@ use rusqlite::{Connection, Row, params, params_from_iter};
 use crate::db;
 use crate::error::{AppError, Result};
 use crate::library::Library;
-use crate::model::{ImageRecord, ImageSource};
+use crate::model::{ImageRecord, ImageSource, SiteAdapterRecord};
 
 /// Everything a caller knows about an image before it has a row. `id` is the
 /// caller's UUID, and delivery is idempotent on it.
@@ -25,6 +25,9 @@ pub struct IngestInput<'a> {
     pub image_url: Option<&'a str>,
     pub page_url: Option<&'a str>,
     pub page_title: Option<&'a str>,
+    /// What the caller's site adapter extracted. Stored as it arrived; ingest
+    /// reads nothing out of it (design D11).
+    pub adapter: Option<&'a SiteAdapterRecord>,
     pub rating: Option<&'a str>,
     pub tags: &'a [String],
     pub captured_at: i64,
@@ -49,8 +52,8 @@ impl Ingested {
 /// The columns `row_to_record` reads, in the order it reads them. Any SELECT
 /// feeding that function must use this list.
 pub const IMAGE_COLUMNS: &str = "id, ext, mime, size, width, height, source, source_ref, \
-     image_url, page_url, page_title, rating, captured_at, created_at, updated_at, deleted_at, \
-     missing";
+     image_url, page_url, page_title, adapter_json, rating, captured_at, created_at, updated_at, \
+     deleted_at, missing";
 
 struct Decoded {
     width: u32,
@@ -126,10 +129,18 @@ fn insert_rows(library: &Library, input: &IngestInput, decoded: &Decoded) -> Res
     // mutex around the single connection (design D1).
     let tx = library.conn.unchecked_transaction()?;
     let now = db::now_ms();
+    let adapter_json = input
+        .adapter
+        .map(serde_json::to_string)
+        .transpose()
+        .map_err(|error| {
+            AppError::BadRequest(format!("adapter record cannot be stored: {error}"))
+        })?;
     let inserted = tx.execute(
         "INSERT INTO images (id, ext, mime, size, width, height, source, source_ref, image_url,
-                             page_url, page_title, rating, captured_at, created_at, updated_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)
+                             page_url, page_title, adapter_json, rating, captured_at, created_at,
+                             updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)
          ON CONFLICT (id) DO NOTHING",
         params![
             input.id,
@@ -143,6 +154,7 @@ fn insert_rows(library: &Library, input: &IngestInput, decoded: &Decoded) -> Res
             input.image_url,
             input.page_url,
             input.page_title,
+            adapter_json,
             input.rating,
             input.captured_at,
             now,
@@ -195,13 +207,19 @@ pub fn row_to_record(row: &Row) -> rusqlite::Result<ImageRecord> {
         image_url: row.get(8)?,
         page_url: row.get(9)?,
         page_title: row.get(10)?,
-        rating: row.get(11)?,
+        // A record that will not parse reads as none rather than failing the
+        // row: the column is a document written by a client, and one bad
+        // document must not take a whole page of the grid down with it.
+        adapter: row
+            .get::<_, Option<String>>(11)?
+            .and_then(|json| serde_json::from_str(&json).ok()),
+        rating: row.get(12)?,
         tags: Vec::new(),
-        captured_at: row.get(12)?,
-        created_at: row.get(13)?,
-        updated_at: row.get(14)?,
-        deleted_at: row.get(15)?,
-        missing: row.get(16)?,
+        captured_at: row.get(13)?,
+        created_at: row.get(14)?,
+        updated_at: row.get(15)?,
+        deleted_at: row.get(16)?,
+        missing: row.get(17)?,
     })
 }
 
@@ -265,6 +283,7 @@ mod tests {
             image_url: Some("https://example.test/i.png"),
             page_url: Some("https://example.test/p"),
             page_title: Some("a page"),
+            adapter: None,
             rating: Some("s"),
             tags,
             captured_at: 1_700_000_000_000,
@@ -343,6 +362,60 @@ mod tests {
         assert_eq!(entry_count(&library.images_dir()), 0);
         assert_eq!(entry_count(&library.inbox_dir()), 0);
         assert_eq!(library.image_count().unwrap(), 0);
+    }
+
+    #[test]
+    fn the_adapter_record_is_stored_and_read_back_unchanged() {
+        let (_dir, library) = library();
+        let bytes = png_bytes(2, 2);
+        let tags: Vec<String> = Vec::new();
+        let adapter = SiteAdapterRecord {
+            site: "x".to_string(),
+            fields: serde_json::json!({
+                "handle": "alice",
+                "postUrl": "https://x.com/alice/status/1",
+                "aliases": ["a", "b"],
+            }),
+        };
+        let mut input = input("id-1", &bytes, &tags);
+        input.adapter = Some(&adapter);
+
+        store_image(&library, input).unwrap();
+        let record = load_record(&library.conn, "id-1").unwrap().unwrap();
+
+        assert_eq!(record.adapter, Some(adapter));
+    }
+
+    #[test]
+    fn an_image_stored_without_an_adapter_record_reads_back_with_none() {
+        let (_dir, library) = library();
+        let bytes = png_bytes(2, 2);
+        let tags: Vec<String> = Vec::new();
+
+        store_image(&library, input("id-1", &bytes, &tags)).unwrap();
+        let record = load_record(&library.conn, "id-1").unwrap().unwrap();
+
+        assert_eq!(record.adapter, None);
+    }
+
+    #[test]
+    fn a_row_whose_adapter_record_will_not_parse_still_loads() {
+        let (_dir, library) = library();
+        let bytes = png_bytes(2, 2);
+        let tags: Vec<String> = Vec::new();
+        store_image(&library, input("id-1", &bytes, &tags)).unwrap();
+        library
+            .conn
+            .execute(
+                "UPDATE images SET adapter_json = 'not json' WHERE id = 'id-1'",
+                [],
+            )
+            .unwrap();
+
+        let record = load_record(&library.conn, "id-1").unwrap().unwrap();
+
+        assert_eq!(record.adapter, None);
+        assert_eq!(record.id, "id-1");
     }
 
     #[test]

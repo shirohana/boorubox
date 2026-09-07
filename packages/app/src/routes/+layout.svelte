@@ -2,7 +2,7 @@
   import { goto } from '$app/navigation'
   import { resolve } from '$app/paths'
   import { page } from '$app/state'
-  import { library, settings } from '$lib/api'
+  import { library, onCaptureStored, settings } from '$lib/api'
   import AppSidebar from '$lib/components/frame/Sidebar.svelte'
   import TopBar from '$lib/components/frame/TopBar.svelte'
   import * as Sidebar from '$lib/components/ui/sidebar'
@@ -28,6 +28,17 @@
   // `system` installs — without it an explicit choice would be repainted the
   // next time the OS switched appearance.
   $effect(() => applyTheme(settings.current?.theme ?? 'system'))
+
+  // The image count in the sidebar is part of the frame, so it follows a
+  // capture on every screen — not only on the one that lists the images. The
+  // library route has its own subscription for the grid.
+  $effect(() => {
+    const subscription = onCaptureStored(() => void library.refresh())
+    subscription.catch(() => {})
+    return () => {
+      void subscription.then((unlisten) => unlisten()).catch(() => {})
+    }
+  })
 
   // The gate from spec `library-folder`: with no library open, `/start` is the
   // only reachable route. The children stay unrendered until the redirect has

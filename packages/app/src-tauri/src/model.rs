@@ -143,6 +143,10 @@ pub struct ImageRecord {
     pub image_url: Option<String>,
     pub page_url: Option<String>,
     pub page_title: Option<String>,
+    /// What the capturing client's site adapter extracted, as received
+    /// (design D11). Storage only in this schema: nothing derives tags, a
+    /// rating or an artist from it yet.
+    pub adapter: Option<SiteAdapterRecord>,
     /// `g` | `s` | `q` | `e` in the TypeScript mirror. Kept a string here
     /// because legacy-bundle import (D9) carries whatever the old library
     /// stored, and ingest must not drop an image over an unknown rating.
