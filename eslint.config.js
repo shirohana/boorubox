@@ -15,6 +15,9 @@ export default tseslint.config(
       '**/.svelte-kit/',
       '**/src-tauri/target/',
       '**/src-tauri/gen/',
+      // Subagent worktrees: whole checkouts without node_modules, so ESLint
+      // dies resolving their configs before linting anything.
+      '.claude/worktrees/',
       // shadcn-svelte copy-ins: upstream code, updated by its CLI. `hooks` is a
       // second root because components.json maps that alias outside `ui/`, and
       // `sidebar` pulls `is-mobile` in through it.
