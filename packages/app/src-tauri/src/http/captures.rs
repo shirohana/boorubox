@@ -171,6 +171,10 @@ fn store_now(library: &SharedLibrary, capture: &Capture) -> Result<Ingested> {
                 rating: None,
                 tags: &[],
                 captured_at: meta.captured_at,
+                // The HTTP capture path is never a file on disk: the extension
+                // sends bytes over the wire, so there is no modification time
+                // to record (design D11, `browse-polish`).
+                file_modified_at: None,
             },
         )?;
         Ok((library.paths.clone(), ingested))
@@ -231,6 +235,25 @@ mod tests {
 
         assert_eq!(status, StatusCode::CREATED);
         assert!(thumbnail_exists(&state, "id-1"));
+    }
+
+    /// Design D11 (`browse-polish`): the HTTP capture path never has a file on
+    /// disk to read a modification time from, so the column stays absent
+    /// rather than 0 or the capture time.
+    #[tokio::test]
+    async fn a_captured_image_carries_no_file_modification_time() {
+        let (_dir, state) = open_state();
+        let png = png_bytes(4, 7);
+        let meta = meta_json("id-1");
+
+        let (status, body) = send(
+            &state,
+            capture_request(Some(EXTENSION_ORIGIN), &[file_part(&png), meta_part(&meta)]),
+        )
+        .await;
+
+        assert_eq!(status, StatusCode::CREATED);
+        assert_eq!(body["fileModifiedAt"], serde_json::Value::Null);
     }
 
     fn meta_with_adapter(id: &str, adapter: serde_json::Value) -> String {

@@ -47,6 +47,15 @@
   let tile = $state(settings.current?.gridTileSize ?? GRID_TILE_DEFAULT)
   let lightboxIndex = $state(0)
   let lightboxOpen = $state(false)
+  /**
+   * The viewer's mode is session state like `inspectorOpen`, and it is held here
+   * rather than in the dialog because the user who opened the panel wants the
+   * panel: closing a picture is not a statement about it (design D6). The grid's
+   * inspector column keeps its own flag — opening the viewer must not move it.
+   */
+  let lightboxMode = $state<'gallery' | 'inspect'>('gallery')
+  /** Written by the grid, read by the viewer's row step (design D9). */
+  let columns = $state(1)
   let grid = $state<LibraryGrid | null>(null)
   let hovering = $state(false)
   let actionError = $state<string | null>(null)
@@ -259,6 +268,7 @@
           {results}
           {tile}
           bind:focusIndex
+          bind:columns
           onactivate={(index) => {
             lightboxIndex = index
             lightboxOpen = true
@@ -282,8 +292,10 @@
   <Lightbox
     {results}
     {libraryPath}
+    {columns}
     {tagQuery}
     onquery={searchFor}
+    bind:mode={lightboxMode}
     bind:index={lightboxIndex}
     onclose={() => {
       lightboxOpen = false

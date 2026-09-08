@@ -55,6 +55,7 @@ export const KEYBOARD_MAP: KeyBinding[] = [
   { where: 'Grid', keys: ['Enter', 'Space'], action: 'Open the focused image' },
   { where: 'Grid', keys: ['I'], action: 'Show or hide the inspector' },
   { where: 'Viewer', keys: ['←', '→'], action: 'Previous or next image' },
+  { where: 'Viewer', keys: ['↑', '↓'], action: 'The image one grid row up or down' },
   { where: 'Viewer', keys: ['I'], action: 'Show or hide the inspector' },
   { where: 'Viewer', keys: ['Esc', 'Space'], action: 'Close, focusing the image shown last' },
 ]

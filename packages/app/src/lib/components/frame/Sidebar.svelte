@@ -44,7 +44,16 @@
       footer follows.
     -->
     {#if frame.filters}
-      <div class="min-h-0 flex-1 overflow-y-auto group-data-[collapsible=icon]:hidden">
+      <!--
+        `data-sidebar="filters"` is the hook app.css scrolls this region by: its
+        rules sit beside the copy-in content wrapper's, which cannot be reached
+        from a class here. Dropping the attribute drops the scrollbar gutter and
+        the sideways-scroll clip with it.
+      -->
+      <div
+        data-sidebar="filters"
+        class="min-h-0 flex-1 overflow-y-auto group-data-[collapsible=icon]:hidden"
+      >
         {@render frame.filters()}
       </div>
       <Sidebar.Separator class="my-2 group-data-[collapsible=icon]:hidden" />
@@ -113,5 +122,13 @@
       <p class="px-2 text-xs text-destructive">{error}</p>
     {/if}
   </Sidebar.Footer>
-  <Sidebar.Rail />
+  <!--
+    The rail collapses and expands the sidebar; nothing in the frame is
+    resizable (design D10), so its edge must not offer a resize cursor. The
+    copy-in's cursors are variant-scoped (`in-data-[side=left]:`, and a second
+    pair for the collapsed state), which a plain utility does not outrank —
+    hence `!`, and hence the override from here rather than an edit to the
+    copy-in, which `shadcn-svelte add sidebar` would overwrite.
+  -->
+  <Sidebar.Rail class="cursor-pointer!" />
 </Sidebar.Root>

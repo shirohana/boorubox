@@ -168,6 +168,9 @@ pub struct ImageRecord {
     pub rating: Option<String>,
     pub tags: Vec<String>,
     pub captured_at: i64,
+    /// The file's own modification time, epoch milliseconds; `None` for an
+    /// image that never came from a file (design D11).
+    pub file_modified_at: Option<i64>,
     pub created_at: i64,
     pub updated_at: i64,
     pub deleted_at: Option<i64>,
@@ -463,6 +466,56 @@ mod tests {
         assert_eq!(
             serde_json::to_value(settings).unwrap(),
             serde_json::json!({ "theme": "dark", "gridTileSize": 180 }),
+        );
+    }
+
+    fn bare_image(id: &str) -> ImageRecord {
+        ImageRecord {
+            id: id.to_string(),
+            ext: "png".to_string(),
+            mime: "image/png".to_string(),
+            size: 1,
+            width: 1,
+            height: 1,
+            source: ImageSource::Local,
+            source_ref: None,
+            image_url: None,
+            page_url: None,
+            page_title: None,
+            adapter: None,
+            rating: None,
+            tags: Vec::new(),
+            captured_at: 0,
+            file_modified_at: None,
+            created_at: 0,
+            updated_at: 0,
+            deleted_at: None,
+            missing: false,
+        }
+    }
+
+    /// Design D11: `fileModifiedAt` crosses the wire in camelCase and `null`
+    /// round-trips, so an image with no file behind it (every extension
+    /// capture) reads back as absent rather than 0 or an error.
+    #[test]
+    fn file_modified_at_is_camel_case_and_null_round_trips() {
+        let without_file = bare_image("a");
+        let json = serde_json::to_value(&without_file).unwrap();
+        assert_eq!(json["fileModifiedAt"], serde_json::Value::Null);
+        assert_eq!(
+            serde_json::from_value::<ImageRecord>(json).unwrap(),
+            without_file
+        );
+
+        let with_file = ImageRecord {
+            file_modified_at: Some(1_600_000_000_000),
+            ..bare_image("b")
+        };
+        let json = serde_json::to_value(&with_file).unwrap();
+        assert_eq!(json["fileModifiedAt"], 1_600_000_000_000_i64);
+        assert_eq!(
+            serde_json::from_value::<ImageRecord>(json).unwrap(),
+            with_file
         );
     }
 

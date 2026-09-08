@@ -6,6 +6,8 @@
   import AppSidebar from '$lib/components/frame/Sidebar.svelte'
   import TopBar from '$lib/components/frame/TopBar.svelte'
   import * as Sidebar from '$lib/components/ui/sidebar'
+  import { getCurrentWebview } from '@tauri-apps/api/webview'
+  import { getCurrentWindow } from '@tauri-apps/api/window'
   import { KEY_ZOOM_OUT, KEY_ZOOM_RESET, KEYS_ZOOM_IN } from '$lib/keyboard'
   import { applyTheme } from '$lib/theme.svelte'
   import { zoomBy } from '$lib/zoom'
@@ -70,9 +72,23 @@
     event.preventDefault()
     void zoomBy(direction)
   }
+
+  /**
+   * Leaving macOS fullscreen (⌃⌘F) leaves the window itself as first responder:
+   * the webview is no longer where keys go, and nothing on the page fires until
+   * a click — not the grid's arrows, not even `/` bound on the window. WebKit
+   * reports the loss as a `blur` on the window. When the app window still has
+   * the focus, the loss happened inside it, so the webview asks for the keys
+   * back (`core:webview:allow-set-webview-focus`). A blur from switching apps
+   * leaves `isFocused` false and is left alone.
+   */
+  async function reclaimKeys() {
+    if (!(await getCurrentWindow().isFocused())) return
+    await getCurrentWebview().setFocus()
+  }
 </script>
 
-<svelte:window onkeydown={zoomKeys} />
+<svelte:window onkeydown={zoomKeys} onblur={reclaimKeys} />
 
 {#if failure}
   <main class="p-6">

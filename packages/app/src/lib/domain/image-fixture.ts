@@ -20,6 +20,7 @@ export function img(overrides: Partial<ImageRecord> = {}): ImageRecord {
     rating: null,
     tags: [],
     capturedAt: 0,
+    fileModifiedAt: null,
     createdAt: 0,
     updatedAt: 0,
     deletedAt: null,

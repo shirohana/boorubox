@@ -95,6 +95,11 @@ export interface ImageRecord {
   rating: Rating | null
   tags: string[]
   capturedAt: number
+  /**
+   * The file's own modification time, epoch milliseconds; absent for an
+   * image that never came from a file.
+   */
+  fileModifiedAt: number | null
   createdAt: number
   updatedAt: number
   deletedAt: number | null

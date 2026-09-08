@@ -161,6 +161,7 @@ mod tests {
                 rating: Some("s"),
                 tags: &tags,
                 captured_at: 1_700_000_000_000,
+                file_modified_at: None,
             },
         )
         .unwrap();

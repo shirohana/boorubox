@@ -639,6 +639,7 @@ mod tests {
                 rating,
                 tags: &tags,
                 captured_at,
+                file_modified_at: None,
             },
         )
         .unwrap();

@@ -121,6 +121,14 @@
       <dt class="text-muted-foreground">Imported</dt>
       <dd>{formatTimestamp(image.createdAt)}</dd>
 
+      <!--
+        `formatTimestamp` already reads a non-finite number as `—`; passing
+        `NaN` for an image with no file behind it reuses that fallback instead
+        of a second one written here (design D11).
+      -->
+      <dt class="text-muted-foreground">File modified</dt>
+      <dd>{formatTimestamp(image.fileModifiedAt ?? Number.NaN)}</dd>
+
       <dt class="text-muted-foreground">ID</dt>
       <dd class="font-mono wrap-break-word">{image.id}</dd>
     </dl>

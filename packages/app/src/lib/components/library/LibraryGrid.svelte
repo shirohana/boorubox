@@ -27,6 +27,11 @@
      * new query makes the old index meaningless.
      */
     focusIndex: number
+    /**
+     * Read-only to the page: the grid is the one place the column count is
+     * computed, and the viewer's row step reads it from here (design D9).
+     */
+    columns: number
     onactivate: (index: number) => void
     onforget: (image: ImageRecord) => void
     onrate: (image: ImageRecord, rating: Rating | null) => void
@@ -37,6 +42,8 @@
     results,
     tile,
     focusIndex = $bindable(),
+    // eslint-disable-next-line no-useless-assignment -- write-only: published, never read back
+    columns = $bindable(),
     onactivate,
     onforget,
     onrate,
@@ -61,6 +68,12 @@
   // this effect and the window is asked for again.
   $effect(() => {
     results.ensureRange(shown.firstIndex, shown.endIndex)
+  })
+
+  // Published rather than recomputed by the page (design D9): a second
+  // computation would drift the day the gap or the padding changes.
+  $effect(() => {
+    columns = shown.columns
   })
 
   // A new query is a new list; staying at the old scroll offset would show its

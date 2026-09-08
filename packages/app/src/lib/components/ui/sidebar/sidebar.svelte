@@ -1,4 +1,8 @@
 <script lang="ts">
+	// Local edit to the copy-in: the desktop sidebar was `hidden md:block` / `hidden md:flex`, gone
+	// under 768 CSS px — which the whole-app zoom reaches at any window width. BooruBox is a
+	// desktop app: see `$lib/hooks/is-mobile.svelte.ts`, which turns the phone sheet off for the
+	// same reason. `pnpm dlx shadcn-svelte add sidebar` overwrites this file: re-apply both.
 	import * as Sheet from "$lib/components/ui/sheet/index.js";
 	import { cn, type WithElementRef } from "$lib/utils.js";
 	import { SIDEBAR_WIDTH_MOBILE } from "./constants.js";
@@ -59,7 +63,7 @@
 {:else}
 	<div
 		bind:this={ref}
-		class="group peer hidden text-sidebar-foreground md:block"
+		class="group peer block text-sidebar-foreground"
 		data-state={sidebar.state}
 		data-collapsible={sidebar.state === "collapsed" ? collapsible : ""}
 		data-variant={variant}
@@ -81,7 +85,7 @@
 		<div
 			data-slot="sidebar-container"
 			class={cn(
-				"fixed inset-y-0 z-10 hidden h-svh w-(--sidebar-width) transition-[left,right,width] duration-200 ease-linear md:flex",
+				"fixed inset-y-0 z-10 flex h-svh w-(--sidebar-width) transition-[left,right,width] duration-200 ease-linear",
 				side === "left"
 					? "start-0 group-data-[collapsible=offcanvas]:start-[calc(var(--sidebar-width)*-1)]"
 					: "end-0 group-data-[collapsible=offcanvas]:end-[calc(var(--sidebar-width)*-1)]",

@@ -130,23 +130,32 @@
             tabindex={focused ? 0 : -1}
             onclick={(event) => {
               // WebKit does not focus a button on click, and the grid's keys only
-        // fire while the focus is inside it — so a clicked card has to take
-        // the focus itself, or a click and then an arrow key does nothing.
+              // fire while the focus is inside it — so a clicked card has to take
+              // the focus itself, or a click and then an arrow key does nothing.
               event.currentTarget.focus()
               onfocus()
+              // Design D7: the second click on the tile the inspector is already
+              // describing opens it. A click never opens a tile that was not
+              // current, which is the half of D9 that stands.
+              if (focused) onactivate()
             }}
             ondblclick={onactivate}
             class="
-              group relative block size-full overflow-hidden rounded-lg border bg-muted/40
-              outline-none
-              focus-visible:ring-3 focus-visible:ring-ring/50
-              {focused ? 'border-ring' : 'border-border'}
+              group relative block size-full overflow-hidden rounded-lg border border-border
+              bg-muted/40 outline-none
+              {focused ? 'ring-3 ring-ring/50' : ''}
             "
           >
             {#if src}
+              <!--
+                Undraggable (design D1): an `<img>` the webview promises to the
+                OS starts a drag the import dropzone then reads as an incoming
+                file, raising the overlay over the user's own grid.
+              -->
               <img
                 {src}
                 alt={title}
+                draggable="false"
                 loading="lazy"
                 decoding="async"
                 class="size-full object-contain"

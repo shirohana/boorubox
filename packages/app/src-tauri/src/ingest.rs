@@ -31,6 +31,10 @@ pub struct IngestInput<'a> {
     pub rating: Option<&'a str>,
     pub tags: &'a [String],
     pub captured_at: i64,
+    /// The file's own modification time; `None` for anything that did not come
+    /// from a file (design D11, `browse-polish`). The local import path is the
+    /// only caller that passes `Some`.
+    pub file_modified_at: Option<i64>,
 }
 
 /// Whether the call stored the image or found it already there. The HTTP layer
@@ -53,7 +57,7 @@ impl Ingested {
 /// feeding that function must use this list.
 pub const IMAGE_COLUMNS: &str = "id, ext, mime, size, width, height, source, source_ref, \
      image_url, page_url, page_title, adapter_json, rating, captured_at, created_at, updated_at, \
-     deleted_at, missing";
+     deleted_at, missing, file_modified_at";
 
 struct Decoded {
     width: u32,
@@ -137,8 +141,8 @@ fn insert_rows(library: &Library, input: &IngestInput, decoded: &Decoded) -> Res
     let inserted = tx.execute(
         "INSERT INTO images (id, ext, mime, size, width, height, source, source_ref, image_url,
                              page_url, page_title, adapter_json, rating, captured_at, created_at,
-                             updated_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)
+                             updated_at, file_modified_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)
          ON CONFLICT (id) DO NOTHING",
         params![
             input.id,
@@ -157,6 +161,7 @@ fn insert_rows(library: &Library, input: &IngestInput, decoded: &Decoded) -> Res
             input.captured_at,
             now,
             now,
+            input.file_modified_at,
         ],
     )?;
 
@@ -221,6 +226,7 @@ pub fn row_to_record(row: &Row) -> rusqlite::Result<ImageRecord> {
         updated_at: row.get(15)?,
         deleted_at: row.get(16)?,
         missing: row.get(17)?,
+        file_modified_at: row.get(18)?,
     })
 }
 
@@ -289,6 +295,7 @@ mod tests {
             rating: Some("s"),
             tags,
             captured_at: 1_700_000_000_000,
+            file_modified_at: None,
         }
     }
 
@@ -418,6 +425,26 @@ mod tests {
 
         assert_eq!(record.adapter, None);
         assert_eq!(record.id, "id-1");
+    }
+
+    /// Design D11: the column is appended to `IMAGE_COLUMNS`, not slotted in
+    /// the middle, so this is the guarantee that a record round-trips whether
+    /// or not it carries a file's modification time.
+    #[test]
+    fn file_modified_at_round_trips_present_and_absent() {
+        let (_dir, library) = library();
+        let bytes = png_bytes(2, 2);
+        let tags: Vec<String> = Vec::new();
+
+        let mut with_file = input("id-1", &bytes, &tags);
+        with_file.file_modified_at = Some(1_600_000_000_000);
+        store_image(&library, with_file).unwrap();
+        let record = load_record(&library.conn, "id-1").unwrap().unwrap();
+        assert_eq!(record.file_modified_at, Some(1_600_000_000_000));
+
+        store_image(&library, input("id-2", &bytes, &tags)).unwrap();
+        let record = load_record(&library.conn, "id-2").unwrap().unwrap();
+        assert_eq!(record.file_modified_at, None);
     }
 
     #[test]

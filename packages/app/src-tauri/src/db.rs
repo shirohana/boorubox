@@ -103,9 +103,18 @@ const SCHEMA_V2: &str = r"
 ALTER TABLE images ADD COLUMN adapter_json TEXT;
 ";
 
+/// Schema v3 (`browse-polish` design D11): the file's own modification time,
+/// kept apart from `captured_at` now that capture time is always the import
+/// moment. Nullable — most images never came from a file the user had, and
+/// `NULL` is "there is no such fact" rather than an invented measurement. Not
+/// indexed: it is not a sort key (D11).
+const SCHEMA_V3: &str = r"
+ALTER TABLE images ADD COLUMN file_modified_at INTEGER;
+";
+
 /// One entry per schema version, applied in order. Appending is the only way to
 /// change the schema: `user_version` counts how many of these have run.
-const MIGRATIONS: &[&str] = &[SCHEMA_V1, SCHEMA_V2];
+const MIGRATIONS: &[&str] = &[SCHEMA_V1, SCHEMA_V2, SCHEMA_V3];
 
 /// Open (creating if needed) the library database with the pragmas D2 fixes,
 /// migrate it to the current schema, and register the SQL functions the query
@@ -215,13 +224,18 @@ mod tests {
             column_names(&conn, "images").contains(&"adapter_json".to_string()),
             "schema v2 did not add adapter_json"
         );
+        assert!(
+            column_names(&conn, "images").contains(&"file_modified_at".to_string()),
+            "schema v3 did not add file_modified_at"
+        );
     }
 
-    /// A library written by the shipped v1 build has to reach v2 with its rows,
-    /// which is the whole point of appending to `MIGRATIONS` rather than editing
-    /// `SCHEMA_V1`: edit v1 and this database never gets the column.
+    /// A library written by the shipped v1 build has to reach the current
+    /// version with its rows, which is the whole point of appending to
+    /// `MIGRATIONS` rather than editing `SCHEMA_V1`: edit v1 and this database
+    /// never gets the columns later versions add.
     #[test]
-    fn a_v1_library_migrates_to_v2_keeping_its_rows() {
+    fn a_v1_library_migrates_forward_keeping_its_rows() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("library.sqlite");
 
@@ -236,8 +250,9 @@ mod tests {
         let version: i64 = conn
             .query_row("PRAGMA user_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 2);
+        assert_eq!(version, MIGRATIONS.len() as i64);
         assert!(column_names(&conn, "images").contains(&"adapter_json".to_string()));
+        assert!(column_names(&conn, "images").contains(&"file_modified_at".to_string()));
 
         let adapter: Option<String> = conn
             .query_row(
@@ -248,6 +263,43 @@ mod tests {
             .unwrap();
         assert_eq!(
             adapter, None,
+            "an existing row reads the new column as NULL"
+        );
+        assert_eq!(fts_matches(&conn, "kyoto"), vec!["a".to_string()]);
+    }
+
+    /// A library written after `bridge-extension` shipped (v2, no
+    /// `file_modified_at`) has to reach v3 with its rows intact and `NULL` in
+    /// the new column — `browse-polish` D12 backfills nothing.
+    #[test]
+    fn a_v2_library_migrates_to_v3_keeping_its_rows() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("library.sqlite");
+
+        let conn = Connection::open(&path).unwrap();
+        conn.execute_batch(SCHEMA_V1).unwrap();
+        conn.execute_batch(SCHEMA_V2).unwrap();
+        conn.pragma_update(None, "user_version", 2i64).unwrap();
+        insert_bare_image(&conn, "a", "sunset over kyoto");
+        drop(conn);
+
+        let conn = open(&path).unwrap();
+
+        let version: i64 = conn
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, MIGRATIONS.len() as i64);
+        assert!(column_names(&conn, "images").contains(&"file_modified_at".to_string()));
+
+        let file_modified_at: Option<i64> = conn
+            .query_row(
+                "SELECT file_modified_at FROM images WHERE id = 'a'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            file_modified_at, None,
             "an existing row reads the new column as NULL"
         );
         assert_eq!(fts_matches(&conn, "kyoto"), vec!["a".to_string()]);
@@ -287,10 +339,7 @@ mod tests {
         let error = open(&path).unwrap_err();
         assert!(matches!(
             error,
-            AppError::SchemaTooNew {
-                found: 99,
-                known: 2
-            }
+            AppError::SchemaTooNew { found: 99, known } if known == MIGRATIONS.len() as i64
         ));
     }
 

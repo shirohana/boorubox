@@ -55,6 +55,15 @@
   let field = $state<HTMLInputElement | null>(null)
 
   /**
+   * The list is portalled to `<body>` unless the field is inside a native
+   * modal dialog. `showModal()` puts the viewer in the top layer, which sits
+   * above every z-index, so a list under `<body>` opened beneath it — visible
+   * through the backdrop and unreachable. Inside one, the list has to be a
+   * child of the dialog itself.
+   */
+  const portalTo = $derived(field?.closest('dialog') ?? undefined)
+
+  /**
    * Lets an owner (the Inspector) take the focus off the field once a submit it
    * handles itself is done with it — this component has no opinion on when that
    * is safe.
@@ -191,6 +200,7 @@
   -->
   <Popover.Content
     customAnchor={field}
+    portalProps={{ to: portalTo }}
     align="start"
     sideOffset={4}
     trapFocus={false}

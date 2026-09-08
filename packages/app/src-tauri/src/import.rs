@@ -126,8 +126,8 @@ fn import_file(library: &SharedLibrary, path: &Path) -> ImportOutcome {
         Ok(bytes) => bytes,
         Err(error) => return failed(path, error.to_string()),
     };
-    let captured_at = match std::fs::metadata(path) {
-        Ok(metadata) => captured_at(&metadata),
+    let file_modified_at = match std::fs::metadata(path) {
+        Ok(metadata) => file_modified_at(&metadata),
         Err(error) => return failed(path, error.to_string()),
     };
     let id = uuid::Uuid::new_v4().to_string();
@@ -149,7 +149,11 @@ fn import_file(library: &SharedLibrary, path: &Path) -> ImportOutcome {
                 adapter: None,
                 rating: None,
                 tags: &[],
-                captured_at,
+                // The moment this import ran, not the file's own history
+                // (design D11, `browse-polish`): capture time answers "when did
+                // this arrive", and for a local import that is now.
+                captured_at: db::now_ms(),
+                file_modified_at,
             },
         )?;
         Ok((library.paths.clone(), ingested))
@@ -169,17 +173,16 @@ fn import_file(library: &SharedLibrary, path: &Path) -> ImportOutcome {
     }
 }
 
-/// The file's modification time in epoch milliseconds. A platform that cannot
-/// report one falls back to now: an import is worth more than an exact capture
-/// time, and the row would otherwise claim 1970.
-fn captured_at(metadata: &Metadata) -> i64 {
-    let Ok(modified) = metadata.modified() else {
-        return db::now_ms();
-    };
-    match modified.duration_since(std::time::UNIX_EPOCH) {
+/// The file's own modification time in epoch milliseconds, or `None` when the
+/// platform cannot report one (design D11, `browse-polish`). No fallback to
+/// now: unlike `captured_at`, this column is nullable, so a missing fact is
+/// recorded as absent rather than invented.
+fn file_modified_at(metadata: &Metadata) -> Option<i64> {
+    let modified = metadata.modified().ok()?;
+    Some(match modified.duration_since(std::time::UNIX_EPOCH) {
         Ok(since) => since.as_millis() as i64,
         Err(before) => -(before.duration().as_millis() as i64),
-    }
+    })
 }
 
 fn file_name(path: &Path) -> String {
@@ -279,6 +282,13 @@ mod tests {
 
     fn write_png(path: &Path, width: u32, height: u32) {
         image::RgbImage::new(width, height).save(path).unwrap();
+    }
+
+    fn png_bytes(width: u32, height: u32) -> Vec<u8> {
+        let image = image::DynamicImage::ImageRgb8(image::RgbImage::new(width, height));
+        let mut out = std::io::Cursor::new(Vec::new());
+        image.write_to(&mut out, image::ImageFormat::Png).unwrap();
+        out.into_inner()
     }
 
     /// The spec's mixed drop: two loose images, plus a folder holding three
@@ -382,18 +392,88 @@ mod tests {
         let source = tempfile::tempdir().unwrap();
         let file = source.path().join("cat.png");
         write_png(&file, 40, 20);
-        let mtime = captured_at(&std::fs::metadata(&file).unwrap());
+        let mtime = file_modified_at(&std::fs::metadata(&file).unwrap());
         let (_dir, library) = library();
 
+        let before = db::now_ms();
         let (report, _) = run(&library, &[file]);
+        let after = db::now_ms();
 
         let id = report.items[0].id.as_deref().unwrap();
         let record = record(&library, id).unwrap();
         assert_eq!(record.page_title.as_deref(), Some("cat.png"));
-        assert_eq!(record.captured_at, mtime);
+        assert!(
+            record.captured_at >= before && record.captured_at <= after,
+            "capture time must be the import time, got {} outside [{before}, {after}]",
+            record.captured_at
+        );
+        assert_eq!(
+            record.file_modified_at, mtime,
+            "modification time must be the file's own, apart from capture time"
+        );
         assert_eq!(record.source, ImageSource::Local);
         assert_eq!((record.width, record.height), (40, 20));
         assert_eq!(record.mime, "image/png");
+    }
+
+    /// Spec `local-file-import` "A freshly imported file is at the front":
+    /// capture time is the import moment (design D11), so an ancient file
+    /// still lands ahead of an old capture in the default sort.
+    #[test]
+    fn a_file_years_old_still_sorts_to_the_front_of_a_newest_capture_first_search() {
+        let source = tempfile::tempdir().unwrap();
+        let old_file = source.path().join("old.png");
+        write_png(&old_file, 8, 8);
+        let years_ago =
+            std::time::SystemTime::now() - std::time::Duration::from_secs(60 * 60 * 24 * 365 * 2);
+        std::fs::File::open(&old_file)
+            .unwrap()
+            .set_modified(years_ago)
+            .unwrap();
+
+        let (_dir, library) = library();
+        // Already in the library with a recent capture time — the point is
+        // that the import just below outranks it despite its ancient mtime.
+        with_library(&library, |lib| {
+            ingest::store_image(
+                lib,
+                IngestInput {
+                    id: "already-here",
+                    bytes: &png_bytes(4, 4),
+                    source: ImageSource::Local,
+                    source_ref: None,
+                    image_url: None,
+                    page_url: None,
+                    page_title: Some("already here"),
+                    adapter: None,
+                    rating: None,
+                    tags: &[],
+                    captured_at: db::now_ms() - 1,
+                    file_modified_at: None,
+                },
+            )
+            .map(|_| ())
+        })
+        .unwrap();
+
+        let (report, _) = run(&library, &[old_file]);
+        let new_id = report.items[0].id.clone().unwrap();
+
+        let req = crate::model::SearchRequest {
+            query: crate::model::ParsedTagSearch::default(),
+            text: String::new(),
+            include_deleted: false,
+            sort: crate::model::Sort::default(),
+            group: crate::model::GroupBy::default(),
+            limit: 10,
+            offset: 0,
+        };
+        let result = with_library(&library, |lib| crate::query::search(&lib.conn, &req)).unwrap();
+
+        assert_eq!(
+            result.images[0].id, new_id,
+            "a fresh import must sort ahead of an old capture despite an ancient file mtime"
+        );
     }
 
     #[test]
