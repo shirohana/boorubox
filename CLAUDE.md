@@ -31,6 +31,9 @@ gated on the legacy repo shipping Phase 0.
 - Frontend: Svelte 5, no React. shadcn-svelte components under
   `src/lib/components/ui` are copy-in upstream code, managed by
   `pnpm dlx shadcn-svelte add <name>`; they are excluded from lint and format.
+- An `$effect` that reads a field off a store object reassigned wholesale (the shape of
+  `library.status?.libraryPath`) re-runs on every status refresh. Derive the field with
+  `$derived` and depend on that. Three reviews in a row flagged the effect form.
 
 ## Storage rules (from §7)
 
@@ -40,6 +43,9 @@ gated on the legacy repo shipping Phase 0.
   at a time.
 - Model `posts` (image, site, remote id, posted at) from day one; the `posted:` filter and
   the pull-back feature land on it.
+- A plan claims its schema version by queue position; the real version is `MIGRATIONS.len()`
+  in `db.rs` when the change is applied. Amend the design's sentence to the real number,
+  never pin the planned one.
 
 ## Transport rules (from §5)
 
