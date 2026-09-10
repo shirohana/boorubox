@@ -175,6 +175,7 @@ fn store_now(library: &SharedLibrary, capture: &Capture) -> Result<Ingested> {
                 // sends bytes over the wire, so there is no modification time
                 // to record (design D11, `browse-polish`).
                 file_modified_at: None,
+                deleted_at: None,
             },
         )?;
         Ok((library.paths.clone(), ingested))

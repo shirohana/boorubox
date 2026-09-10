@@ -783,6 +783,27 @@ pub async fn import_paths<R: Runtime>(
     .await
 }
 
+/// Import a legacy bundle's SQLite parts (`legacy-bundle-import` design D5,
+/// D6). `files` are absolute paths the webview's multi-select picker chose;
+/// the contract is pinned in the change's `tasks.md` header, shared with the
+/// webview wrapper that calls this with `{ files }`. Emits the same
+/// `import:progress` event as `import_paths` — one queue, one progress band,
+/// one report shape (design D6).
+#[tauri::command]
+pub async fn import_bundle<R: Runtime>(
+    files: Vec<String>,
+    app: AppHandle<R>,
+    state: State<'_, AppState>,
+) -> Result<ImportReport> {
+    let files: Vec<PathBuf> = files.into_iter().map(PathBuf::from).collect();
+    off_main_thread(&state.library, move |library| {
+        crate::bundle::import_bundle(library, &files, &mut |progress| {
+            let _ = app.emit(IMPORT_PROGRESS_EVENT, progress);
+        })
+    })
+    .await
+}
+
 /// Open `path`, remember it, and let the webview read images out of it.
 ///
 /// The path is stored only once the folder has actually opened: `status` reads a
@@ -1262,6 +1283,48 @@ mod tests {
         );
     }
 
+    /// `legacy-bundle-import` task 1.4: the command's own contract — the
+    /// argument name (`files`), the answer shape and the progress event it
+    /// reuses from `import_paths` — driven against the checked-in fixture.
+    #[test]
+    fn import_bundle_reports_the_fixture_and_ticks_the_same_progress_event() {
+        let (_library, app) = app_with_library();
+        let fixture = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/fixtures/legacy-bundle/database.db"
+        );
+        let ticks = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let seen = ticks.clone();
+        app.listen(IMPORT_PROGRESS_EVENT, move |event| {
+            let progress: ImportProgress = serde_json::from_str(event.payload()).unwrap();
+            lock(&seen).push(progress);
+        });
+
+        let report = now(import_bundle(
+            vec![fixture.to_string()],
+            app.handle().clone(),
+            app.state(),
+        ))
+        .unwrap();
+
+        assert_eq!((report.imported, report.skipped, report.failed), (3, 0, 1));
+        let ticks = lock(&ticks).clone();
+        assert_eq!(
+            ticks.last().map(|last| (last.done, last.total)),
+            Some((4, 4)),
+            "the last tick must show the run finished: {ticks:?}"
+        );
+        assert_eq!(
+            search_all(&app)
+                .images
+                .iter()
+                .filter(|image| image.source == crate::model::ImageSource::LegacyBundle)
+                .count(),
+            2,
+            "one of the three imported rows is deleted and stays out of the library view"
+        );
+    }
+
     #[test]
     fn search_returns_the_page_and_its_total() {
         let (_library, app) = app_with_library();
@@ -1285,7 +1348,10 @@ mod tests {
         let (library, app) = app_with_library();
         import(&app, &folder_of_images(1));
         let id = ids_in_library(&app).remove(0);
-        std::fs::remove_file(library.path().join("images").join(format!("{id}.png"))).unwrap();
+        let paths = crate::library::LibraryPaths {
+            root: library.path().to_path_buf(),
+        };
+        std::fs::remove_file(paths.image_path(&id, "png")).unwrap();
 
         let result = search_all(&app);
 

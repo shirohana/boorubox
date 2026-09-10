@@ -1,5 +1,5 @@
-//! Thumbnails under `<library>/.thumbs/<id>.jpg` — a derived cache that is safe
-//! to delete and regenerated on demand (design D7).
+//! Thumbnails under `<library>/.thumbs/<a1>/<b2>/<id>.jpg` (design D1) — a
+//! derived cache that is safe to delete and regenerated on demand (design D7).
 
 use std::fs::{self, File};
 use std::path::{Path, PathBuf};
@@ -58,14 +58,24 @@ pub fn warm_thumbnail(paths: &LibraryPaths, record: &ImageRecord) {
     let _ = ensure_thumbnail(paths, record);
 }
 
-/// Where `id`'s thumbnail lives, whether or not it has been generated. Dropping
-/// a record deletes this file (design D16), so the name is defined once here.
+/// Where `id`'s thumbnail lives, whether or not it has been generated:
+/// `.thumbs/<a1>/<b2>/<id>.jpg` (design D1), sharing `library::shard_dirs`
+/// with `LibraryPaths::relative_image_path` — one definition of the bucket
+/// rule for both directories. Dropping a record deletes this file (design
+/// D16), so the name is defined once here.
 pub fn thumbnail_path(paths: &LibraryPaths, id: &str) -> PathBuf {
-    paths.thumbs_dir().join(format!("{id}.jpg"))
+    bucketed_thumbs_path(paths, id, &format!("{id}.jpg"))
 }
 
 fn part_path(paths: &LibraryPaths, id: &str) -> PathBuf {
-    paths.thumbs_dir().join(format!("{id}.jpg.part"))
+    bucketed_thumbs_path(paths, id, &format!("{id}.jpg.part"))
+}
+
+fn bucketed_thumbs_path(paths: &LibraryPaths, id: &str, file_name: &str) -> PathBuf {
+    let mut path = paths.thumbs_dir();
+    path.extend(crate::library::shard_dirs(id));
+    path.push(file_name);
+    path
 }
 
 /// Encode to a part file, fsync, rename — the same shape as [`crate::ingest`],
@@ -154,6 +164,7 @@ mod tests {
                 tags: &[],
                 captured_at: 1_700_000_000_000,
                 file_modified_at: None,
+                deleted_at: None,
             },
         )
         .unwrap();
@@ -207,10 +218,28 @@ mod tests {
     fn leaves_an_existing_thumbnail_alone() {
         let (_dir, library, record) = library_with_image(800, 600);
         let thumb = thumbnail_path(&library.paths, &record.id);
+        fs::create_dir_all(thumb.parent().unwrap()).unwrap();
         fs::write(&thumb, b"an older thumbnail").unwrap();
 
         assert_eq!(ensure_thumbnail(&library.paths, &record).unwrap(), thumb);
         assert_eq!(fs::read(&thumb).unwrap(), b"an older thumbnail");
+    }
+
+    #[test]
+    fn ensure_thumbnail_creates_the_bucket_directory_before_writing() {
+        let (_dir, library, record) = library_with_image(800, 600);
+        let bucket = thumbnail_path(&library.paths, &record.id)
+            .parent()
+            .unwrap()
+            .to_path_buf();
+        assert!(
+            !bucket.is_dir(),
+            "the bucket must not exist before the thumbnail is generated"
+        );
+
+        ensure_thumbnail(&library.paths, &record).unwrap();
+
+        assert!(bucket.is_dir());
     }
 
     #[test]
@@ -224,6 +253,6 @@ mod tests {
             matches!(error, AppError::Io(_)),
             "unexpected error: {error}"
         );
-        assert_eq!(fs::read_dir(library.paths.thumbs_dir()).unwrap().count(), 0);
+        assert!(!part_path(&library.paths, &record.id).exists());
     }
 }

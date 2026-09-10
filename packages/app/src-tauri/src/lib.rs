@@ -1,4 +1,5 @@
 pub mod booru;
+pub mod bundle;
 pub mod commands;
 pub mod db;
 pub mod error;
@@ -144,6 +145,7 @@ pub fn run() {
             commands::image_counts,
             commands::thumbnail_path,
             commands::import_paths,
+            commands::import_bundle,
             commands::bulk_update_tags,
             commands::bulk_set_rating,
             commands::selection_tag_counts,

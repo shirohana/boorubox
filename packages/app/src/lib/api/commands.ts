@@ -112,7 +112,7 @@ export function imageCounts(): Promise<ImageCounts> {
   return invoke('image_counts')
 }
 
-/** Absolute path to `<library>/.thumbs/<id>.jpg`, generated on demand. */
+/** Absolute path to the id's bucketed thumbnail under `<library>/.thumbs/`, generated on demand. */
 export function thumbnailPath(id: string): Promise<string> {
   return invoke('thumbnail_path', { id })
 }
@@ -120,6 +120,14 @@ export function thumbnailPath(id: string): Promise<string> {
 /** Imports files and folders; progress arrives on the `import:progress` event. */
 export function importPaths(paths: string[]): Promise<ImportReport> {
   return invoke('import_paths', { paths })
+}
+
+/**
+ * Imports a legacy bundle's `.db` part files (`legacy-bundle-import` design D5,
+ * D6). Progress arrives on the same `import:progress` event as {@link importPaths}.
+ */
+export function importBundle(files: string[]): Promise<ImportReport> {
+  return invoke('import_bundle', { files })
 }
 
 /**

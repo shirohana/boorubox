@@ -205,6 +205,7 @@ mod tests {
                 tags: &tags,
                 captured_at: 1_700_000_000_000,
                 file_modified_at: None,
+                deleted_at: None,
             },
         )
         .unwrap();
@@ -252,6 +253,17 @@ mod tests {
         thumbnail_path(&library.paths, id)
     }
 
+    /// A derived thumbnail these tests plant by hand rather than generating
+    /// (`thumbs::ensure_thumbnail` costs an actual encode); the bucket it
+    /// lives in is created on demand by the real writer (design D3), so the
+    /// stand-in creates it too.
+    fn write_thumbnail(library: &Library, id: &str, bytes: &[u8]) -> std::path::PathBuf {
+        let path = thumbnail(library, id);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, bytes).unwrap();
+        path
+    }
+
     #[test]
     fn trashing_hides_an_image_from_the_library_view_and_shows_it_in_the_trash_view() {
         let (_dir, library) = library();
@@ -268,7 +280,7 @@ mod tests {
     fn trashing_touches_nothing_but_deleted_at_and_updated_at() {
         let (_dir, library) = library();
         store(&library, "a", &["cat", "cute"], Some("s"));
-        std::fs::write(thumbnail(&library, "a"), b"a derived thumbnail").unwrap();
+        write_thumbnail(&library, "a", b"a derived thumbnail");
         let image_path = library.paths.image_path("a", "png");
         let bytes_before = std::fs::read(&image_path).unwrap();
 
@@ -362,7 +374,7 @@ mod tests {
                 [],
             )
             .unwrap();
-        std::fs::write(thumbnail(&library, "a"), b"a derived thumbnail").unwrap();
+        write_thumbnail(&library, "a", b"a derived thumbnail");
         let image_path = library.paths.image_path("a", "png");
         trash_images(&library, &strs(&["a"])).unwrap();
 
@@ -520,18 +532,19 @@ mod tests {
         let (_dir, library) = library();
         store(&library, "a", &[], None);
         trash_images(&library, &strs(&["a"])).unwrap();
-        let images_dir = library.paths.images_dir();
         let path = library.paths.image_path("a", "png");
+        let bucket = path.parent().unwrap().to_path_buf();
         // Removing a directory entry needs write access to the directory that
         // holds it, not to the file itself — this is what makes the unlink
-        // below fail without touching the file's own permissions.
-        std::fs::set_permissions(&images_dir, std::fs::Permissions::from_mode(0o555)).unwrap();
+        // below fail without touching the file's own permissions. That
+        // directory is the id's bucket (design D1), not `images/` itself.
+        std::fs::set_permissions(&bucket, std::fs::Permissions::from_mode(0o555)).unwrap();
 
         let report = delete_forever(&library, &strs(&["a"]));
 
         // Restored before any assertion can panic and leave the temp dir
         // undeletable.
-        std::fs::set_permissions(&images_dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::fs::set_permissions(&bucket, std::fs::Permissions::from_mode(0o755)).unwrap();
         let report = report.unwrap();
 
         assert_eq!(report.deleted, 1);

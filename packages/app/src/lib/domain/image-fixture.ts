@@ -4,9 +4,10 @@
 import type { ImageRecord } from '@boorubox/shared'
 
 export function img(overrides: Partial<ImageRecord> = {}): ImageRecord {
-  return {
+  const merged: ImageRecord = {
     id: 'id',
     ext: 'png',
+    file: '',
     mime: 'image/png',
     size: 1000,
     width: 100,
@@ -28,4 +29,10 @@ export function img(overrides: Partial<ImageRecord> = {}): ImageRecord {
     posts: [],
     ...overrides,
   }
+  // `file` is opaque to the webview (design D2: Rust composes it, `imageUrl`
+  // reads it verbatim), so a fixture only has to keep it consistent with the
+  // id that ended up in `merged` — not mirror the bucket rule.
+  return overrides.file === undefined
+    ? { ...merged, file: `images/${merged.id}.${merged.ext}` }
+    : merged
 }

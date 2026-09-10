@@ -96,6 +96,12 @@ export interface PostRef {
 export interface ImageRecord {
   id: string
   ext: string
+  /**
+   * Path to the file, relative to the library root, `/`-separated on every
+   * platform: `images/<a1>/<b2>/<id>.<ext>`. What `imageUrl` joins onto the
+   * library path — the webview never composes the layout itself.
+   */
+  file: string
   mime: string
   size: number
   width: number

@@ -38,6 +38,11 @@ pub struct IngestInput<'a> {
     /// from a file (design D11, `browse-polish`). The local import path is the
     /// only caller that passes `Some`.
     pub file_modified_at: Option<i64>,
+    /// When the image was already deleted at the moment it arrived here
+    /// (`legacy-bundle-import` design D3): a trashed bundle row goes through
+    /// this same door rather than a second insert. Every caller but the
+    /// bundle importer passes `None`.
+    pub deleted_at: Option<i64>,
 }
 
 /// Whether the call stored the image or found it already there. The HTTP layer
@@ -122,6 +127,15 @@ fn write_through_inbox(library: &Library, id: &str, bytes: &[u8], dest: &Path) -
         let _ = std::fs::remove_file(&part);
         return Err(error);
     }
+    // The destination's bucket (design D1, D3): created on demand rather than
+    // up front, so an empty library never pays for 65,536 directories it may
+    // never fill.
+    if let Some(bucket) = dest.parent()
+        && let Err(error) = std::fs::create_dir_all(bucket)
+    {
+        let _ = std::fs::remove_file(&part);
+        return Err(error.into());
+    }
     std::fs::rename(&part, dest).map_err(|error| {
         let _ = std::fs::remove_file(&part);
         AppError::Io(error)
@@ -145,8 +159,8 @@ fn insert_rows(library: &Library, input: &IngestInput, decoded: &Decoded) -> Res
     let inserted = tx.execute(
         "INSERT INTO images (id, ext, mime, size, width, height, source, source_ref, image_url,
                              page_url, page_title, adapter_json, rating, captured_at, created_at,
-                             updated_at, file_modified_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)
+                             updated_at, file_modified_at, deleted_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)
          ON CONFLICT (id) DO NOTHING",
         params![
             input.id,
@@ -166,6 +180,7 @@ fn insert_rows(library: &Library, input: &IngestInput, decoded: &Decoded) -> Res
             now,
             now,
             input.file_modified_at,
+            input.deleted_at,
         ],
     )?;
 
@@ -219,9 +234,13 @@ fn resolve_tags_and_rating(
 /// Map a row selected with [`IMAGE_COLUMNS`]. `tags` comes back empty: tags are
 /// a second query, so that a hundred records cost two statements, not a hundred.
 pub fn row_to_record(row: &Row) -> rusqlite::Result<ImageRecord> {
+    let id: String = row.get(0)?;
+    let ext: String = row.get(1)?;
+    let file = crate::library::LibraryPaths::relative_image_path(&id, &ext);
     Ok(ImageRecord {
-        id: row.get(0)?,
-        ext: row.get(1)?,
+        id,
+        ext,
+        file,
         mime: row.get(2)?,
         size: row.get(3)?,
         width: row.get(4)?,
@@ -345,11 +364,29 @@ mod tests {
             tags,
             captured_at: 1_700_000_000_000,
             file_modified_at: None,
+            deleted_at: None,
         }
     }
 
     fn entry_count(dir: &Path) -> usize {
         std::fs::read_dir(dir).unwrap().count()
+    }
+
+    /// Files anywhere under `dir`, buckets descended into — `entry_count`
+    /// above only sees the top level, which a sharded id's bucket directory
+    /// satisfies at "one entry" whether it holds one file or several.
+    fn recursive_file_count(dir: &Path) -> usize {
+        std::fs::read_dir(dir)
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .map(|path| {
+                if path.is_dir() {
+                    recursive_file_count(&path)
+                } else {
+                    1
+                }
+            })
+            .sum()
     }
 
     fn library() -> (tempfile::TempDir, Library) {
@@ -401,7 +438,12 @@ mod tests {
             4,
             "the retry must not replace the stored image"
         );
-        assert_eq!(entry_count(&library.paths.images_dir()), 1);
+        assert!(library.paths.image_path("id-1", "png").is_file());
+        assert_eq!(
+            recursive_file_count(&library.paths.images_dir()),
+            1,
+            "no second file anywhere under images/, not just at the top level"
+        );
         assert_eq!(library.image_count().unwrap(), 1);
     }
 
@@ -804,5 +846,53 @@ mod tests {
 
         assert!(matches!(ingested, Ingested::Created(_)));
         assert!(ingested.record().tags.is_empty());
+    }
+
+    fn search_view(library: &Library, view: crate::model::SearchView) -> Vec<String> {
+        crate::query::search(
+            &library.conn,
+            &crate::model::SearchRequest {
+                query: crate::model::ParsedTagSearch::default(),
+                text: String::new(),
+                view,
+                sort: Default::default(),
+                group: Default::default(),
+                limit: 100,
+                offset: 0,
+            },
+        )
+        .unwrap()
+        .images
+        .into_iter()
+        .map(|record| record.id)
+        .collect()
+    }
+
+    /// `legacy-bundle-import` task 1.2: a `Some` `deleted_at` goes into the row
+    /// the one insert writes, so a trashed bundle row is absent from the
+    /// library the moment it arrives rather than needing a second write to
+    /// trash it.
+    #[test]
+    fn a_deleted_at_input_stores_a_row_the_library_search_skips_and_the_trash_search_finds() {
+        let (_dir, library) = library();
+        let bytes = png_bytes(2, 2);
+        let tags: Vec<String> = Vec::new();
+
+        store_image(
+            &library,
+            IngestInput {
+                deleted_at: Some(1_700_000_000_000),
+                ..input("id-1", &bytes, &tags)
+            },
+        )
+        .unwrap();
+
+        assert!(search_view(&library, crate::model::SearchView::Library).is_empty());
+        assert_eq!(
+            search_view(&library, crate::model::SearchView::Trash),
+            vec!["id-1".to_string()]
+        );
+        let record = load_record(&library.conn, "id-1").unwrap().unwrap();
+        assert_eq!(record.deleted_at, Some(1_700_000_000_000));
     }
 }

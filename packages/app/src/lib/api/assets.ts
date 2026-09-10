@@ -6,12 +6,13 @@ import { convertFileSrc } from '@tauri-apps/api/core'
 import { thumbnailPath } from './commands'
 
 /**
- * The full image under `<library>/images/`. Joined with `/` on every platform:
- * the webview has no path module, and Windows accepts a forward slash inside
- * an absolute path, so this needs no per-platform separator.
+ * The full image, from the record's own `file` (design D2). Joined with `/`
+ * on every platform: the webview has no path module, and Windows accepts a
+ * forward slash inside an absolute path, so this needs no per-platform
+ * separator.
  */
-export function imageUrl(libraryPath: string, image: Pick<ImageRecord, 'id' | 'ext'>): string {
-  return convertFileSrc(`${libraryPath}/images/${image.id}.${image.ext}`)
+export function imageUrl(libraryPath: string, image: Pick<ImageRecord, 'file'>): string {
+  return convertFileSrc(`${libraryPath}/${image.file}`)
 }
 
 /** The thumbnail; Rust generates it if it is not on disk yet. */

@@ -1,8 +1,8 @@
 <script lang="ts">
-  import type { ImageCounts, Theme } from '@boorubox/shared'
+  import type { Theme } from '@boorubox/shared'
   import { GRID_TILE_DEFAULT, GRID_TILE_MAX, GRID_TILE_MIN } from '@boorubox/shared'
   import ChevronsUpDownIcon from '@lucide/svelte/icons/chevrons-up-down'
-  import { errorText, imageCounts, library, setListenerPort, settings, trash } from '$lib/api'
+  import { errorText, library, libraryCounts, setListenerPort, settings, trash } from '$lib/api'
   import BooruSection from '$lib/components/booru/BooruSection.svelte'
   import LibraryMenu from '$lib/components/frame/LibraryMenu.svelte'
   import RulesSection from '$lib/components/rules/RulesSection.svelte'
@@ -27,7 +27,6 @@
     { value: 'dark', label: 'Dark' },
   ]
 
-  let counts = $state<ImageCounts | null>(null)
   let port = $state(String(library.status?.listener.port ?? ''))
   let applying = $state(false)
   // The slider follows the drag; the setting is written on release (design
@@ -35,24 +34,18 @@
   let tileSize = $state(settings.current?.gridTileSize ?? GRID_TILE_DEFAULT)
   let error = $state<string | null>(null)
 
-  const countRows = $derived(counts
+  // `libraryCounts` (`legacy-bundle-import` design D7) is refreshed by
+  // `Sidebar.svelte` on a library switch and on every import run, for both
+  // this screen and `/import` — reading it here, this screen needs no trigger
+  // of its own.
+  const countRows = $derived(libraryCounts.current
     ? [
-      { label: 'Total', value: counts.total },
-      { label: 'Extension', value: counts.extension },
-      { label: 'Local', value: counts.local },
-      { label: 'Legacy bundle', value: counts.legacyBundle },
+      { label: 'Total', value: libraryCounts.current.total },
+      { label: 'Extension', value: libraryCounts.current.extension },
+      { label: 'Local', value: libraryCounts.current.local },
+      { label: 'Legacy bundle', value: libraryCounts.current.legacyBundle },
     ]
     : [])
-
-  // Re-read when the open library changes: the switch menu on this very screen
-  // can swap the library underneath these numbers (spec `library-switching`,
-  // "everything reading the library follows the switch").
-  $effect(() => {
-    void library.status?.libraryPath
-    imageCounts()
-      .then((next) => (counts = next))
-      .catch((cause) => (error = errorText(cause)))
-  })
 
   async function applyPort() {
     const chosen = Number(port)
@@ -252,8 +245,8 @@
       </dl>
     </section>
 
-    {#if error}
-      <p class="text-sm text-destructive">{error}</p>
+    {#if error || libraryCounts.error}
+      <p class="text-sm text-destructive">{error ?? libraryCounts.error}</p>
     {/if}
   </div>
 </div>

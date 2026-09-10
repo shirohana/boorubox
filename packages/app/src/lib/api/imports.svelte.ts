@@ -1,18 +1,25 @@
 import type { ImportProgress, ImportReport } from '@boorubox/shared'
-import { importPaths, libraryStatus } from './commands'
+import { importBundle, importPaths, libraryStatus } from './commands'
 import { errorText } from './errors'
 import { onImportProgress } from './events'
 import { library } from './library.svelte'
 
-/** A run that is going, or one waiting behind it. */
-export interface ImportRun {
+interface ImportRunFields {
   id: number
-  /** What was dropped or picked: folders count as one item until Rust walks them. */
-  paths: string[]
   status: 'queued' | 'running'
   /** `null` until the first `import:progress` event; Rust counts the files first. */
   progress: ImportProgress | null
 }
+
+/**
+ * A run that is going, or one waiting behind it: a local paths run (files and
+ * folders picked or dropped) or a legacy-bundle run (`.db` part files,
+ * `legacy-bundle-import` design D6) — one queue, one progress band, so
+ * `#execute` switches on `kind` to call the matching command.
+ */
+export type ImportRun
+  = | (ImportRunFields & { kind: 'paths', paths: string[] })
+    | (ImportRunFields & { kind: 'bundle', files: string[] })
 
 let nextRunId = 0
 
@@ -32,6 +39,14 @@ export class Imports {
   runs = $state<ImportRun[]>([])
   /** Newest first, kept until dismissed: the only place a skipped file is named. */
   reports = $state<ImportReport[]>([])
+  /**
+   * The most recent bundle run's report, for the `/import` route (design D7):
+   * `reports` above is the library band's per-run list and keeps showing
+   * bundle reports too (design D6), but the route shows one report, not a
+   * history. `$state.raw`: always replaced whole, never mutated in place, and
+   * a bundle's `items` can run to thousands of rows not worth proxying.
+   */
+  latestBundleReport = $state.raw<ImportReport | null>(null)
   error = $state<string | null>(null)
 
   #pumping = false
@@ -39,18 +54,38 @@ export class Imports {
      Listeners, never rendered from. */
   #finished = new Set<() => void>()
 
-  /** Queues a run and starts it when nothing is going. No paths is the one no-op. */
+  /** Queues a paths run and starts it when nothing is going. No paths is the one no-op. */
   enqueue(paths: string[]): void {
-    if (paths.length === 0) return
+    this.#enqueue(paths.length === 0 ? null : { kind: 'paths', paths })
+  }
+
+  /** Queues a bundle run (`legacy-bundle-import` design D5). No files is the one no-op. */
+  enqueueBundle(files: string[]): void {
+    this.#enqueue(files.length === 0 ? null : { kind: 'bundle', files })
+  }
+
+  #enqueue(
+    started: { kind: 'paths', paths: string[] } | { kind: 'bundle', files: string[] } | null,
+  ): void {
+    if (!started) return
     this.error = null
-    this.runs = [...this.runs, { id: nextRunId++, paths, status: 'queued', progress: null }]
+    this.runs = [...this.runs, { id: nextRunId++, status: 'queued', progress: null, ...started }]
     void this.#pump()
   }
 
   /** A picker that the user cancelled answers with no paths, not an error. */
   async pick(picker: () => Promise<string[]>): Promise<void> {
+    await this.#pick(picker, (paths) => this.enqueue(paths))
+  }
+
+  /** A bundle-file picker that the user cancelled answers with no files, not an error. */
+  async pickBundle(picker: () => Promise<string[]>): Promise<void> {
+    await this.#pick(picker, (files) => this.enqueueBundle(files))
+  }
+
+  async #pick(picker: () => Promise<string[]>, enqueue: (picked: string[]) => void): Promise<void> {
     try {
-      this.enqueue(await picker())
+      enqueue(await picker())
     } catch (cause) {
       this.error = errorText(cause)
     }
@@ -72,6 +107,7 @@ export class Imports {
   /** For a library switch: the reports describe runs into the folder that closed. */
   dismissAll(): void {
     this.reports = []
+    this.latestBundleReport = null
   }
 
   async #pump(): Promise<void> {
@@ -93,10 +129,15 @@ export class Imports {
     // import are lost and the count jumps.
     const unlisten = await onImportProgress((update) => (run.progress = update))
     try {
-      this.reports = [await importPaths(run.paths), ...this.reports]
-      // `import_paths` answers with the report, not the status, and the sidebar
-      // footer's total is on the status — so it is read once here rather than by
-      // the footer, which would have nothing to tell it the number moved.
+      const report = run.kind === 'paths'
+        ? await importPaths(run.paths)
+        : await importBundle(run.files)
+      this.reports = [report, ...this.reports]
+      if (run.kind === 'bundle') this.latestBundleReport = report
+      // `import_paths`/`import_bundle` answer with the report, not the status,
+      // and the sidebar footer's total is on the status — so it is read once
+      // here rather than by the footer, which would have nothing to tell it
+      // the number moved.
       library.set(await libraryStatus())
     } catch (cause) {
       this.error = errorText(cause)

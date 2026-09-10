@@ -163,6 +163,11 @@ pub struct PostRef {
 pub struct ImageRecord {
     pub id: String,
     pub ext: String,
+    /// Path to the file, relative to the library root, `/`-separated on every
+    /// platform (design D1, D2): `images/<a1>/<b2>/<id>.<ext>`. The one field
+    /// that names where the file is — the webview builds its URL from this
+    /// rather than composing the layout itself.
+    pub file: String,
     pub mime: String,
     pub size: i64,
     pub width: u32,
@@ -490,12 +495,44 @@ pub enum ImportStatus {
 pub struct ImportOutcome {
     pub path: String,
     pub status: ImportStatus,
-    /// New image id when `imported`.
+    /// New image id when `imported`. A bundle row (`legacy-bundle-import`
+    /// design D6) also carries its id when `skipped` — the bundle keeps the
+    /// row's own id rather than minting one, so the id is already known
+    /// whether or not the row turned out to be new.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub id: Option<String>,
     /// Why, when `skipped` or `failed`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
+}
+
+impl ImportOutcome {
+    pub fn imported(path: impl Into<String>, id: String) -> Self {
+        ImportOutcome {
+            path: path.into(),
+            status: ImportStatus::Imported,
+            id: Some(id),
+            reason: None,
+        }
+    }
+
+    pub fn skipped(path: impl Into<String>, id: Option<String>, reason: impl Into<String>) -> Self {
+        ImportOutcome {
+            path: path.into(),
+            status: ImportStatus::Skipped,
+            id,
+            reason: Some(reason.into()),
+        }
+    }
+
+    pub fn failed(path: impl Into<String>, id: Option<String>, reason: impl Into<String>) -> Self {
+        ImportOutcome {
+            path: path.into(),
+            status: ImportStatus::Failed,
+            id,
+            reason: Some(reason.into()),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -745,6 +782,7 @@ mod tests {
         ImageRecord {
             id: id.to_string(),
             ext: "png".to_string(),
+            file: crate::library::LibraryPaths::relative_image_path(id, "png"),
             mime: "image/png".to_string(),
             size: 1,
             width: 1,

@@ -1004,6 +1004,7 @@ mod tests {
                 tags: &tags,
                 captured_at: 1_700_000_000_000,
                 file_modified_at: None,
+                deleted_at: None,
             },
         )
         .unwrap();

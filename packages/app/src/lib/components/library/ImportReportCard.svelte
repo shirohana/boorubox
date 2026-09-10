@@ -20,7 +20,7 @@
   </div>
   {#if unimported.length > 0}
     <ul class="mt-1 max-h-32 overflow-y-auto text-muted-foreground">
-      {#each unimported as item (item.path)}
+      {#each unimported as item, index (index)}
         <li class="break-all">
           <span class="font-medium">{item.status}</span>
           {item.path}{item.reason ? ` — ${item.reason}` : ''}

@@ -1,14 +1,16 @@
 <script lang="ts">
   import type { ImportRun } from '$lib/api'
+  import { BUNDLE_COUNTING_LABEL } from '$lib/components/import/bundle-report'
   import { Progress } from '$lib/components/ui/progress'
 
   let { run }: { run: ImportRun } = $props()
 
   // Paths, not files: what was dropped is a list of items, and how many files
-  // they hold is not known until Rust has walked them.
-  const items = $derived(
-    `${run.paths.length.toLocaleString()} item${run.paths.length === 1 ? '' : 's'}`,
-  )
+  // they hold is not known until Rust has walked them. A bundle run picks
+  // `.db` files directly, so its count is exact from the start.
+  const count = $derived(run.kind === 'paths' ? run.paths.length : run.files.length)
+  const noun = $derived(run.kind === 'paths' ? 'item' : 'file')
+  const items = $derived(`${count.toLocaleString()} ${noun}${count === 1 ? '' : 's'}`)
 </script>
 
 <div
@@ -29,6 +31,8 @@
     <p class="text-muted-foreground tabular-nums">
       {run.progress.imported.toLocaleString()} imported
     </p>
+  {:else if run.kind === 'bundle'}
+    <p class="text-muted-foreground">{BUNDLE_COUNTING_LABEL}</p>
   {:else}
     <p class="text-muted-foreground">Looking through what you dropped…</p>
   {/if}

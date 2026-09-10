@@ -1,12 +1,13 @@
 <script lang="ts">
   import ChevronsUpDownIcon from '@lucide/svelte/icons/chevrons-up-down'
   import ImagesIcon from '@lucide/svelte/icons/images'
+  import ImportIcon from '@lucide/svelte/icons/import'
   import LibraryIcon from '@lucide/svelte/icons/library'
   import SettingsIcon from '@lucide/svelte/icons/settings'
   import Trash2Icon from '@lucide/svelte/icons/trash-2'
   import { resolve } from '$app/paths'
   import { page } from '$app/state'
-  import { library, trash } from '$lib/api'
+  import { imports, library, libraryCounts, trash } from '$lib/api'
   import LibraryMenu from '$lib/components/frame/LibraryMenu.svelte'
   import { libraryName } from '$lib/components/frame/library-name'
   import NotesPanel from '$lib/components/notes/NotesPanel.svelte'
@@ -22,11 +23,12 @@
     count?: () => number
   }
 
-  // Only screens that exist (spec `app-frame`): Import and Rules are added by
-  // the changes that build them, not reserved here.
+  // Only screens that exist (spec `app-frame`): Rules is added by the change
+  // that builds it, not reserved here.
   const nav: NavItem[] = [
     { href: resolve('/'), label: 'Library', icon: ImagesIcon },
     { href: resolve('/trash'), label: 'Trash', icon: Trash2Icon, count: () => trash.count },
+    { href: resolve('/import'), label: 'Import', icon: ImportIcon },
     { href: resolve('/settings'), label: 'Settings', icon: SettingsIcon },
   ]
 
@@ -43,10 +45,23 @@
   // The path, not the status: a capture and every trash write replace the whole
   // status object, and this effect would then re-read the count on each of
   // them — a round trip per capture, for a number none of them changed.
+  //
+  // Also where a library switch resets the import queue's reports and reloads
+  // `libraryCounts` (`legacy-bundle-import` design D7): the sidebar is mounted
+  // for every route with a library open, unlike `LibraryScreen` or `/import`,
+  // so this is the one place the reset does not depend on which screen the
+  // switch was made from.
   $effect(() => {
     void path
     void trash.refresh()
+    imports.dismissAll()
+    void libraryCounts.refresh()
   })
+
+  // The per-source counts also follow every import, library switch or not,
+  // wherever the run was started from — `/import` and `/settings` both read
+  // `libraryCounts` rather than each polling on their own trigger.
+  $effect(() => imports.onfinished(() => void libraryCounts.refresh()))
 </script>
 
 <!--

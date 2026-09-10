@@ -128,7 +128,10 @@ zero registration.
 - **Library folder** (user-picked on first launch, remembered):
   ```
   <library>/
-    images/<id>.<ext>          the files — usable in Finder/Explorer; backup = copy folder
+    images/<a1>/<b2>/<id>.<ext>  the files, bucketed by the id's first four characters —
+                                  folder listings and cloud sync degrade well past tens of
+                                  thousands of files in one folder; still usable in
+                                  Finder/Explorer, backup = copy folder
     library.sqlite             metadata + tags + search index (see §7)
     inbox/                     staging for uploads in progress (temp-write, then rename)
   ```

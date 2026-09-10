@@ -27,6 +27,7 @@ import {
   exportZip,
   forgetRecent,
   imageCounts,
+  importBundle,
   importPaths,
   libraryStatus,
   noteGet,
@@ -213,6 +214,13 @@ it('import_paths passes the path array', async () => {
   const calls = spyIPC(report)
   await expect(importPaths(['/a', '/b'])).resolves.toEqual(report)
   expect(calls).toHaveBeenCalledWith('import_paths', { paths: ['/a', '/b'] })
+})
+
+it('import_bundle passes the file array', async () => {
+  const report = { imported: 1, skipped: 0, failed: 0, items: [] }
+  const calls = spyIPC(report)
+  await expect(importBundle(['/a.db', '/b.db'])).resolves.toEqual(report)
+  expect(calls).toHaveBeenCalledWith('import_bundle', { files: ['/a.db', '/b.db'] })
 })
 
 it('update_tags passes the id and the whole tag set, and returns the row', async () => {

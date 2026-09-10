@@ -31,10 +31,7 @@ pub fn import_paths(
     paths: &[PathBuf],
     on_progress: &mut dyn FnMut(ImportProgress),
 ) -> crate::error::Result<ImportReport> {
-    // A closed library is one refusal the webview can show, not a report naming
-    // every dropped file as failed. Asked before the walk so nothing is counted
-    // for a run that cannot store anything.
-    with_library(library, |_| Ok(()))?;
+    refuse_if_closed(library)?;
 
     // The walk runs to completion first because `total` has to be right in the
     // very first progress event: a bar that grows its own denominator reads as
@@ -54,6 +51,13 @@ pub fn import_paths(
         on_progress(progress(&report, total));
     }
     Ok(report)
+}
+
+/// A closed library is one refusal the webview can show, not a report naming
+/// every dropped file as failed. Asked before either importer's walk so
+/// nothing is counted for a run that cannot store anything.
+pub(crate) fn refuse_if_closed(library: &SharedLibrary) -> crate::error::Result<()> {
+    with_library(library, |_| Ok(()))
 }
 
 /// One thing the walk found: a file to try, or an entry whose fate the walk
@@ -154,6 +158,7 @@ fn import_file(library: &SharedLibrary, path: &Path) -> ImportOutcome {
                 // this arrive", and for a local import that is now.
                 captured_at: db::now_ms(),
                 file_modified_at,
+                deleted_at: None,
             },
         )?;
         Ok((library.paths.clone(), ingested))
@@ -193,37 +198,24 @@ fn file_name(path: &Path) -> String {
 }
 
 fn imported(path: &Path, id: String) -> ImportOutcome {
-    ImportOutcome {
-        path: display(path),
-        status: ImportStatus::Imported,
-        id: Some(id),
-        reason: None,
-    }
+    ImportOutcome::imported(display(path), id)
 }
 
 fn skipped(path: &Path, reason: impl Into<String>) -> ImportOutcome {
-    ImportOutcome {
-        path: display(path),
-        status: ImportStatus::Skipped,
-        id: None,
-        reason: Some(reason.into()),
-    }
+    ImportOutcome::skipped(display(path), None, reason)
 }
 
 fn failed(path: &Path, reason: impl Into<String>) -> ImportOutcome {
-    ImportOutcome {
-        path: display(path),
-        status: ImportStatus::Failed,
-        id: None,
-        reason: Some(reason.into()),
-    }
+    ImportOutcome::failed(display(path), None, reason)
 }
 
 fn display(path: &Path) -> String {
     path.to_string_lossy().into_owned()
 }
 
-fn count(report: &mut ImportReport, outcome: ImportOutcome) {
+/// Fold one outcome into the running report: keeps its counts and its
+/// `items` list in step (design D6).
+pub(crate) fn count(report: &mut ImportReport, outcome: ImportOutcome) {
     match outcome.status {
         ImportStatus::Imported => report.imported += 1,
         ImportStatus::Skipped => report.skipped += 1,
@@ -232,7 +224,8 @@ fn count(report: &mut ImportReport, outcome: ImportOutcome) {
     report.items.push(outcome);
 }
 
-fn progress(report: &ImportReport, total: u32) -> ImportProgress {
+/// The `import:progress` payload for a report so far.
+pub(crate) fn progress(report: &ImportReport, total: u32) -> ImportProgress {
     ImportProgress {
         done: report.items.len() as u32,
         total,
@@ -450,6 +443,7 @@ mod tests {
                     tags: &[],
                     captured_at: db::now_ms() - 1,
                     file_modified_at: None,
+                    deleted_at: None,
                 },
             )
             .map(|_| ())

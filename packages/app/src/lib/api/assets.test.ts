@@ -12,9 +12,9 @@ afterEach(() => {
   clearMocks()
 })
 
-it('builds the full-image URL from the library path, id and extension', () => {
-  expect(imageUrl('/library', { id: 'abc', ext: 'png' }))
-    .toBe(`asset://localhost/${encodeURIComponent('/library/images/abc.png')}`)
+it('builds the full-image URL from the library path and the record\'s file', () => {
+  expect(imageUrl('/library', { file: 'images/ab/c/abc.png' }))
+    .toBe(`asset://localhost/${encodeURIComponent('/library/images/ab/c/abc.png')}`)
 })
 
 it('asks Rust for the thumbnail path and converts that', async () => {

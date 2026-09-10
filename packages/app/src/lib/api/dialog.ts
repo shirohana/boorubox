@@ -30,6 +30,21 @@ export async function pickImportFolder(): Promise<string[]> {
 }
 
 /**
+ * The legacy bundle's `.db` part files (`legacy-bundle-import` design D5): one
+ * part is a valid import on its own, so the picker takes more than one. Empty
+ * when the user cancels.
+ */
+export async function pickBundleFiles(): Promise<string[]> {
+  const picked = await open({
+    multiple: true,
+    directory: false,
+    title: 'Import a legacy bundle',
+    filters: [{ name: 'SQLite database', extensions: ['db', 'sqlite'] }],
+  })
+  return picked ?? []
+}
+
+/**
  * Where a selection's export zip should be written. `null` when the user
  * cancels the dialog, which `export_zip` must never be called with (spec
  * `export-selected`: "Cancelling the dialog SHALL write nothing").

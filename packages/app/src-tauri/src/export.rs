@@ -278,6 +278,7 @@ mod tests {
                     tags: &[],
                     captured_at: 0,
                     file_modified_at: None,
+                    deleted_at: None,
                 },
             )
             .unwrap();
