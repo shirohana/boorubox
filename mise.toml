@@ -23,7 +23,9 @@ description = "Tauri release bundle"
 run = "pnpm --filter @boorubox/app tauri build"
 
 [tasks.test]
-run = "pnpm test"
+# Both runtimes: `pnpm test` is the three vitest suites, and Rust's tests are only here — the
+# gate once reported green with a failing query test because this task stopped at vitest.
+run = ["pnpm test", "cargo test --manifest-path packages/app/src-tauri/Cargo.toml"]
 
 [tasks.lint]
 run = ["pnpm lint", "cargo fmt --manifest-path packages/app/src-tauri/Cargo.toml --check"]
