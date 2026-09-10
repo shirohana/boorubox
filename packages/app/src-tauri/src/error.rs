@@ -30,6 +30,15 @@ pub enum AppError {
 
     #[error("library is in {mode} journal mode; BooruBox requires the rollback journal (DELETE)")]
     JournalMode { mode: String },
+
+    /// The OS credential store refused to read or write a site's API key —
+    /// locked, access denied, or no backend on this platform (`booru-sites`
+    /// design D7). Never a paraphrase of the reason it gave, since that
+    /// reason is what the user acts on to fix it. Distinct from
+    /// `crate::model::UploadStep::Authenticate`, which is the *booru's own*
+    /// rejection of a credential it did receive.
+    #[error("{reason}")]
+    Credential { reason: String },
 }
 
 /// Commands reject with a plain string: the webview has no use for the variant,

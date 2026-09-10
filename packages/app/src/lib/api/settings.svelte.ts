@@ -1,5 +1,5 @@
 import type { AppSettings, Theme } from '@boorubox/shared'
-import { appSettings, setGridTileSize, setTheme } from './commands'
+import { appSettings, setGridTileSize, setNotesCollapsed, setTheme } from './commands'
 import { errorText } from './errors'
 
 /**
@@ -33,6 +33,11 @@ class Settings {
   /** Rust clamps the size, so the stored value is what comes back, not `size`. */
   async setGridTileSize(size: number): Promise<void> {
     this.current = await setGridTileSize(size)
+  }
+
+  /** Folds the sidebar's notes panel away, or unfolds it (`notes` design D13). */
+  async setNotesCollapsed(collapsed: boolean): Promise<void> {
+    this.current = await setNotesCollapsed(collapsed)
   }
 }
 

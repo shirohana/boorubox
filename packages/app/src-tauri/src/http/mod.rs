@@ -36,8 +36,11 @@ pub enum CaptureEvent {
     /// It will not arrive: withdrawn by the extension, already stored under
     /// that id, or refused.
     Withdrawn(CaptureWithdrawn),
-    /// A new row exists.
-    Stored(ImageRecord),
+    /// A new row exists. Boxed: `ImageRecord` grew past clippy's
+    /// `large_enum_variant` threshold once it gained `posts` (`booru-upload`
+    /// design), and `Pending`/`Withdrawn` should not each pay for the
+    /// larger variant's stack space on every clone.
+    Stored(Box<ImageRecord>),
 }
 
 /// Told about each capture event.

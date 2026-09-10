@@ -1,31 +1,60 @@
 // @vitest-environment jsdom
 // mockIPC installs its handler on `window`, so these run in a DOM environment.
 
-import type { AppSettings, SearchRequest, TagCounts } from '@boorubox/shared'
+import type {
+  AppSettings,
+  DeleteReport,
+  ExportReport,
+  Note,
+  RuleInput,
+  RuleListEntry,
+  RulesImportReport,
+  RulesRunReport,
+  SearchRequest,
+  TagCounts,
+} from '@boorubox/shared'
 import { GRID_TILE_DEFAULT, GRID_TILE_MAX } from '@boorubox/shared'
 import { img } from '$lib/domain/image-fixture'
 import { clearMocks, mockIPC } from '@tauri-apps/api/mocks'
 import { afterEach, expect, it, vi } from 'vitest'
 import {
   appSettings,
+  bulkSetRating,
+  bulkUpdateTags,
   closeLibrary,
-  dropImageRecord,
+  deleteForever,
+  emptyTrash,
+  exportZip,
   forgetRecent,
   imageCounts,
   importPaths,
   libraryStatus,
+  noteGet,
+  noteSet,
   openLibrary,
   pickLibrary,
   recentLibraries,
+  restoreImages,
   revealLibrary,
+  rulesDelete,
+  rulesExport,
+  rulesImport,
+  rulesList,
+  rulesRun,
+  rulesUpsert,
   search,
+  searchIds,
+  selectionTagCounts,
   setGridTileSize,
   setListenerPort,
+  setNotesCollapsed,
   setRating,
   setTheme,
   tagCounts,
   tagSuggestions,
   thumbnailPath,
+  trashCount,
+  trashImages,
   updateTags,
 } from './commands'
 import { status } from './status-fixture'
@@ -90,23 +119,42 @@ it('reveal_library takes no arguments', async () => {
 })
 
 it('app_settings takes no arguments', async () => {
-  const settings: AppSettings = { theme: 'system', gridTileSize: GRID_TILE_DEFAULT }
+  const settings: AppSettings = {
+    theme: 'system',
+    gridTileSize: GRID_TILE_DEFAULT,
+    notesCollapsed: false,
+  }
   const calls = spyIPC(settings)
   await expect(appSettings()).resolves.toEqual(settings)
   expect(calls).toHaveBeenCalledWith('app_settings', {})
 })
 
 it('set_theme passes the theme and returns the settings', async () => {
-  const settings: AppSettings = { theme: 'dark', gridTileSize: GRID_TILE_DEFAULT }
+  const settings: AppSettings = {
+    theme: 'dark',
+    gridTileSize: GRID_TILE_DEFAULT,
+    notesCollapsed: false,
+  }
   const calls = spyIPC(settings)
   await expect(setTheme('dark')).resolves.toEqual(settings)
   expect(calls).toHaveBeenCalledWith('set_theme', { theme: 'dark' })
 })
 
 it('set_grid_tile_size passes the size', async () => {
-  const calls = spyIPC({ theme: 'system', gridTileSize: GRID_TILE_MAX })
+  const calls = spyIPC({ theme: 'system', gridTileSize: GRID_TILE_MAX, notesCollapsed: false })
   await setGridTileSize(10_000)
   expect(calls).toHaveBeenCalledWith('set_grid_tile_size', { size: 10_000 })
+})
+
+it('set_notes_collapsed passes the flag and returns the settings', async () => {
+  const settings: AppSettings = {
+    theme: 'system',
+    gridTileSize: GRID_TILE_DEFAULT,
+    notesCollapsed: true,
+  }
+  const calls = spyIPC(settings)
+  await expect(setNotesCollapsed(true)).resolves.toEqual(settings)
+  expect(calls).toHaveBeenCalledWith('set_notes_collapsed', { collapsed: true })
 })
 
 it('set_listener_port passes the port and returns the listener state', async () => {
@@ -129,7 +177,7 @@ const request: SearchRequest = {
     excludeAccounts: [],
   },
   text: '',
-  includeDeleted: false,
+  view: 'library',
   sort: { field: 'captured', direction: 'desc' },
   group: 'none',
   limit: 100,
@@ -152,12 +200,6 @@ it('image_counts takes no arguments', async () => {
     legacyBundle: 0,
   })
   expect(calls).toHaveBeenCalledWith('image_counts', {})
-})
-
-it('drop_image_record passes the id', async () => {
-  const calls = spyIPC(status({ imageCount: 9 }))
-  await expect(dropImageRecord('abc')).resolves.toEqual(status({ imageCount: 9 }))
-  expect(calls).toHaveBeenCalledWith('drop_image_record', { id: 'abc' })
 })
 
 it('thumbnail_path passes the id and returns the absolute path', async () => {
@@ -204,6 +246,154 @@ it('tag_counts wraps the same request as search in a `req` argument', async () =
   const calls = spyIPC(counts)
   await expect(tagCounts(request)).resolves.toEqual(counts)
   expect(calls).toHaveBeenCalledWith('tag_counts', { req: request })
+})
+
+it('search_ids wraps the request in a `req` argument and returns just the ids', async () => {
+  const calls = spyIPC(['a', 'b'])
+  await expect(searchIds(request)).resolves.toEqual(['a', 'b'])
+  expect(calls).toHaveBeenCalledWith('search_ids', { req: request })
+})
+
+it('bulk_update_tags passes the ids, the tags to add and the tags to remove', async () => {
+  const calls = spyIPC(null)
+  await bulkUpdateTags(['a', 'b'], ['cat'], ['dog'])
+  expect(calls).toHaveBeenCalledWith('bulk_update_tags', {
+    ids: ['a', 'b'],
+    add: ['cat'],
+    remove: ['dog'],
+  })
+})
+
+it('bulk_set_rating passes the ids and the rating, and null to clear it', async () => {
+  const calls = spyIPC(null)
+  await bulkSetRating(['a', 'b'], 'e')
+  expect(calls).toHaveBeenCalledWith('bulk_set_rating', { ids: ['a', 'b'], rating: 'e' })
+
+  await bulkSetRating(['a', 'b'], null)
+  expect(calls).toHaveBeenCalledWith('bulk_set_rating', { ids: ['a', 'b'], rating: null })
+})
+
+it('selection_tag_counts passes the ids and the limit', async () => {
+  const counts = [{ name: 'cat', count: 2 }]
+  const calls = spyIPC(counts)
+  await expect(selectionTagCounts(['a', 'b'], 10)).resolves.toEqual(counts)
+  expect(calls).toHaveBeenCalledWith('selection_tag_counts', { ids: ['a', 'b'], limit: 10 })
+})
+
+it('export_zip passes the ids, the path and this zone\'s offset, and returns the report', async () => {
+  const report: ExportReport = { path: '/out.zip', written: 2, missing: [] }
+  const calls = spyIPC(report)
+  await expect(exportZip(['a', 'b'], '/out.zip')).resolves.toEqual(report)
+  expect(calls).toHaveBeenCalledWith('export_zip', {
+    ids: ['a', 'b'],
+    path: '/out.zip',
+    utcOffsetMinutes: -new Date().getTimezoneOffset(),
+  })
+})
+
+it('trash_images passes the ids', async () => {
+  const calls = spyIPC(null)
+  await trashImages(['a', 'b'])
+  expect(calls).toHaveBeenCalledWith('trash_images', { ids: ['a', 'b'] })
+})
+
+it('restore_images passes the ids', async () => {
+  const calls = spyIPC(null)
+  await restoreImages(['a', 'b'])
+  expect(calls).toHaveBeenCalledWith('restore_images', { ids: ['a', 'b'] })
+})
+
+it('delete_forever passes the ids and returns the report', async () => {
+  const report: DeleteReport = { deleted: 2, filesLeft: [] }
+  const calls = spyIPC(report)
+  await expect(deleteForever(['a', 'b'])).resolves.toEqual(report)
+  expect(calls).toHaveBeenCalledWith('delete_forever', { ids: ['a', 'b'] })
+})
+
+it('empty_trash takes no arguments and returns the report', async () => {
+  const report: DeleteReport = { deleted: 3, filesLeft: ['/library/images/a.png'] }
+  const calls = spyIPC(report)
+  await expect(emptyTrash()).resolves.toEqual(report)
+  expect(calls).toHaveBeenCalledWith('empty_trash', {})
+})
+
+it('trash_count takes no arguments and returns the count', async () => {
+  const calls = spyIPC(4)
+  await expect(trashCount()).resolves.toBe(4)
+  expect(calls).toHaveBeenCalledWith('trash_count', {})
+})
+
+const ruleEntry: RuleListEntry = {
+  rule: {
+    id: 'r-1',
+    name: 'pixiv',
+    pattern: 'pixiv',
+    isRegex: false,
+    tags: ['pixiv'],
+    enabled: true,
+    createdAt: 1_700_000_000_000,
+    updatedAt: 1_700_000_000_000,
+  },
+  patternError: null,
+}
+
+it('rules_list takes no arguments and returns the list', async () => {
+  const calls = spyIPC([ruleEntry])
+  await expect(rulesList()).resolves.toEqual([ruleEntry])
+  expect(calls).toHaveBeenCalledWith('rules_list', {})
+})
+
+it('rules_upsert passes the rule and returns the row', async () => {
+  const input: RuleInput = {
+    name: 'pixiv',
+    pattern: 'pixiv',
+    isRegex: false,
+    tags: ['pixiv'],
+    enabled: true,
+  }
+  const calls = spyIPC(ruleEntry.rule)
+  await expect(rulesUpsert(input)).resolves.toEqual(ruleEntry.rule)
+  expect(calls).toHaveBeenCalledWith('rules_upsert', { rule: input })
+})
+
+it('rules_delete passes the id', async () => {
+  const calls = spyIPC(null)
+  await rulesDelete('r-1')
+  expect(calls).toHaveBeenCalledWith('rules_delete', { id: 'r-1' })
+})
+
+it('rules_run takes no arguments and returns the report', async () => {
+  const report: RulesRunReport = { examined: 400, changed: 12, rules: [], invalid: [] }
+  const calls = spyIPC(report)
+  await expect(rulesRun()).resolves.toEqual(report)
+  expect(calls).toHaveBeenCalledWith('rules_run', {})
+})
+
+it('rules_export passes the path', async () => {
+  const calls = spyIPC(null)
+  await rulesExport('/library/rules.json')
+  expect(calls).toHaveBeenCalledWith('rules_export', { path: '/library/rules.json' })
+})
+
+it('rules_import passes the path and returns the report', async () => {
+  const report: RulesImportReport = { imported: 2, skipped: 1 }
+  const calls = spyIPC(report)
+  await expect(rulesImport('/library/rules.json')).resolves.toEqual(report)
+  expect(calls).toHaveBeenCalledWith('rules_import', { path: '/library/rules.json' })
+})
+
+it('note_get takes no arguments and returns the note', async () => {
+  const note: Note = { content: 'still to sort', updatedAt: 1_700_000_000_000 }
+  const calls = spyIPC(note)
+  await expect(noteGet()).resolves.toEqual(note)
+  expect(calls).toHaveBeenCalledWith('note_get', {})
+})
+
+it('note_set passes the content and returns the note as stored', async () => {
+  const note: Note = { content: 'still to sort', updatedAt: 1_700_000_000_000 }
+  const calls = spyIPC(note)
+  await expect(noteSet('still to sort')).resolves.toEqual(note)
+  expect(calls).toHaveBeenCalledWith('note_set', { content: 'still to sort' })
 })
 
 it('a rejected command reaches the caller', async () => {

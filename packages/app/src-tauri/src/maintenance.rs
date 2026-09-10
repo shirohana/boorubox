@@ -1,16 +1,12 @@
-//! Per-source counts, the missing-file pass that marks and clears
-//! `images.missing`, and dropping a record whose file is gone for good.
-
-use std::path::Path;
+//! Per-source counts and the missing-file pass that marks and clears
+//! `images.missing`.
 
 use rusqlite::{params, params_from_iter};
 
-use crate::error::{AppError, Result};
+use crate::error::Result;
 use crate::library::Library;
 use crate::model::{ImageCounts, ImageSource};
 use crate::query::placeholders;
-use crate::tags;
-use crate::thumbs::thumbnail_path;
 
 /// Total plus one count per source, from one `GROUP BY source` (design D2).
 ///
@@ -96,44 +92,10 @@ fn images_whose_file_state_changed(
     Ok(changed)
 }
 
-/// Drop the record, keep the file (design D16). Phase 1 has no trash view to
-/// undo a deletion, so unlinking the image here would make the action the one
-/// unrecoverable thing in the app; a destructive variant is a later decision.
-pub fn drop_image_record(library: &Library, id: &str) -> Result<()> {
-    let tx = library.conn.unchecked_transaction()?;
-    // Read before the delete: the cascade takes the `image_tags` rows with the
-    // image, and nothing afterwards can say which tags they named.
-    let tags = tags::tag_ids_of(&tx, id)?;
-    // `image_tags` and `posts` cascade off this row (`foreign_keys` is ON from
-    // `db::open`), and the `images_fts_delete` trigger drops the search-index
-    // entry. Reach past this statement and the index keeps matching an image
-    // the library no longer has.
-    let deleted = tx.execute("DELETE FROM images WHERE id = ?1", [id])?;
-    if deleted == 0 {
-        return Err(AppError::NotFound(format!("image {id}")));
-    }
-    // Same transaction as the unlink (design D5): a `tags` row with no use is
-    // an autocomplete suggestion that matches nothing.
-    tags::collect_orphans(&tx, &tags)?;
-    tx.commit()?;
-
-    remove_if_present(&thumbnail_path(&library.paths, id))
-}
-
-/// A thumbnail is a derived cache `.thumbs/` may have lost at any time (design
-/// D7), so its absence is not a failure to drop the record.
-fn remove_if_present(path: &Path) -> Result<()> {
-    match std::fs::remove_file(path) {
-        Err(error) if error.kind() != std::io::ErrorKind::NotFound => Err(error.into()),
-        _ => Ok(()),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::ingest::{IngestInput, store_image};
-    use crate::model::SearchRequest;
     use crate::query;
 
     fn png_bytes() -> Vec<u8> {
@@ -180,10 +142,6 @@ mod tests {
                 row.get(0)
             })
             .unwrap()
-    }
-
-    fn row_count(library: &Library, sql: &str, id: &str) -> i64 {
-        library.conn.query_row(sql, [id], |row| row.get(0)).unwrap()
     }
 
     #[test]
@@ -253,106 +211,5 @@ mod tests {
         refresh_missing_for(&library, &["a".to_string(), "not-a-row".to_string()]).unwrap();
 
         assert!(!missing_flag(&library, "a"));
-    }
-
-    #[test]
-    fn dropping_a_record_removes_its_row_tags_and_thumbnail_but_not_its_file() {
-        let (_dir, library) = library();
-        store(&library, "a", ImageSource::Extension, &["cat", "cute"]);
-        store(&library, "b", ImageSource::Extension, &["cat"]);
-        let thumbnail = thumbnail_path(&library.paths, "a");
-        std::fs::write(&thumbnail, b"a derived thumbnail").unwrap();
-
-        drop_image_record(&library, "a").unwrap();
-
-        assert_eq!(
-            row_count(&library, "SELECT COUNT(*) FROM images WHERE id = ?1", "a"),
-            0
-        );
-        assert_eq!(
-            row_count(
-                &library,
-                "SELECT COUNT(*) FROM image_tags WHERE image_id = ?1",
-                "a"
-            ),
-            0
-        );
-        assert!(!thumbnail.exists());
-        assert!(
-            library.paths.image_path("a", "png").is_file(),
-            "design D16: the file under images/ stays"
-        );
-        assert_eq!(library.image_count().unwrap(), 1);
-    }
-
-    #[test]
-    fn dropping_a_record_takes_it_out_of_the_search_index() {
-        let (_dir, library) = library();
-        store(&library, "a", ImageSource::Extension, &[]);
-        let hits = |library: &Library| {
-            query::search(
-                &library.conn,
-                &SearchRequest {
-                    query: Default::default(),
-                    text: "kyoto".to_string(),
-                    include_deleted: true,
-                    sort: Default::default(),
-                    group: Default::default(),
-                    limit: 10,
-                    offset: 0,
-                },
-            )
-            .unwrap()
-            .total
-        };
-        assert_eq!(hits(&library), 1);
-
-        drop_image_record(&library, "a").unwrap();
-
-        assert_eq!(hits(&library), 0);
-    }
-
-    /// Design D5: the invariant is "a row in `tags` has at least one use", and
-    /// this is the second write that can break it — the cascade takes the links
-    /// without touching `tags`.
-    #[test]
-    fn dropping_a_record_collects_the_tags_it_was_the_last_use_of() {
-        let (_dir, library) = library();
-        store(&library, "a", ImageSource::Extension, &["cat", "solo"]);
-        store(&library, "b", ImageSource::Extension, &["cat"]);
-
-        drop_image_record(&library, "a").unwrap();
-
-        let mut stmt = library
-            .conn
-            .prepare("SELECT name FROM tags ORDER BY name")
-            .unwrap();
-        let names: Vec<String> = stmt
-            .query_map([], |row| row.get::<_, String>(0))
-            .unwrap()
-            .map(std::result::Result::unwrap)
-            .collect();
-        assert_eq!(names, vec!["cat".to_string()], "`solo` had no other use");
-    }
-
-    #[test]
-    fn dropping_a_record_that_is_not_there_says_so() {
-        let (_dir, library) = library();
-
-        let error = drop_image_record(&library, "nobody").unwrap_err();
-
-        assert!(matches!(error, AppError::NotFound(_)), "got {error}");
-    }
-
-    #[test]
-    fn a_record_can_be_dropped_after_its_file_is_gone() {
-        let (_dir, library) = library();
-        store(&library, "a", ImageSource::Extension, &[]);
-        std::fs::remove_file(library.paths.image_path("a", "png")).unwrap();
-        refresh_missing_for(&library, &["a".to_string()]).unwrap();
-
-        drop_image_record(&library, "a").unwrap();
-
-        assert_eq!(library.image_count().unwrap(), 0);
     }
 }

@@ -3,27 +3,117 @@
   // and the lightbox's inspect mode. Both edit — the tag editor and the rating
   // control are the same instances in both, which is the point of there being
   // one component (slots Inspector · tags and Inspector · rating, design D17).
-  import type { ImageRecord } from '@boorubox/shared'
-  import type { SearchResults } from '$lib/api'
+  import type { ImageRecord, Rating } from '@boorubox/shared'
+  import type { SearchResults, Selection } from '$lib/api'
   import { errorText } from '$lib/api'
+  import PostedLabel from '$lib/components/booru/PostedLabel.svelte'
+  import UploadAction from '$lib/components/booru/UploadAction.svelte'
   import RatingControl from '$lib/components/tags/RatingControl.svelte'
   import TagInput from '$lib/components/tags/TagInput.svelte'
   import { Badge } from '$lib/components/ui/badge'
   import { Button } from '$lib/components/ui/button'
   import * as ContextMenu from '$lib/components/ui/context-menu'
   import { formatBytes, formatTimestamp } from '$lib/domain/format'
-  import { excludeTagFromQuery, sortTags, toggleTagInQuery } from '$lib/domain/tag-utils'
+  import { excludeTagFromQuery, sortTags, tagList, toggleTagInQuery } from '$lib/domain/tag-utils'
+  import SelectionThumbs from './SelectionThumbs.svelte'
+  import type { TrashActions } from './trash-actions'
+
+  /**
+   * How many of a multi-selection the header draws. One constant, no spec:
+   * design D7 leaves the number to be judged against a real selection.
+   */
+  const PREVIEW_LIMIT = 12
 
   interface Props {
+    /** The focused card. The selected image wins over it when exactly one is selected. */
     image: ImageRecord | null
     /** Where an edit is written and the changed record is put back (design D10). */
     results: SearchResults
+    /**
+     * Slot Inspector · header: two or more selected replaces the identity block
+     * with the count and a thumbnail strip (design D7). One selected shows that
+     * image's full panel (spec `selection`), which is not always the focused one:
+     * a multi-select click that deselects leaves the focus on the card it cleared.
+     *
+     * Absent inside the viewer, which shows one image and neither reads nor
+     * writes the selection (`selection-and-bulk` Non-Goals).
+     */
+    selection?: Selection
+    /**
+     * Slot Inspector · actions (`app-shell` D9): the pair the tile menu offers,
+     * for the one image this panel is showing, in both of its placements.
+     */
+    actions: TrashActions
     /** The toolbar's tag query, so a click on a tag can rewrite it (design D14). */
     tagQuery: string
     onquery: (next: string) => void
+    /**
+     * A rating was chosen here. Only the viewer's placement listens: it takes
+     * the keyboard focus back off the choice so Space still closes it (design
+     * D4, amended). Beside the grid nobody wants the focus moved.
+     */
+    onrated?: () => void
+    /**
+     * Open the viewer at a row — the screen's own way in, so a thumbnail in the
+     * selection strip opens the one viewer rather than a second one
+     * (`selection-and-bulk` design D7, amended). Absent inside the viewer,
+     * which is already showing an image.
+     */
+    onactivate?: (index: number) => void
   }
 
-  let { image, results, tagQuery, onquery }: Props = $props()
+  let {
+    image: focused,
+    results,
+    selection,
+    actions,
+    tagQuery,
+    onquery,
+    onrated,
+    onactivate,
+  }: Props = $props()
+
+  const multi = $derived(selection !== undefined && selection.count >= 2)
+  const preview = $derived(
+    selection && multi ? selection.previewIds(PREVIEW_LIMIT, (index) => results.at(index)?.id) : [],
+  )
+
+  /** The one selected id, whichever representation the selection is in (design D2). */
+  const only = $derived(
+    selection?.count === 1
+      ? selection.previewIds(1, (index) => results.at(index)?.id)[0]
+      : undefined,
+  )
+  const image = $derived(
+    only === undefined || only === focused?.id ? focused : results.at(rowWithId(only)) ?? null,
+  )
+
+  /**
+   * `SearchResults` answers by row, so a record is found by the same walk its
+   * own `replace` does; `-1` is a row whose page has not been loaded. It stops
+   * at the selected row, and that row is one whose tile was drawn — the walk is
+   * short in the gestures that reach here.
+   *
+   * The row and not the record, because both callers want the index: the panel
+   * to read the record back, the strip to open the viewer at it.
+   */
+  function rowWithId(id: string): number {
+    for (let index = 0; index < results.total; index++) {
+      if (results.at(index)?.id === id) return index
+    }
+    return -1
+  }
+
+  /**
+   * A thumbnail in the strip is a control, not a picture (design D7, amended):
+   * pressing it opens the image, and its own button takes it back out of the
+   * selection. The row is looked up here because the strip has ids and the
+   * viewer opens at a row.
+   */
+  function openThumb(id: string) {
+    const index = rowWithId(id)
+    if (index >= 0) onactivate?.(index)
+  }
 
   const title = $derived(image?.pageTitle || image?.imageUrl || image?.id || '')
   const origin = $derived(
@@ -64,8 +154,35 @@
     }
   }
 
+  /** The action row acts on the image on screen, whatever the grid's focus is. */
+  function act(run: (ids: string[]) => void) {
+    if (!image) return
+    run([image.id])
+  }
+
+  /**
+   * A write that happens now also lets its image go: the panel was describing
+   * one image and the user has just taken it out of this view, so there is
+   * nothing left here to describe. The grid's own `Delete` keeps its card
+   * instead (`trash` design D12) — those keys are meant to be pressed again.
+   *
+   * Only for the writes that happen now. "Delete forever…" merely opens the
+   * confirmation, and emptying the panel while it is up moves the screen under
+   * a question the user may still decline; its reset comes with the write
+   * itself, from the screen's `afterTrashWrite`.
+   */
+  function actAndRelease(run: (ids: string[]) => void) {
+    act(run)
+    selection?.reset()
+  }
+
+  async function rate(rating: Rating | null) {
+    if (!image) return
+    await results.saveRating(image.id, rating)
+  }
+
   /** Design D2: the editor holds the whole set, so the whole set is sent. */
-  const save = () => write(draft.split(/\s+/).filter((tag) => tag.length > 0))
+  const save = () => write(tagList(draft))
 
   const remove = (tag: string) => write(tags.filter((other) => other !== tag))
 
@@ -82,7 +199,20 @@
 </script>
 
 <div class="flex h-full flex-col overflow-y-auto">
-  {#if !image}
+  {#if multi}
+    <header class="border-b border-border px-4 py-3">
+      <h2 class="text-sm font-medium">{selection?.count.toLocaleString()} images selected</h2>
+    </header>
+
+    <section class="px-4 py-3">
+      <SelectionThumbs
+        ids={preview}
+        more={(selection?.count ?? 0) - preview.length}
+        onopen={openThumb}
+        onremove={(id) => void selection?.remove(id)}
+      />
+    </section>
+  {:else if !image}
     <p class="p-4 text-sm text-muted-foreground">No image selected</p>
   {:else}
     <header class="border-b border-border px-4 py-3">
@@ -135,7 +265,7 @@
 
     <section class="border-t border-border px-4 py-3">
       <h3 class="mb-2 text-xs font-medium text-muted-foreground">Rating</h3>
-      <RatingControl {image} {results} />
+      <RatingControl value={image.rating} onchoose={rate} onchosen={onrated} />
     </section>
 
     <section class="border-t border-border px-4 py-3">
@@ -201,6 +331,59 @@
           {/each}
         </ul>
       {/if}
+    </section>
+
+    <!--
+      `posted-label`: absent, not an empty placeholder, for an image that has
+      never been posted. Shown in the trash too — where an image has been is a
+      fact about it, not an action on it.
+    -->
+    {#if image.posts.length > 0}
+      <section class="border-t border-border px-4 py-3">
+        <h3 class="mb-2 text-xs font-medium text-muted-foreground">Posted</h3>
+        <PostedLabel posts={image.posts} />
+      </section>
+    {/if}
+
+    <!--
+      Slot Inspector · actions (`trash` design D13, `booru-upload` design D9).
+      `mt-auto` keeps it at the foot of the panel rather than floating under a
+      short tag list, and it is inside this branch, so a panel showing no image
+      has no action row at all.
+    -->
+    <section class="mt-auto flex flex-col gap-2 border-t border-border px-4 py-3">
+      <!--
+        Not in the trash: an image on its way out of the library is not one to
+        publish, and the row it would write claims the library holds the file.
+      -->
+      {#if results.view === 'library'}
+        <!--
+          The post is the only thing that changed about the image, and Rust
+          answered with it, so the loaded record is edited where it sits —
+          `tags-and-ratings` design D10: a write replaces the record, the search
+          is never re-run. Re-running it here would clear the rows under the
+          dialog that is still reporting the post it just made.
+        -->
+        <UploadAction
+          {image}
+          onposted={(post) => results.replace({ ...image, posts: [...image.posts, post] })}
+        />
+      {/if}
+
+      <div class="flex gap-2">
+        {#if results.view === 'trash'}
+          <Button size="xs" variant="outline" onclick={() => actAndRelease(actions.restore)}>
+            Restore
+          </Button>
+          <Button size="xs" variant="destructive" onclick={() => act(actions.deleteForever)}>
+            Delete forever…
+          </Button>
+        {:else}
+          <Button size="xs" variant="outline" onclick={() => actAndRelease(actions.trash)}>
+            Move to trash
+          </Button>
+        {/if}
+      </div>
     </section>
   {/if}
 </div>

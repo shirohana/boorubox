@@ -462,7 +462,7 @@ mod tests {
         let req = crate::model::SearchRequest {
             query: crate::model::ParsedTagSearch::default(),
             text: String::new(),
-            include_deleted: false,
+            view: crate::model::SearchView::Library,
             sort: crate::model::Sort::default(),
             group: crate::model::GroupBy::default(),
             limit: 10,

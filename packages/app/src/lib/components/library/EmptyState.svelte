@@ -4,7 +4,13 @@
   // library out.
   import type { SearchInputs } from '$lib/api'
 
-  let { inputs }: { inputs: SearchInputs } = $props()
+  interface Props {
+    inputs: SearchInputs
+    /** Which set found nothing (`trash` design D1): they read differently. */
+    view: 'library' | 'trash'
+  }
+
+  let { inputs, view }: Props = $props()
 
   const searching = $derived(inputs.tagQuery.trim() !== '' || inputs.text.trim() !== '')
 </script>
@@ -26,6 +32,11 @@
         </div>
       {/if}
     </dl>
+  {:else if view === 'trash'}
+    <p class="text-sm font-medium">The trash is empty.</p>
+    <p class="text-sm text-muted-foreground">
+      Images you delete are kept here until you restore them or delete them for good.
+    </p>
   {:else}
     <p class="text-sm font-medium">This library has no images yet.</p>
     <p class="text-sm text-muted-foreground">

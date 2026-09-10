@@ -20,10 +20,13 @@
     KEY_LEFT,
     KEY_RIGHT,
     KEY_SPACE,
+    KEY_TAB,
     KEY_UP,
   } from '$lib/keyboard'
   import { moveFocus } from './grid-focus'
   import Inspector from './Inspector.svelte'
+  import { nextTabStop } from './tab-cycle'
+  import type { TrashActions } from './trash-actions'
 
   interface Props {
     results: SearchResults
@@ -33,9 +36,18 @@
     columns: number
     /** Session state, held by the page so it outlives this dialog (design D6). */
     mode: 'gallery' | 'inspect'
+    /** Slot Inspector · actions, in this placement of the panel (`trash` design D13). */
+    actions: TrashActions
     /** Forwarded to the inspector, which edits here exactly as it does beside the grid. */
     tagQuery: string
     onquery: (next: string) => void
+    /**
+     * Every image this viewer moves to. The grid behind it scrolls that index
+     * into view, so closing does not jump to a row the user never saw it reach
+     * (item 2.4's hand check). It must not move the DOM focus — that stays in
+     * this dialog.
+     */
+    onmove: (index: number) => void
     onclose: () => void
   }
 
@@ -45,8 +57,10 @@
     libraryPath,
     columns,
     mode = $bindable(),
+    actions,
     tagQuery,
     onquery,
+    onmove,
     onclose,
   }: Props = $props()
 
@@ -75,13 +89,62 @@
     if (destination === null) return
     index = destination
     results.ensureRange(destination, destination + 1)
+    onmove(destination)
+  }
+
+  /**
+   * The controls Tab may land on, in document order: `Previous`, `Next`,
+   * `Info`, `Close` and, while it is showing, the inspector's own. Disabled
+   * buttons are not stops — `Previous` at the first image is one — which is the
+   * same test the engine makes and the reason the selector spells it out.
+   */
+  const TAB_STOPS = [
+    'a[href]',
+    'button:not([disabled])',
+    'input:not([disabled])',
+    'select:not([disabled])',
+    'textarea:not([disabled])',
+    '[tabindex]:not([tabindex="-1"])',
+  ].join(', ')
+
+  /**
+   * `showModal()` is supposed to keep Tab inside the dialog and in WebKit it
+   * does not: five Tabs from the viewer's chrome park the focus on a control of
+   * the page behind, where Space is no longer the viewer's (item 2.1's hand
+   * check). So the cycle is walked here, over the dialog's own tabbable
+   * elements, which is the one form that behaves the same in both engines
+   * (design D2, amended).
+   */
+  function trapTab(event: KeyboardEvent) {
+    if (!surface) return
+    const stops = [...surface.querySelectorAll<HTMLElement>(TAB_STOPS)]
+      .filter((stop) => stop.tabIndex >= 0)
+    const active = document.activeElement
+    const from = active instanceof Node
+      ? stops.findIndex((stop) => stop === active || stop.contains(active))
+      : -1
+    const to = nextTabStop(stops.length, from, event.shiftKey)
+    if (to === null) return
+    event.preventDefault()
+    stops[to].focus()
   }
 
   function onkeydown(event: KeyboardEvent) {
     // Design D3: a control that already acted on this key prevented its
     // default, and the viewer does not act on it a second time — that is what
     // keeps the rating choices' arrows off the image.
-    if (isTypingTarget(event) || event.defaultPrevented) return
+    if (event.defaultPrevented) return
+
+    // Ahead of the typing guard on purpose: the tag field is inside the dialog,
+    // so Tab out of it is a move between the viewer's controls, not a character
+    // being typed. The suggestion list still wins — it prevents Tab's default,
+    // which the guard above reads.
+    if (event.key === KEY_TAB) {
+      trapTab(event)
+      return
+    }
+
+    if (isTypingTarget(event)) return
 
     if (event.key === KEY_LEFT) {
       event.preventDefault()
@@ -97,16 +160,22 @@
     } else if (event.key === KEY_INSPECT) {
       event.preventDefault()
       mode = mode === 'inspect' ? 'gallery' : 'inspect'
-    } else if (event.key === KEY_SPACE && event.target === surface) {
+    } else if (event.key === KEY_SPACE && (event.target === surface || event.target === dialog)) {
       // Escape is the dialog's own; Space is not, so it has to ask — and only
-      // from the surface: on a focused button Space is the button's press,
-      // which a native button never marks as handled (design D4).
+      // from the two non-controls: the surface the dialog opens focused on, and
+      // the dialog itself, which a click on the image or any other unfocusable
+      // area leaves as the active element. On a focused button Space is the
+      // button's press, which a native button never marks as handled (D4).
       event.preventDefault()
       dialog?.close()
     }
   }
 
   function onclick(event: MouseEvent) {
+    // The second click of a double click on the current tile lands here: the
+    // first opened this dialog, which the effect above mounted a microtask
+    // later, so without this the tile's own double click closes it again.
+    if (event.detail > 1) return
     // Design D4: the dark region is the `::backdrop`, whose clicks target the
     // `<dialog>`, and the empty space around the image inside the transparent
     // box. A click on either lands on that element itself; a click on the
@@ -211,7 +280,22 @@
           text-foreground
         "
       >
-        <Inspector image={image ?? null} {results} {tagQuery} {onquery} />
+        <!--
+          A rating chosen with Enter or Space leaves the focus on that choice,
+          where the next Space is the choice's own press and no longer closes
+          the viewer (item 3.1's hand check). The panel says when a choice was
+          made and the focus comes back to the surface Space is bound on
+          (design D4, amended). Beside the grid nothing is passed, so the
+          control keeps its focus there.
+        -->
+        <Inspector
+          image={image ?? null}
+          {results}
+          {actions}
+          {tagQuery}
+          {onquery}
+          onrated={() => surface?.focus()}
+        />
       </aside>
     {/if}
   </div>

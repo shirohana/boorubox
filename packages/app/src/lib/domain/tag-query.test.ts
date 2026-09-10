@@ -4,6 +4,7 @@ import {
   excludeTagFromQuery,
   parseTagSearch,
   removeTagFromQuery,
+  tagList,
   toggleRatingInQuery,
   toggleTagInQuery,
 } from './tag-utils'
@@ -171,5 +172,16 @@ describe('toggleRatingInQuery', () => {
     expect(parsed.includeUnrated).toBe(true)
     expect(parsed.ratings).toEqual(['q', 's'])
     expect(parsed.includeTags).toEqual(['cat'])
+  })
+})
+
+describe('tagList', () => {
+  it('splits on any run of whitespace and drops the empties', () => {
+    expect(tagList('  cat   dog\n')).toEqual(['cat', 'dog'])
+    expect(tagList('   ')).toEqual([])
+  })
+
+  it('keeps every token literally, query syntax included', () => {
+    expect(tagList('-foo rating:s a or b')).toEqual(['-foo', 'rating:s', 'a', 'or', 'b'])
   })
 })

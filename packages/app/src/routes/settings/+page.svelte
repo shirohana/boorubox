@@ -2,8 +2,10 @@
   import type { ImageCounts, Theme } from '@boorubox/shared'
   import { GRID_TILE_DEFAULT, GRID_TILE_MAX, GRID_TILE_MIN } from '@boorubox/shared'
   import ChevronsUpDownIcon from '@lucide/svelte/icons/chevrons-up-down'
-  import { errorText, imageCounts, library, setListenerPort, settings } from '$lib/api'
+  import { errorText, imageCounts, library, setListenerPort, settings, trash } from '$lib/api'
+  import BooruSection from '$lib/components/booru/BooruSection.svelte'
   import LibraryMenu from '$lib/components/frame/LibraryMenu.svelte'
+  import RulesSection from '$lib/components/rules/RulesSection.svelte'
   import { Button } from '$lib/components/ui/button'
   import { Input } from '$lib/components/ui/input'
   import { Kbd } from '$lib/components/ui/kbd'
@@ -129,6 +131,21 @@
           </div>
         {/each}
       </dl>
+
+      <!--
+        `trash` design D9: the counts above exclude trashed images on purpose —
+        they are what §9 step 4 compares against a browser viewer whose own
+        count excludes its trash. What the app holds is still answered, beside
+        them rather than folded into them. The sidebar's badge is the same
+        number, from the same store.
+      -->
+      <p class="text-sm text-muted-foreground">
+        In trash —
+        <span class="font-medium text-foreground tabular-nums">
+          {trash.count.toLocaleString()}
+        </span>
+        {trash.count === 1 ? 'image' : 'images'}, not counted above.
+      </p>
     </section>
 
     <section class="flex flex-col gap-4">
@@ -168,6 +185,20 @@
         </Button>
       </form>
     </section>
+
+    <!--
+      Slot Settings · Rules (`auto-tag-rules` design D11). Beside Capture rather
+      than on a route of its own: both are about what happens as an image enters
+      the library, and a nav item is for a place you look at images.
+    -->
+    <RulesSection />
+
+    <!--
+      Slot Settings · Booru (`booru-upload` design D13): a sibling of Rules, not
+      a shared section — sites and rules are two unrelated tables of library
+      configuration, and one section named after neither would hold both.
+    -->
+    <BooruSection />
 
     <section class="flex flex-col gap-4">
       <h2 class="text-sm font-semibold">Appearance</h2>

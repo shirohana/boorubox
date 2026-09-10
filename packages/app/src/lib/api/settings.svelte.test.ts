@@ -10,7 +10,11 @@ afterEach(() => {
   clearMocks()
 })
 
-const stored: AppSettings = { theme: 'system', gridTileSize: GRID_TILE_DEFAULT }
+const stored: AppSettings = {
+  theme: 'system',
+  gridTileSize: GRID_TILE_DEFAULT,
+  notesCollapsed: false,
+}
 
 it('asks Rust once and keeps the answer', async () => {
   const calls = vi.fn()
@@ -27,7 +31,9 @@ it('asks Rust once and keeps the answer', async () => {
 })
 
 it('keeps what the write answered, not what it was asked for', async () => {
-  mockIPC(() => ({ theme: 'dark', gridTileSize: GRID_TILE_MAX }) satisfies AppSettings)
+  mockIPC(
+    () => ({ theme: 'dark', gridTileSize: GRID_TILE_MAX, notesCollapsed: true }) satisfies AppSettings,
+  )
 
   await settings.setTheme('dark')
   expect(settings.current?.theme).toBe('dark')
@@ -36,4 +42,7 @@ it('keeps what the write answered, not what it was asked for', async () => {
   // to; taking the argument instead would show a value the file does not hold.
   await settings.setGridTileSize(GRID_TILE_MAX + 100)
   expect(settings.current?.gridTileSize).toBe(GRID_TILE_MAX)
+
+  await settings.setNotesCollapsed(true)
+  expect(settings.current?.notesCollapsed).toBe(true)
 })

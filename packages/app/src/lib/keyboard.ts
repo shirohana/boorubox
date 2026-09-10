@@ -32,6 +32,20 @@ export const KEY_ZOOM_OUT = '-'
 export const KEY_ZOOM_RESET = '0'
 /** With Cmd/Ctrl: collapse or expand the sidebar. Bound by the sidebar provider, listed here. */
 export const KEY_SIDEBAR = 'b'
+/**
+ * With Cmd/Ctrl: select every image in the current result (spec `selection`).
+ * Bound by the library screen, not by the grid: it is about the result, not
+ * about the card the focus is on.
+ */
+export const KEY_SELECT_ALL = 'a'
+/**
+ * Move to the trash, unmodified: `Delete` is the key a Windows user presses and
+ * `Backspace` is what the same key is called on a Mac keyboard (`trash` design
+ * D12). Requiring a modifier for an action that cannot lose anything would only
+ * make it slower.
+ */
+export const KEY_DELETE = 'Delete'
+export const KEY_BACKSPACE = 'Backspace'
 
 export interface KeyBinding {
   where: string
@@ -52,7 +66,20 @@ export const KEYBOARD_MAP: KeyBinding[] = [
   { where: 'Search field', keys: ['Esc'], action: 'Leave the field' },
   { where: 'Grid', keys: ['←', '→', '↑', '↓'], action: 'Move the focused card' },
   { where: 'Grid', keys: ['Home', 'End'], action: 'Focus the first or last card' },
+  {
+    where: 'Grid',
+    keys: ['⇧ ←', '⇧ →', '⇧ ↑', '⇧ ↓'],
+    action: 'Move the focus and select from the anchor to it',
+  },
+  { where: 'Grid', keys: ['⇧ Home', '⇧ End'], action: 'Select to the first or last image' },
+  { where: 'Library', keys: ['⌘ A'], action: 'Select every image in the result' },
+  { where: 'Library', keys: ['Esc'], action: 'Clear the selection' },
   { where: 'Grid', keys: ['Enter', 'Space'], action: 'Open the focused image' },
+  {
+    where: 'Grid',
+    keys: ['Delete', 'Backspace'],
+    action: 'Move the selection, or the focused image, to the trash',
+  },
   { where: 'Grid', keys: ['I'], action: 'Show or hide the inspector' },
   { where: 'Viewer', keys: ['←', '→'], action: 'Previous or next image' },
   { where: 'Viewer', keys: ['↑', '↓'], action: 'The image one grid row up or down' },
@@ -78,4 +105,37 @@ export function isTypingTarget(event: KeyboardEvent | Event): boolean {
 
   const editable = target.closest('[contenteditable]')
   return editable !== null && editable.getAttribute('contenteditable') !== 'false'
+}
+
+/**
+ * True while the event happened inside a dialog — the bulk tag dialog, a
+ * confirmation, the viewer. A screen-wide binding has to stand down there: the
+ * dialog is what the user is looking at, and a shortcut fired underneath it
+ * would act on a grid they cannot see.
+ *
+ * Read from the target rather than from each dialog's open flag, so a dialog
+ * added later is covered without the flag being threaded up to the screen. Every
+ * shape in use is here: `<dialog>` for the viewer, bits-ui's `role="dialog"` for
+ * what shadcn draws, `role="alertdialog"` for its alert dialog, and an open
+ * menu, which is modal in the same sense — ⌘A under a context menu would
+ * select the whole result behind it.
+ */
+export function isInDialog(event: Event): boolean {
+  const target = event.target
+  return target instanceof HTMLElement
+    && target.closest('dialog, [role="dialog"], [role="alertdialog"], [role="menu"]') !== null
+}
+
+/**
+ * True when this key press means "move to the trash" (`trash` design D12).
+ *
+ * In the trash view it is never true: binding permanent deletion to a key would
+ * put the app's only unrecoverable action one keystroke from a grid the user
+ * reached by clicking around, and no confirmation survives a key pressed
+ * reflexively. The unmodified keys are acceptable in the library view precisely
+ * because what they fire is the reversible half of the pair.
+ */
+export function isTrashKey(event: KeyboardEvent, view: 'library' | 'trash'): boolean {
+  if (view !== 'library' || isTypingTarget(event)) return false
+  return event.key === KEY_DELETE || event.key === KEY_BACKSPACE
 }

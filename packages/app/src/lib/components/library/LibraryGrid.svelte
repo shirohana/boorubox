@@ -5,8 +5,9 @@
   // which is where that is tested), and only the `search` pages those rows fall
   // in are fetched.
   import type { ImageRecord, Rating } from '@boorubox/shared'
-  import type { SearchResults } from '$lib/api'
+  import type { SearchResults, Selection } from '$lib/api'
   import {
+    isTrashKey,
     isTypingTarget,
     KEY_ENTER,
     KEY_INSPECT,
@@ -16,24 +17,26 @@
   import { EDGE, GAP, gridWindow, imageTop } from './grid-window'
   import { groupLabel } from './group-label'
   import ImageCard from './ImageCard.svelte'
+  import type { TrashActions } from './trash-actions'
 
   interface Props {
     results: SearchResults
     /** Target tile edge in px; the toolbar slider writes it (design D11). */
     tile: number
     /**
-     * The current card, `-1` for none (design D9). Bound so the page can fill
-     * the inspector from it — and so the page owns resetting it to `-1` when a
-     * new query makes the old index meaningless.
+     * The focus, the anchor and the selected set, which are one state machine
+     * (design D1): the grid reads them and never keeps a second copy. The page
+     * fills the inspector from the same store and resets it on a new query.
      */
-    focusIndex: number
+    selection: Selection
     /**
      * Read-only to the page: the grid is the one place the column count is
      * computed, and the viewer's row step reads it from here (design D9).
      */
     columns: number
+    /** Offered by every tile's menu, and by the trash keys (`trash` D12, D13). */
+    actions: TrashActions
     onactivate: (index: number) => void
-    onforget: (image: ImageRecord) => void
     onrate: (image: ImageRecord, rating: Rating | null) => void
     ontoggleinspector: () => void
   }
@@ -41,11 +44,11 @@
   let {
     results,
     tile,
-    focusIndex = $bindable(),
+    selection,
     // eslint-disable-next-line no-useless-assignment -- write-only: published, never read back
     columns = $bindable(),
+    actions,
     onactivate,
-    onforget,
     onrate,
     ontoggleinspector,
   }: Props = $props()
@@ -98,14 +101,38 @@
   $effect(() => {
     // Reading the window makes this run again once the row it names is mounted.
     const mounted = shown.rows.length
-    if (!focusWanted || focusIndex < 0 || !viewport || mounted === 0) return
+    if (!focusWanted || selection.focus < 0 || !viewport || mounted === 0) return
     const card = viewport.querySelector<HTMLElement>('[data-card-focus][tabindex="0"]')
     if (!card) return
     card.focus()
     focusWanted = false
   })
 
-  function scrollIntoView(index: number) {
+  // A resize, a sidebar toggle or a slider drag that changes the column count
+  // re-keys every row but the first (`t${row.first}`), and the card holding
+  // the focus leaves the DOM with its row: the focus falls to `<body>`, where
+  // none of the grid's keys are bound — which is how leaving macOS fullscreen
+  // left the keyboard dead. `$effect.pre` runs before the DOM catches up, while
+  // the card is still there to ask; the effect above then finds its
+  // replacement once the new rows are mounted.
+  $effect.pre(() => {
+    if (shown.columns === 0 || selection.focus < 0) return
+    if (viewport?.contains(document.activeElement)) focusWanted = true
+  })
+
+  /** Brings a card the keyboard moved to on screen, without touching the anchor. */
+  function showCard(index: number) {
+    focusWanted = true
+    scrollIntoView(index)
+  }
+
+  /**
+   * Also the viewer's way in: every image it moves to is scrolled to here, so
+   * the grid behind the dialog is looking at the same row and closing does not
+   * jump to one the user never saw it reach (item 2.4's hand check). It moves
+   * no focus — the viewer's dialog keeps that.
+   */
+  export function scrollIntoView(index: number) {
     if (!viewport) return
     const { columns, rowHeight, sections } = shown
     // Group headings push every row below them down, so the offset comes from
@@ -124,13 +151,44 @@
    * the grid's focus follows what the viewer showed last (design D10).
    */
   export function focusCard(index: number) {
-    focusIndex = index
-    focusWanted = true
-    scrollIntoView(index)
+    selection.focusAt(index)
+    showCard(index)
+  }
+
+  /**
+   * The selection if there is one, otherwise the focused image (`trash` design
+   * D12). Two or more images are confirmed before anything moves, by the screen
+   * that owns the dialog — this key handler asks for the write and nothing
+   * else. The focus index is left where it is, but the card under it goes with
+   * the write's refresh — the screen puts the focus back on that row afterwards
+   * (`LibraryScreen`'s `afterTrashWrite`), which is what lets `Delete` be
+   * pressed twice.
+   */
+  async function trashFocused() {
+    if (selection.count > 0) {
+      actions.trash(await selection.ids())
+      return
+    }
+    const id = results.at(selection.focus)?.id
+    if (id !== undefined) actions.trash([id])
   }
 
   function onkeydown(event: KeyboardEvent) {
+    // Design D5: one handler and one guard for every key the grid binds, the
+    // selection keys included. A second dispatcher would have to work out which
+    // region is live, which is the thing focus already answers.
+    //
+    // Select-all is the exception and is bound by the screen (design D5,
+    // amended): it is about the result, not about the card the focus is on, and
+    // bound here it did nothing until the grid had been clicked into.
     if (isTypingTarget(event)) return
+    const focusIndex = selection.focus
+
+    if (isTrashKey(event, results.view)) {
+      event.preventDefault()
+      void trashFocused()
+      return
+    }
 
     const destination = moveFocus(
       focusIndex,
@@ -141,7 +199,11 @@
     )
     if (destination !== null) {
       event.preventDefault()
-      focusCard(destination)
+      // The destination is the clamped index a plain arrow would take, so a
+      // shift-arrow stops at the same edges rather than growing past them.
+      if (event.shiftKey) selection.extendTo(destination)
+      else selection.focusAt(destination)
+      showCard(destination)
       return
     }
 
@@ -202,19 +264,19 @@
           "
         >
           {#each Array.from({ length: row.count }, (_, i) => row.first + i) as index (index)}
+            {@const image = results.at(index)}
             <ImageCard
-              image={results.at(index)}
-              focused={index === focusIndex}
-              onfocus={() => (focusIndex = index)}
+              {image}
+              focused={index === selection.focus}
+              selected={selection.has(index, image?.id)}
+              onfocus={() => selection.focusEntered(index)}
+              onselect={(modifiers) => void selection.click(index, image?.id, modifiers)}
               onactivate={() => onactivate(index)}
-              onforget={() => {
-                const image = results.at(index)
-                if (image) onforget(image)
-              }}
               onrate={(rating) => {
-                const image = results.at(index)
                 if (image) onrate(image, rating)
               }}
+              view={results.view}
+              {actions}
             />
           {/each}
         </div>

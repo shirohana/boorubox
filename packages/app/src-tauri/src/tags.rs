@@ -13,7 +13,24 @@ use crate::error::{AppError, Result};
 use crate::ingest;
 use crate::library::Library;
 use crate::model::{ImageRecord, TagCount};
-use crate::query::placeholders;
+use crate::query::{ID_CHUNK, placeholders};
+
+/// Ensure the tag row exists and link the image to it. The one place a `tags`
+/// row is created: `ingest::insert_rows` links through here too (design D8),
+/// so a tag added here and one that arrived with a capture are the same row.
+pub fn link_tag(conn: &Connection, image_id: &str, tag: &str) -> Result<()> {
+    conn.execute(
+        "INSERT INTO tags (name) VALUES (?1) ON CONFLICT (name) DO NOTHING",
+        [tag],
+    )?;
+    conn.execute(
+        "INSERT INTO image_tags (image_id, tag_id)
+         SELECT ?1, id FROM tags WHERE name = ?2
+         ON CONFLICT DO NOTHING",
+        params![image_id, tag],
+    )?;
+    Ok(())
+}
 
 /// The whole rating alphabet, in the order the controls show it. `images.rating`
 /// is a nullable column, so "no rating" is the absence of one of these.
@@ -34,7 +51,7 @@ pub fn update_tags(library: &Library, id: &str, tags: &[String]) -> Result<Image
     stamp(&tx, id, edit.rating.as_deref())?;
     let unlinked = unlink_tags_other_than(&tx, id, &edit.tags)?;
     for tag in &edit.tags {
-        ingest::link_tag(&tx, id, tag)?;
+        link_tag(&tx, id, tag)?;
     }
     collect_orphans(&tx, &unlinked)?;
     tx.commit()?;
@@ -65,6 +82,175 @@ pub fn set_rating(library: &Library, id: &str, rating: Option<&str>) -> Result<I
     }
 
     ingest::require_record(&library.conn, id)
+}
+
+/// One tag edit across every id in `ids`, in a single transaction
+/// (`selection-and-bulk` design D10): every id gets `add` linked and `remove`
+/// unlinked, orphans are collected once at the end, and the whole thing commits
+/// together or not at all — an id partway through a large selection failing
+/// must not leave the ones before it edited and the ones after it untouched.
+///
+/// Reuses [`add_tags`], [`remove_tags`] and `collect_orphans` rather than
+/// looping `update_tags`: that command replaces an image's *whole* tag set from
+/// free text, which is not what a bulk add/remove means, and a loop of it would
+/// also be one transaction per image (design D10's "not a loop over the
+/// single-image command").
+pub fn bulk_update_tags(
+    library: &Library,
+    ids: &[String],
+    add: &[String],
+    remove: &[String],
+) -> Result<()> {
+    let tx = library.conn.unchecked_transaction()?;
+    let mut unlinked = Vec::new();
+    for id in ids {
+        // First, so an id with no row fails the whole call before any tag link
+        // changes — the transaction rolls every earlier id back on the way out.
+        stamp(&tx, id, None)?;
+        unlinked.extend(remove_tags(&tx, id, remove)?);
+        add_tags(&tx, id, add)?;
+    }
+    collect_orphans(&tx, &unlinked)?;
+    tx.commit()?;
+    Ok(())
+}
+
+/// Link `id` to each of `tags`, creating a `tags` row for one not seen before.
+/// The per-image half of a bulk add: `link_tag` is the one place a
+/// `tags` row is created, so a tag added here and one that arrives with a
+/// capture are the same row.
+pub fn add_tags(conn: &Connection, id: &str, tags: &[String]) -> Result<()> {
+    for tag in tags {
+        link_tag(conn, id, tag)?;
+    }
+    Ok(())
+}
+
+/// Unlink `id` from each of `tags`, and answer with the tag ids that lost this
+/// use — the only ones `collect_orphans` need look at. Unlinking a tag `id`
+/// does not carry is a no-op, exactly as removing one from the single-image
+/// editor is.
+pub fn remove_tags(conn: &Connection, id: &str, tags: &[String]) -> Result<Vec<i64>> {
+    if tags.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut values: Vec<Value> = vec![Value::Text(id.to_string())];
+    values.extend(tags.iter().cloned().map(Value::Text));
+    let names = placeholders(tags.len());
+
+    let mut stmt = conn.prepare(&format!(
+        "SELECT image_tags.tag_id FROM image_tags
+         JOIN tags ON tags.id = image_tags.tag_id
+         WHERE image_tags.image_id = ?1 AND tags.name IN ({names})"
+    ))?;
+    let unlinked: Vec<i64> = stmt
+        .query_map(params_from_iter(&values), |row| row.get(0))?
+        .collect::<rusqlite::Result<_>>()?;
+
+    conn.execute(
+        &format!(
+            "DELETE FROM image_tags
+             WHERE image_id = ?1
+               AND tag_id IN (SELECT id FROM tags WHERE name IN ({names}))"
+        ),
+        params_from_iter(&values),
+    )?;
+    Ok(unlinked)
+}
+
+/// One rating across every id in `ids` (`selection-and-bulk` design D10)
+/// rather than `set_rating` looped: the whole selection changes together, so
+/// there is no point at which it is carrying two ratings. `None` clears every
+/// id to unrated, exactly as `set_rating(None)` does for one image.
+///
+/// Chunked to [`ID_CHUNK`] ids per `UPDATE … WHERE id IN (…)`, inside one
+/// transaction: SQLite's bound-parameter limit makes one statement per id in
+/// the selection a real failure mode once a selection spans a whole large
+/// library ("too many SQL variables"), and the transaction is what keeps a
+/// selection split across statements changing together or not at all.
+pub fn bulk_set_rating(library: &Library, ids: &[String], rating: Option<&str>) -> Result<()> {
+    if let Some(value) = rating
+        && !RATINGS.contains(&value)
+    {
+        return Err(AppError::BadRequest(format!("{value:?} is not a rating")));
+    }
+    if ids.is_empty() {
+        return Ok(());
+    }
+
+    let now = db::now_ms();
+    let tx = library.conn.unchecked_transaction()?;
+    for chunk in ids.chunks(ID_CHUNK) {
+        let mut values: Vec<Value> = vec![
+            rating.map_or(Value::Null, |value| Value::Text(value.to_string())),
+            Value::Integer(now),
+        ];
+        values.extend(chunk.iter().cloned().map(Value::Text));
+        tx.execute(
+            &format!(
+                "UPDATE images SET rating = ?1, updated_at = ?2 WHERE id IN ({})",
+                placeholders(chunk.len())
+            ),
+            params_from_iter(&values),
+        )?;
+    }
+    tx.commit()?;
+    Ok(())
+}
+
+/// The `limit` tags most common among `ids`, with how many of them carry each
+/// — the bulk tag dialog's quick-remove pills (`selection-and-bulk` design D9).
+///
+/// Chunked to [`ID_CHUNK`] ids per statement, for the same reason as
+/// `bulk_set_rating`: one `IN (…)` over the whole selection is a real "too
+/// many SQL variables" failure once a selection spans a whole large library.
+/// Each chunk's counts are summed in memory rather than in one `GROUP BY`
+/// over every id, which is what a single statement cannot do split across
+/// several — the sort and the `limit` apply once, to the merged totals, so
+/// the answer is the same whichever chunk a given id landed in.
+pub fn selection_tag_counts(
+    conn: &Connection,
+    ids: &[String],
+    limit: i64,
+) -> Result<Vec<TagCount>> {
+    if ids.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let mut totals: std::collections::HashMap<String, i64> = std::collections::HashMap::new();
+    for chunk in ids.chunks(ID_CHUNK) {
+        let mut stmt = conn.prepare(&format!(
+            "SELECT tags.name, COUNT(*) AS carriers
+             FROM image_tags
+             JOIN tags ON tags.id = image_tags.tag_id
+             WHERE image_tags.image_id IN ({})
+             GROUP BY image_tags.tag_id",
+            placeholders(chunk.len())
+        ))?;
+        let rows = stmt.query_map(params_from_iter(text_values(chunk)), |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+        })?;
+        for row in rows {
+            let (name, count) = row?;
+            *totals.entry(name).or_insert(0) += count;
+        }
+    }
+
+    let mut counts: Vec<TagCount> = totals
+        .into_iter()
+        .map(|(name, count)| TagCount { name, count })
+        .collect();
+    counts.sort_by(|a, b| b.count.cmp(&a.count).then_with(|| a.name.cmp(&b.name)));
+    // A negative `limit` means "no limit" in SQLite, the same convention the
+    // single-statement query relied on by passing `limit` straight through.
+    if limit >= 0 {
+        counts.truncate(limit as usize);
+    }
+    Ok(counts)
+}
+
+fn text_values(items: &[String]) -> Vec<Value> {
+    items.iter().cloned().map(Value::Text).collect()
 }
 
 /// Tags beginning with `prefix`, most used first and then by name, at most
@@ -142,26 +328,36 @@ struct TagEdit {
 }
 
 impl TagEdit {
-    /// Blanks and repeats go: the editor is free text, and the set it names is
-    /// what the user meant however many times they spelled a tag.
     fn read(tags: &[String]) -> TagEdit {
-        let mut edit = TagEdit {
-            tags: Vec::new(),
-            rating: None,
-        };
-        for raw in tags {
-            let tag = raw.trim();
-            if tag.is_empty() {
-                continue;
-            }
-            match rating_metatag(tag) {
-                Some(rating) => edit.rating = Some(rating),
-                None if edit.tags.iter().any(|kept| kept == tag) => {}
-                None => edit.tags.push(tag.to_string()),
-            }
-        }
-        edit
+        let (tags, rating) = split_rating(tags);
+        TagEdit { tags, rating }
     }
+}
+
+/// Split `tags` into the plain tags to store and the rating a `rating:g|s|q|e`
+/// among them names — the one definition of that rule (design D3, D8), called
+/// by the tag editor's write path (`TagEdit::read`, above) and by ingest's
+/// rule application (`ingest::insert_rows`) alike, so a rule's `rating:e` and
+/// one typed into the editor mean the same thing.
+///
+/// Blanks and repeats go: whatever built `tags` is free text or the union of
+/// an image's own tags with a rule's, and the set this names is what was
+/// meant however many times a tag occurs in it.
+pub fn split_rating(tags: &[String]) -> (Vec<String>, Option<String>) {
+    let mut kept: Vec<String> = Vec::new();
+    let mut rating = None;
+    for raw in tags {
+        let tag = raw.trim();
+        if tag.is_empty() {
+            continue;
+        }
+        match rating_metatag(tag) {
+            Some(value) => rating = Some(value),
+            None if kept.iter().any(|seen| seen == tag) => {}
+            None => kept.push(tag.to_string()),
+        }
+    }
+    (kept, rating)
 }
 
 /// The rating a `rating:g|s|q|e` names, which is set instead of being stored as
@@ -182,6 +378,8 @@ fn rating_metatag(tag: &str) -> Option<String> {
 const RATING_PREFIX: &str = "rating:";
 
 /// Record the edit against the image, and refuse one that names no image.
+/// Called by the tag editor's writers and by `rules::apply_rules_to_image`, so
+/// a run stamps a row exactly as an edit does.
 ///
 /// A missing rating token leaves the rating alone rather than clearing it: the
 /// tag box has no way to spell "take the rating away", which is what
@@ -189,7 +387,7 @@ const RATING_PREFIX: &str = "rating:";
 ///
 /// `updated_at` moves on every edit, or "sort by last change" — one of the four
 /// sorts — would be a lie (design D9).
-fn stamp(conn: &Connection, id: &str, rating: Option<&str>) -> Result<()> {
+pub(crate) fn stamp(conn: &Connection, id: &str, rating: Option<&str>) -> Result<()> {
     let now = db::now_ms();
     let changed = match rating {
         Some(rating) => conn.execute(
@@ -252,7 +450,7 @@ fn like_prefix(prefix: &str) -> String {
 mod tests {
     use super::*;
     use crate::ingest::{IngestInput, store_image};
-    use crate::model::{ImageSource, ParsedTagSearch, SearchRequest};
+    use crate::model::{ImageSource, ParsedTagSearch, SearchRequest, SearchView};
     use crate::query;
 
     fn png_bytes() -> Vec<u8> {
@@ -290,6 +488,21 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let library = Library::open_or_create(dir.path()).unwrap();
         (dir, library)
+    }
+
+    /// A row with no file and no thumbnail — cheap to insert by the thousand,
+    /// for the tests that only care about ids crossing the SQLite variable
+    /// chunk boundary rather than about a row's other columns.
+    fn bare_image(library: &Library, id: &str) {
+        library
+            .conn
+            .execute(
+                "INSERT INTO images (id, ext, mime, size, width, height, source,
+                                     captured_at, created_at, updated_at)
+                 VALUES (?1, 'png', 'image/png', 1, 1, 1, 'local', 0, 0, 0)",
+                [id],
+            )
+            .unwrap();
     }
 
     fn edit(library: &Library, id: &str, tags: &[&str]) -> ImageRecord {
@@ -383,6 +596,30 @@ mod tests {
         );
     }
 
+    /// `auto-tag-rules` task 2.1: `split_rating` is the function ingest calls
+    /// on a rule's tags, so its three cases are pinned directly rather than
+    /// only through the editor's write path above.
+    #[test]
+    fn split_rating_takes_the_metatag_out_and_leaves_the_rest() {
+        let (tags, rating) = split_rating(&strs(&["cat", "rating:s"]));
+        assert_eq!(tags, vec!["cat".to_string()]);
+        assert_eq!(rating.as_deref(), Some("s"));
+    }
+
+    #[test]
+    fn split_rating_keeps_a_rating_the_alphabet_does_not_know_as_a_tag() {
+        let (tags, rating) = split_rating(&strs(&["rating:unknown"]));
+        assert_eq!(tags, vec!["rating:unknown".to_string()]);
+        assert_eq!(rating, None);
+    }
+
+    #[test]
+    fn split_rating_with_no_rating_token_answers_no_rating() {
+        let (tags, rating) = split_rating(&strs(&["cat", "cute"]));
+        assert_eq!(tags, vec!["cat".to_string(), "cute".to_string()]);
+        assert_eq!(rating, None);
+    }
+
     #[test]
     fn a_tag_another_image_still_carries_survives_the_unlink() {
         let (_dir, library) = library();
@@ -438,13 +675,284 @@ mod tests {
         assert_eq!(tag_names(&library), vec!["cat".to_string()]);
     }
 
+    fn strs(values: &[&str]) -> Vec<String> {
+        values.iter().map(|value| (*value).to_string()).collect()
+    }
+
+    #[test]
+    fn bulk_add_reaches_every_selected_image() {
+        let (_dir, library) = library();
+        let ids: Vec<String> = (0..50).map(|index| format!("img-{index}")).collect();
+        for id in &ids {
+            store(&library, id, None, &[]);
+        }
+
+        bulk_update_tags(&library, &ids, &strs(&["cat", "cute"]), &[]).unwrap();
+
+        for id in &ids {
+            assert_eq!(
+                ingest::require_record(&library.conn, id).unwrap().tags,
+                vec!["cat".to_string(), "cute".to_string()],
+            );
+        }
+    }
+
+    #[test]
+    fn bulk_adding_a_tag_already_carried_and_removing_one_not_carried_change_nothing() {
+        let (_dir, library) = library();
+        store(&library, "a", None, &["cat"]);
+
+        bulk_update_tags(&library, &strs(&["a"]), &strs(&["cat"]), &strs(&["dog"])).unwrap();
+
+        assert_eq!(
+            ingest::require_record(&library.conn, "a").unwrap().tags,
+            vec!["cat".to_string()]
+        );
+    }
+
+    #[test]
+    fn a_bulk_edit_adds_and_removes_in_one_pass() {
+        let (_dir, library) = library();
+        store(&library, "a", None, &["cat", "old"]);
+
+        bulk_update_tags(&library, &strs(&["a"]), &strs(&["new"]), &strs(&["old"])).unwrap();
+
+        assert_eq!(
+            ingest::require_record(&library.conn, "a").unwrap().tags,
+            vec!["cat".to_string(), "new".to_string()],
+        );
+    }
+
+    #[test]
+    fn an_unknown_id_fails_the_whole_bulk_edit_and_edits_no_image() {
+        let (_dir, library) = library();
+        store(&library, "a", None, &["cat"]);
+        store(&library, "b", None, &["cat"]);
+
+        let error = bulk_update_tags(
+            &library,
+            &strs(&["a", "no-such-id", "b"]),
+            &strs(&["new"]),
+            &[],
+        )
+        .unwrap_err();
+
+        assert!(matches!(error, AppError::NotFound(_)), "got {error}");
+        assert_eq!(
+            ingest::require_record(&library.conn, "a").unwrap().tags,
+            vec!["cat".to_string()],
+            "processed before the unknown id, but the transaction must roll it back too",
+        );
+        assert_eq!(
+            ingest::require_record(&library.conn, "b").unwrap().tags,
+            vec!["cat".to_string()],
+        );
+    }
+
+    #[test]
+    fn a_bulk_removal_taking_the_last_use_of_a_tag_collects_it() {
+        let (_dir, library) = library();
+        store(&library, "a", None, &["cat", "solo"]);
+        store(&library, "b", None, &["cat"]);
+
+        bulk_update_tags(&library, &strs(&["a", "b"]), &[], &strs(&["solo"])).unwrap();
+
+        assert_eq!(tag_names(&library), vec!["cat".to_string()]);
+    }
+
+    #[test]
+    fn bulk_rating_reaches_every_selected_image() {
+        let (_dir, library) = library();
+        let ids: Vec<String> = (0..12).map(|index| format!("img-{index}")).collect();
+        for id in &ids {
+            store(&library, id, None, &[]);
+        }
+
+        bulk_set_rating(&library, &ids, Some("e")).unwrap();
+
+        for id in &ids {
+            assert_eq!(rating_of(&library, id), Some("e".to_string()));
+        }
+    }
+
+    /// A selection this large used to build one `UPDATE … WHERE id IN (…)`
+    /// with one bound parameter per id, which SQLite refuses past its
+    /// variable limit ("too many SQL variables"); this pins that the chunked
+    /// statement still reaches every id in one call.
+    #[test]
+    fn bulk_rating_reaches_every_id_past_the_sqlite_variable_chunk_size() {
+        let (_dir, library) = library();
+        let ids: Vec<String> = (0..2500).map(|index| format!("img-{index}")).collect();
+        for id in &ids {
+            bare_image(&library, id);
+        }
+
+        bulk_set_rating(&library, &ids, Some("e")).unwrap();
+
+        for id in &ids {
+            assert_eq!(rating_of(&library, id), Some("e".to_string()));
+        }
+    }
+
+    #[test]
+    fn bulk_rating_of_none_clears_every_selected_image() {
+        let (_dir, library) = library();
+        store(&library, "a", Some("s"), &[]);
+        store(&library, "b", Some("q"), &[]);
+
+        bulk_set_rating(&library, &strs(&["a", "b"]), None).unwrap();
+
+        assert_eq!(rating_of(&library, "a"), None);
+        assert_eq!(rating_of(&library, "b"), None);
+    }
+
+    #[test]
+    fn bulk_rating_moves_updated_at_on_every_row() {
+        let (_dir, library) = library();
+        store(&library, "a", None, &[]);
+        store(&library, "b", None, &[]);
+        let before_a = ingest::require_record(&library.conn, "a")
+            .unwrap()
+            .updated_at;
+        let before_b = ingest::require_record(&library.conn, "b")
+            .unwrap()
+            .updated_at;
+
+        bulk_set_rating(&library, &strs(&["a", "b"]), Some("g")).unwrap();
+
+        assert!(
+            ingest::require_record(&library.conn, "a")
+                .unwrap()
+                .updated_at
+                > before_a
+        );
+        assert!(
+            ingest::require_record(&library.conn, "b")
+                .unwrap()
+                .updated_at
+                > before_b
+        );
+    }
+
+    #[test]
+    fn a_bulk_rating_outside_the_alphabet_is_refused() {
+        let (_dir, library) = library();
+        store(&library, "a", None, &[]);
+
+        let error = bulk_set_rating(&library, &strs(&["a"]), Some("safe")).unwrap_err();
+
+        assert!(matches!(error, AppError::BadRequest(_)), "got {error}");
+        assert_eq!(rating_of(&library, "a"), None);
+    }
+
+    #[test]
+    fn selection_tag_counts_orders_by_frequency_then_name() {
+        let (_dir, library) = library();
+        store(&library, "a", None, &["cat", "cute"]);
+        store(&library, "b", None, &["cat"]);
+        store(&library, "c", None, &["cat", "dog"]);
+        store(&library, "d", None, &["dog"]);
+
+        let counts = selection_tag_counts(&library.conn, &strs(&["a", "b", "c", "d"]), 10).unwrap();
+
+        assert_eq!(
+            counts,
+            vec![
+                TagCount {
+                    name: "cat".to_string(),
+                    count: 3
+                },
+                TagCount {
+                    name: "dog".to_string(),
+                    count: 2
+                },
+                TagCount {
+                    name: "cute".to_string(),
+                    count: 1
+                },
+            ],
+        );
+    }
+
+    #[test]
+    fn selection_tag_counts_ignores_images_outside_the_selection() {
+        let (_dir, library) = library();
+        store(&library, "in", None, &["cat"]);
+        store(&library, "out", None, &["cat"]);
+
+        let counts = selection_tag_counts(&library.conn, &strs(&["in"]), 10).unwrap();
+
+        assert_eq!(
+            counts,
+            vec![TagCount {
+                name: "cat".to_string(),
+                count: 1
+            }],
+            "the image left out of the selection must not inflate its count",
+        );
+    }
+
+    /// A selection this large crosses more than one chunk of the `IN (…)`
+    /// query, so the totals have to be summed across chunks to be right —
+    /// `cat` on every image and `dog` on half of them is wrong if either
+    /// chunk's count is dropped instead of merged into the running total.
+    #[test]
+    fn selection_tag_counts_sums_across_chunks_past_the_sqlite_variable_chunk_size() {
+        let (_dir, library) = library();
+        let ids: Vec<String> = (0..2500).map(|index| format!("img-{index}")).collect();
+        for (index, id) in ids.iter().enumerate() {
+            bare_image(&library, id);
+            let mut tags = vec!["cat".to_string()];
+            if index % 2 == 0 {
+                tags.push("dog".to_string());
+            }
+            add_tags(&library.conn, id, &tags).unwrap();
+        }
+
+        let counts = selection_tag_counts(&library.conn, &ids, 10).unwrap();
+
+        assert_eq!(
+            counts,
+            vec![
+                TagCount {
+                    name: "cat".to_string(),
+                    count: 2500
+                },
+                TagCount {
+                    name: "dog".to_string(),
+                    count: 1250
+                },
+            ],
+        );
+    }
+
+    #[test]
+    fn a_limit_truncates_the_offered_tags() {
+        let (_dir, library) = library();
+        store(&library, "a", None, &["cat", "cute", "dog"]);
+
+        let counts = selection_tag_counts(&library.conn, &strs(&["a"]), 2).unwrap();
+
+        assert_eq!(counts.len(), 2);
+    }
+
+    #[test]
+    fn a_selection_with_no_tags_offers_none() {
+        let (_dir, library) = library();
+        store(&library, "a", None, &[]);
+
+        let counts = selection_tag_counts(&library.conn, &strs(&["a"]), 10).unwrap();
+
+        assert!(counts.is_empty());
+    }
+
     fn found(library: &Library, query: ParsedTagSearch) -> Vec<String> {
         query::search(
             &library.conn,
             &SearchRequest {
                 query,
                 text: String::new(),
-                include_deleted: false,
+                view: SearchView::Library,
                 sort: Default::default(),
                 group: Default::default(),
                 limit: 100,

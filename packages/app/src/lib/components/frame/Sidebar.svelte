@@ -3,25 +3,50 @@
   import ImagesIcon from '@lucide/svelte/icons/images'
   import LibraryIcon from '@lucide/svelte/icons/library'
   import SettingsIcon from '@lucide/svelte/icons/settings'
+  import Trash2Icon from '@lucide/svelte/icons/trash-2'
   import { resolve } from '$app/paths'
   import { page } from '$app/state'
-  import { library } from '$lib/api'
+  import { library, trash } from '$lib/api'
   import LibraryMenu from '$lib/components/frame/LibraryMenu.svelte'
   import { libraryName } from '$lib/components/frame/library-name'
+  import NotesPanel from '$lib/components/notes/NotesPanel.svelte'
   import * as Sidebar from '$lib/components/ui/sidebar'
   import { frame } from './frame.svelte'
 
-  // Only screens that exist (spec `app-frame`): Trash, Import and Rules are
-  // added by the changes that build them, not reserved here.
-  const nav = [
+  interface NavItem {
+    /** `resolve()`'s own type: a plain string is not a route this app has. */
+    href: ReturnType<typeof resolve>
+    label: string
+    icon: typeof ImagesIcon
+    /** Read at render, so the badge follows the count (`trash` design D11). */
+    count?: () => number
+  }
+
+  // Only screens that exist (spec `app-frame`): Import and Rules are added by
+  // the changes that build them, not reserved here.
+  const nav: NavItem[] = [
     { href: resolve('/'), label: 'Library', icon: ImagesIcon },
+    { href: resolve('/trash'), label: 'Trash', icon: Trash2Icon, count: () => trash.count },
     { href: resolve('/settings'), label: 'Settings', icon: SettingsIcon },
   ]
 
-  const name = $derived(libraryName(library.status?.libraryPath ?? null))
+  const path = $derived(library.status?.libraryPath ?? null)
+  const name = $derived(libraryName(path))
   const imageCount = $derived(library.status?.imageCount ?? 0)
 
   let error = $state<string | null>(null)
+
+  // The badge's one read that no action made (`trash` design D11): the count
+  // belongs to the library that is open, so opening another one asks again.
+  // Every write to the trash refreshes it from where it was made.
+  //
+  // The path, not the status: a capture and every trash write replace the whole
+  // status object, and this effect would then re-read the count on each of
+  // them — a round trip per capture, for a number none of them changed.
+  $effect(() => {
+    void path
+    void trash.refresh()
+  })
 </script>
 
 <!--
@@ -60,6 +85,19 @@
     {/if}
 
     <!--
+      Slot Sidebar · filters, below the tag list (`notes` design D15). Mounted
+      by the frame rather than by the library screen: the note is the library's,
+      not a description of the current result set, so it stays while the user is
+      on /settings or /trash. There is no note without a library, and no frame
+      either, so nothing here guards for one. Hidden on the icon rail for the
+      reason the filters are: a text area clipped to 3rem is not one.
+    -->
+    <div class="group-data-[collapsible=icon]:hidden">
+      <NotesPanel />
+    </div>
+    <Sidebar.Separator class="my-2 group-data-[collapsible=icon]:hidden" />
+
+    <!--
       Nav sits at the bottom, directly above the library footer: the filters are
       used on every search and the two nav items a few times a session, so the
       filters start at the top. `mt-auto` pins the nav there on routes with no
@@ -67,6 +105,7 @@
     -->
     <Sidebar.Menu class="mt-auto gap-1">
       {#each nav as item (item.href)}
+        {@const count = item.count?.() ?? 0}
         <Sidebar.MenuItem>
           <Sidebar.MenuButton isActive={page.url.pathname === item.href}>
             {#snippet child({ props })}
@@ -76,6 +115,13 @@
               </a>
             {/snippet}
           </Sidebar.MenuButton>
+          <!--
+            An empty trash gets no badge: a permanent `0` beside the entry is
+            noise, and the entry itself already says the trash is there.
+          -->
+          {#if count > 0}
+            <Sidebar.MenuBadge>{count.toLocaleString()}</Sidebar.MenuBadge>
+          {/if}
         </Sidebar.MenuItem>
       {/each}
     </Sidebar.Menu>

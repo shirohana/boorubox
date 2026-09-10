@@ -22,6 +22,7 @@ const PORT: &str = "port";
 const THEME: &str = "theme";
 const GRID_TILE_SIZE: &str = "gridTileSize";
 const RECENT_LIBRARIES: &str = "recentLibraries";
+const NOTES_COLLAPSED: &str = "notesCollapsed";
 
 /// How many folders the recent list keeps (design D4). A bound, not a
 /// measurement: the list is there to be clicked through, and a longer one is a
@@ -36,6 +37,10 @@ pub struct Settings {
     pub grid_tile_size: u32,
     /// Absolute paths, most recent first, each folder once (design D4).
     pub recent_libraries: Vec<PathBuf>,
+    /// Whether the sidebar's notes panel is folded away (`notes` design D13).
+    /// A machine's display preference, so it belongs here rather than in the
+    /// library the note's own text lives in.
+    pub notes_collapsed: bool,
 }
 
 impl Default for Settings {
@@ -46,6 +51,9 @@ impl Default for Settings {
             theme: Theme::default(),
             grid_tile_size: GRID_TILE_DEFAULT,
             recent_libraries: Vec::new(),
+            // Expanded: a panel nobody asked to hide is a panel the user has
+            // not seen yet.
+            notes_collapsed: false,
         }
     }
 }
@@ -72,6 +80,7 @@ impl From<&Settings> for crate::model::AppSettings {
         crate::model::AppSettings {
             theme: settings.theme,
             grid_tile_size: settings.grid_tile_size,
+            notes_collapsed: settings.notes_collapsed,
         }
     }
 }
@@ -134,6 +143,11 @@ fn load_from<R: Runtime>(app: &AppHandle<R>, file: &str) -> Settings {
                     .collect()
             })
             .unwrap_or(defaults.recent_libraries),
+        notes_collapsed: store
+            .get(NOTES_COLLAPSED)
+            .as_ref()
+            .and_then(JsonValue::as_bool)
+            .unwrap_or(defaults.notes_collapsed),
     }
 }
 
@@ -159,6 +173,7 @@ fn save_to<R: Runtime>(app: &AppHandle<R>, file: &str, settings: &Settings) -> R
         .map(|path| utf8(path))
         .collect::<Result<Vec<&str>>>()?;
     store.set(RECENT_LIBRARIES, recent);
+    store.set(NOTES_COLLAPSED, settings.notes_collapsed);
     store.save().map_err(from_tauri)
 }
 
@@ -193,6 +208,7 @@ mod tests {
                 PathBuf::from("/tmp/boorubox-library"),
                 PathBuf::from("/tmp/older"),
             ],
+            notes_collapsed: true,
         };
 
         // Written by one app and read back by another: sharing one app would
@@ -288,6 +304,21 @@ mod tests {
             load_from(mock_app().handle(), file).grid_tile_size,
             GRID_TILE_DEFAULT,
         );
+    }
+
+    /// The panel a file has never mentioned is the expanded one: the setting
+    /// exists to remember a fold the user chose, not to open the app folded.
+    #[test]
+    fn a_file_without_the_notes_key_reads_as_expanded() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("settings.json");
+        let file = file.to_str().unwrap();
+        let writer = mock_app();
+        let store = writer.handle().store(file).unwrap();
+        store.set(GRID_TILE_SIZE, GRID_TILE_DEFAULT);
+        store.save().unwrap();
+
+        assert!(!load_from(mock_app().handle(), file).notes_collapsed);
     }
 
     #[test]

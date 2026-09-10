@@ -25,6 +25,7 @@ export function img(overrides: Partial<ImageRecord> = {}): ImageRecord {
     updatedAt: 0,
     deletedAt: null,
     missing: false,
+    posts: [],
     ...overrides,
   }
 }

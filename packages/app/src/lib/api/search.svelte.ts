@@ -27,6 +27,12 @@ export const PAGE_SIZE = 200
 
 /** Newest capture first, ungrouped (spec `sort-and-group`). */
 export const DEFAULT_SORT: Sort = { field: 'captured', direction: 'desc' }
+/**
+ * The trash opens on what was trashed last (`trash` design D16): a slip with
+ * Backspace is then the first tile, one Restore away, without the user having
+ * to remember which image it was.
+ */
+export const TRASH_DEFAULT_SORT: Sort = { field: 'trashed', direction: 'desc' }
 export const DEFAULT_GROUP: GroupBy = 'none'
 
 export interface SearchInputs {
@@ -36,10 +42,16 @@ export interface SearchInputs {
   text: string
 }
 
-/** How the result set is ordered and divided: session state, never a setting. */
+/**
+ * How the result set is ordered and divided, and which set it is drawn from:
+ * session state, never a setting. `view` is fixed for the life of the screen
+ * that reads it (`trash` design D1) — a `SearchResults` searches either the
+ * library or the trash and never switches between the two.
+ */
 export interface SearchView {
   sort: Sort
   group: GroupBy
+  view: 'library' | 'trash'
 }
 
 export function buildSearchRequest(
@@ -51,7 +63,7 @@ export function buildSearchRequest(
   return {
     query: parseTagSearch(inputs.tagQuery),
     text: inputs.text.trim(),
-    includeDeleted: false,
+    view: view.view,
     sort: view.sort,
     group: view.group,
     limit,
@@ -69,6 +81,13 @@ export function pageOf(index: number): number {
  * not arrived, which the grid renders as a placeholder.
  */
 export class SearchResults {
+  /**
+   * Which set of images this instance searches, fixed for its lifetime
+   * (`trash` design D1): `LibraryScreen` makes one `SearchResults` per route,
+   * so the library and the trash never share one and never need to switch.
+   */
+  readonly view: 'library' | 'trash'
+
   inputs = $state<SearchInputs>({ tagQuery: '', text: '' })
   /** Part of every request; changing either is a new list (design D6, D7). */
   sort = $state<Sort>({ ...DEFAULT_SORT })
@@ -98,6 +117,11 @@ export class SearchResults {
   #loaded = new Set<number>()
   #pending = new Set<number>()
   /* eslint-enable svelte/prefer-svelte-reactivity */
+
+  constructor(view: 'library' | 'trash' = 'library') {
+    this.view = view
+    if (view === 'trash') this.sort = { ...TRASH_DEFAULT_SORT }
+  }
 
   at(index: number): ImageRecord | undefined {
     return this.#images[index]
@@ -186,7 +210,7 @@ export class SearchResults {
   }
 
   get #view(): SearchView {
-    return { sort: this.sort, group: this.group }
+    return { sort: this.sort, group: this.group, view: this.view }
   }
 
   async #loadPage(page: number, generation: number): Promise<void> {

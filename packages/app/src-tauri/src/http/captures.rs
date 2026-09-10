@@ -122,7 +122,7 @@ async fn store(state: HttpState, capture: Capture) -> Response {
             // Only a new row is announced as stored. A re-post under a known id changed
             // nothing, and telling the webview otherwise would reload the grid
             // under the user for an image already in it.
-            (state.on_event)(CaptureEvent::Stored(record.clone()));
+            (state.on_event)(CaptureEvent::Stored(Box::new(record.clone())));
             (StatusCode::CREATED, Json(record)).into_response()
         }
         Ok(Ok(Ingested::Existing(record))) => {
@@ -193,6 +193,7 @@ mod tests {
     use axum::http::StatusCode;
 
     use crate::http::test_support::*;
+    use crate::library::with_library;
     use crate::model::CaptureWithdrawn;
 
     #[tokio::test]
@@ -297,6 +298,57 @@ mod tests {
             body["adapter"]["fields"]["postUrl"],
             "https://x.com/alice/status/1"
         );
+    }
+
+    /// `auto-tag-rules` task 2.5: an end-to-end pass through the HTTP layer — a
+    /// rule matching the adapter record's `handle` tags the capture on the way
+    /// in, both in the response and in the stored row (spec `auto-tag-rules`,
+    /// "A capture arrives tagged").
+    #[tokio::test]
+    async fn a_rule_matching_the_adapter_record_tags_the_capture() {
+        let (_dir, state) = open_state();
+        with_library(&state.library, |library| {
+            crate::rules::upsert(
+                library,
+                &crate::model::RuleInput {
+                    id: None,
+                    name: "alice".to_string(),
+                    pattern: "alice".to_string(),
+                    is_regex: false,
+                    tags: vec!["alice-fanart".to_string()],
+                    enabled: true,
+                },
+            )
+            .map(|_| ())
+        })
+        .unwrap();
+        let png = png_bytes(4, 7);
+        let meta = meta_with_adapter(
+            "id-1",
+            serde_json::json!({
+                "site": "x",
+                "fields": { "handle": "alice" },
+            }),
+        );
+
+        let (status, body) = send(
+            &state,
+            capture_request(Some(EXTENSION_ORIGIN), &[file_part(&png), meta_part(&meta)]),
+        )
+        .await;
+
+        assert_eq!(status, StatusCode::CREATED);
+        assert_eq!(body["tags"], serde_json::json!(["alice-fanart"]));
+        with_library(&state.library, |library| {
+            assert_eq!(
+                crate::ingest::require_record(&library.conn, "id-1")
+                    .unwrap()
+                    .tags,
+                vec!["alice-fanart".to_string()],
+            );
+            Ok(())
+        })
+        .unwrap();
     }
 
     #[tokio::test]

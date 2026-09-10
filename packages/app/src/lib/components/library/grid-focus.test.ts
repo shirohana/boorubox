@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+import { Selection } from '$lib/api/selection.svelte'
 import { KEY_DOWN, KEY_END, KEY_HOME, KEY_LEFT, KEY_RIGHT, KEY_UP } from '$lib/keyboard'
 import { moveFocus } from './grid-focus'
 
@@ -104,5 +105,54 @@ describe('moveFocus over group slices', () => {
   it('moves left and right straight through a group boundary', () => {
     expect(moveFocus(4, KEY_RIGHT, 3, total, groups)).toBe(5)
     expect(moveFocus(5, KEY_LEFT, 3, total, groups)).toBe(4)
+  })
+})
+
+/**
+ * The grid hands a shifted arrow the same `moveFocus` destination a plain one
+ * gets and only then extends the range (design D5). What that has to buy is
+ * asserted here: a shift-arrow at an edge stops there, rather than growing the
+ * selection past the last card the way a bounded step would.
+ */
+describe('shift-arrow selection', () => {
+  const columns = 5
+  const total = 40
+
+  /** The grid's `onkeydown` in one line: move, then rewrite the range. */
+  function shiftArrow(selection: Selection, key: string) {
+    const destination = moveFocus(selection.focus, key, columns, total)
+    expect(destination).not.toBeNull()
+    selection.extendTo(destination as number)
+  }
+
+  it('stops at the edges instead of growing the selection past them', () => {
+    const selection = new Selection(() => Promise.resolve([]))
+
+    selection.focusAt(total - 1)
+    for (const key of [KEY_RIGHT, KEY_DOWN, KEY_END]) {
+      shiftArrow(selection, key)
+      expect(selection.focus).toBe(total - 1)
+      expect(selection.count).toBe(1)
+    }
+
+    selection.focusAt(0)
+    for (const key of [KEY_LEFT, KEY_UP, KEY_HOME]) {
+      shiftArrow(selection, key)
+      expect(selection.focus).toBe(0)
+      expect(selection.count).toBe(1)
+    }
+  })
+
+  it('grows to the edge and no further', () => {
+    const selection = new Selection(() => Promise.resolve([]))
+    selection.focusAt(total - 3)
+
+    shiftArrow(selection, KEY_RIGHT)
+    shiftArrow(selection, KEY_RIGHT)
+    expect(selection.count).toBe(3)
+
+    shiftArrow(selection, KEY_RIGHT)
+    expect(selection.count).toBe(3)
+    expect(selection.focus).toBe(total - 1)
   })
 })

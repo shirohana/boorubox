@@ -25,6 +25,17 @@ export function sortTags(tags: string[]): string[] {
   return [...tags].sort((a, b) => a.toLowerCase().localeCompare(b.toLowerCase()))
 }
 
+/**
+ * The tags in a space-separated field, as literal names. Not a query: every
+ * token goes through as it stands, so `-foo` is a tag called `-foo` and
+ * `rating:s` is the metatag the tag writer reads, never an exclusion or a
+ * filter. The rewriters below read those same tokens the other way, which is
+ * why the two must not be confused for one another.
+ */
+export function tagList(text: string): string[] {
+  return text.split(/\s+/).filter((tag) => tag.length > 0)
+}
+
 /** `ParsedTagSearch` uses arrays, not Sets (D13); these members are still sets in spirit. */
 function addUnique(values: string[], value: string): void {
   if (!values.includes(value)) values.push(value)

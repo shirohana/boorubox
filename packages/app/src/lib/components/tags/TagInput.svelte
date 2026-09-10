@@ -26,6 +26,11 @@
     KEY_UP,
   } from '$lib/keyboard'
 
+  /** The default source: the library's whole vocabulary (design D12). */
+  async function libraryTags(prefix: string, limit: number): Promise<string[]> {
+    return (await tagSuggestions(prefix, limit)).map((tag) => tag.name)
+  }
+
   interface Props {
     value: string
     /** So the frame's `/` binding can find the toolbar's field by id. */
@@ -39,6 +44,12 @@
     onsubmit?: () => void
     /** `Escape` with the list already closed: the map's way out of a field. */
     onescape?: (event: KeyboardEvent) => void
+    /**
+     * Where the list comes from. The library's whole vocabulary by default; the
+     * bulk remove field narrows it to the selection's own tags
+     * (`selection-and-bulk` D8), which no query against the library can answer.
+     */
+    suggest?: (prefix: string, limit: number) => Promise<string[]>
   }
 
   let {
@@ -50,6 +61,7 @@
     oninput,
     onsubmit,
     onescape,
+    suggest = libraryTags,
   }: Props = $props()
 
   let field = $state<HTMLInputElement | null>(null)
@@ -95,7 +107,7 @@
     const request = ++asked
     let names: string[]
     try {
-      names = (await tagSuggestions(prefix, SUGGESTION_FETCH)).map((tag) => tag.name)
+      names = await suggest(prefix, SUGGESTION_FETCH)
     } catch {
       // A library that cannot answer is not worth a message over the input; the
       // command that matters — the search or the save — reports for itself.

@@ -12,17 +12,20 @@ use tauri::{AppHandle, Emitter, Manager, Runtime, State};
 use tauri_plugin_dialog::DialogExt;
 use tauri_plugin_opener::OpenerExt;
 
+use crate::booru::credentials::Credentials;
 use crate::error::{AppError, Result};
 use crate::library::{self, Library, SharedLibrary, with_library, with_library_if_open};
 use crate::model::{
-    AppSettings, GRID_TILE_MAX, GRID_TILE_MIN, ImageCounts, ImageRecord, ImportReport,
-    LibraryStatus, ListenerStatus, RecentLibrary, SearchRequest, SearchResult, TagCount, TagCounts,
-    Theme,
+    AppSettings, BooruConnectionTest, BooruSite, BooruUploadForm, BooruUploadOutcome, DeleteReport,
+    ExportProgress, ExportReport, GRID_TILE_MAX, GRID_TILE_MIN, ImageCounts, ImageRecord,
+    ImportReport, LibraryStatus, ListenerStatus, Note, PostRef, RecentLibrary, Rule, RuleInput,
+    RuleListEntry, RulesImportReport, RulesRunReport, SearchRequest, SearchResult, TagCount,
+    TagCounts, Theme,
 };
 use crate::settings::Settings;
 use crate::{
-    AppState, VERSION, from_tauri, http, import, ingest, lock, maintenance, query, settings, tags,
-    thumbs,
+    AppState, VERSION, booru, db, export, from_tauri, http, import, ingest, lock, maintenance,
+    notes, query, rules, settings, tags, thumbs, trash,
 };
 
 /// Progress while `import_paths` runs. The webview subscribes under this name;
@@ -44,6 +47,14 @@ pub const CAPTURE_PENDING_EVENT: &str = "capture:pending";
 /// to `POST /captures` settles the announcement (design D6); without this the
 /// placeholder would hang until its timeout.
 pub const CAPTURE_WITHDRAWN_EVENT: &str = "capture:withdrawn";
+
+/// Progress while `export_zip` runs, emitted once per id (`selection-and-bulk`
+/// design D13), mirroring `IMPORT_PROGRESS_EVENT`.
+const EXPORT_PROGRESS_EVENT: &str = "export:progress";
+
+/// Progress while `rules_run` runs, the same `{ done, total }` shape as
+/// `IMPORT_PROGRESS_EVENT` (`auto-tag-rules` design D12).
+const RULES_PROGRESS_EVENT: &str = "rules:progress";
 
 /// Run `work` against the shared library on a blocking thread.
 ///
@@ -232,6 +243,20 @@ pub fn set_theme<R: Runtime>(
     write_settings(&app, &state, |settings| settings.theme = theme)
 }
 
+/// Whether the sidebar's notes panel is folded away (`notes` design D13). One
+/// command per field, like the two above; the note's own text is library data
+/// and goes through `note_set` instead.
+#[tauri::command]
+pub fn set_notes_collapsed<R: Runtime>(
+    collapsed: bool,
+    app: AppHandle<R>,
+    state: State<'_, AppState>,
+) -> Result<AppSettings> {
+    write_settings(&app, &state, |settings| {
+        settings.notes_collapsed = collapsed;
+    })
+}
+
 /// Clamped, never refused: the slider is what sends this, and a rejected size
 /// would leave the grid disagreeing with the control that set it.
 #[tauri::command]
@@ -276,6 +301,17 @@ pub async fn search(req: SearchRequest, state: State<'_, AppState>) -> Result<Se
             total: page.total,
             groups: page.groups,
         })
+    })
+    .await
+}
+
+/// Just the ids a `search` of `req` would page, in its order, with no records
+/// (`selection-and-bulk` design D3) — what a range selection resolves against,
+/// so its row *n* and the grid's row *n* are always the same image.
+#[tauri::command]
+pub async fn search_ids(req: SearchRequest, state: State<'_, AppState>) -> Result<Vec<String>> {
+    with_library_off_main_thread(&state.library, move |library| {
+        query::search_ids(&library.conn, &req)
     })
     .await
 }
@@ -330,18 +366,381 @@ pub async fn tag_suggestions(
     .await
 }
 
+/// One tag edit across every id in `ids`, as a single transaction
+/// (`selection-and-bulk` design D10). The caller re-runs its current search
+/// once this answers, rather than being handed back updated rows: a selection
+/// can span pages the caller never loaded, so there is no record of most of
+/// them to hand back.
+#[tauri::command]
+pub async fn bulk_update_tags(
+    ids: Vec<String>,
+    add: Vec<String>,
+    remove: Vec<String>,
+    state: State<'_, AppState>,
+) -> Result<()> {
+    with_library_off_main_thread(&state.library, move |library| {
+        tags::bulk_update_tags(library, &ids, &add, &remove)
+    })
+    .await
+}
+
+/// One rating across every id in `ids`, as a single `UPDATE` (design D10).
+/// `None` clears every id to unrated.
+#[tauri::command]
+pub async fn bulk_set_rating(
+    ids: Vec<String>,
+    rating: Option<String>,
+    state: State<'_, AppState>,
+) -> Result<()> {
+    with_library_off_main_thread(&state.library, move |library| {
+        tags::bulk_set_rating(library, &ids, rating.as_deref())
+    })
+    .await
+}
+
+/// The `limit` tags most common among `ids`, with their counts — the bulk tag
+/// dialog's quick-remove pills (design D9).
+#[tauri::command]
+pub async fn selection_tag_counts(
+    ids: Vec<String>,
+    limit: i64,
+    state: State<'_, AppState>,
+) -> Result<Vec<TagCount>> {
+    with_library_off_main_thread(&state.library, move |library| {
+        tags::selection_tag_counts(&library.conn, &ids, limit)
+    })
+    .await
+}
+
+/// Writes `ids` to a zip at `path`, emitting `export:progress` as it goes
+/// (design D11–D13). The save dialog runs in the webview (design D12); this
+/// takes a path so a Rust test can drive it against a `tempfile::TempDir`.
+/// `utc_offset_minutes` is the webview's zone, east-positive, for the entry
+/// timestamps (`export::entry_mtime`).
+#[tauri::command]
+pub async fn export_zip<R: Runtime>(
+    ids: Vec<String>,
+    path: String,
+    utc_offset_minutes: i32,
+    app: AppHandle<R>,
+    state: State<'_, AppState>,
+) -> Result<ExportReport> {
+    off_main_thread(&state.library, move |library| {
+        export::export_zip(
+            library,
+            &ids,
+            Path::new(&path),
+            utc_offset_minutes,
+            &mut |progress: ExportProgress| {
+                // A dropped tick is a bar that skips a number; the export itself is
+                // unaffected, so it is not worth failing over (design D13).
+                let _ = app.emit(EXPORT_PROGRESS_EVENT, progress);
+            },
+        )
+    })
+    .await
+}
+
 #[tauri::command]
 pub async fn image_counts(state: State<'_, AppState>) -> Result<ImageCounts> {
     with_library_off_main_thread(&state.library, maintenance::image_counts).await
 }
 
+/// Move every id in `ids` to the trash (`trash` design D3): the file, the
+/// thumbnail, the tags and the rating are untouched, so a restore hands the
+/// image back exactly as it was.
 #[tauri::command]
-pub async fn drop_image_record(id: String, state: State<'_, AppState>) -> Result<LibraryStatus> {
+pub async fn trash_images(ids: Vec<String>, state: State<'_, AppState>) -> Result<()> {
     with_library_off_main_thread(&state.library, move |library| {
-        maintenance::drop_image_record(library, &id)
+        trash::trash_images(library, &ids)
+    })
+    .await
+}
+
+/// Put every id in `ids` back in the library, exactly reversing
+/// [`trash_images`].
+#[tauri::command]
+pub async fn restore_images(ids: Vec<String>, state: State<'_, AppState>) -> Result<()> {
+    with_library_off_main_thread(&state.library, move |library| {
+        trash::restore_images(library, &ids)
+    })
+    .await
+}
+
+/// Permanently delete every id in `ids`: the record, its thumbnail and its
+/// file under `images/` (`trash` design D4–D6). A file that will not go is
+/// named in `DeleteReport.filesLeft` rather than failing the call.
+#[tauri::command]
+pub async fn delete_forever(ids: Vec<String>, state: State<'_, AppState>) -> Result<DeleteReport> {
+    with_library_off_main_thread(&state.library, move |library| {
+        trash::delete_forever(library, &ids)
+    })
+    .await
+}
+
+/// Permanently delete everything in the trash (`trash` design D7).
+#[tauri::command]
+pub async fn empty_trash(state: State<'_, AppState>) -> Result<DeleteReport> {
+    with_library_off_main_thread(&state.library, trash::empty_trash).await
+}
+
+/// How many images are in the trash — the sidebar's badge (`trash` design
+/// D11).
+#[tauri::command]
+pub async fn trash_count(state: State<'_, AppState>) -> Result<i64> {
+    with_library_off_main_thread(&state.library, trash::trash_count).await
+}
+
+/// The library's rules, ordered by name, each carrying its pattern's validity
+/// (`auto-tag-rules` design D4, D6).
+#[tauri::command]
+pub async fn rules_list(state: State<'_, AppState>) -> Result<Vec<RuleListEntry>> {
+    with_library_off_main_thread(&state.library, |library| rules::list(&library.conn)).await
+}
+
+/// Create a rule when `rule.id` is absent, or edit the one it names; refused
+/// with the reason for an empty name, no tags, or an unusable regular
+/// expression (design D6).
+#[tauri::command]
+pub async fn rules_upsert(rule: RuleInput, state: State<'_, AppState>) -> Result<Rule> {
+    with_library_off_main_thread(&state.library, move |library| rules::upsert(library, &rule)).await
+}
+
+/// Delete a rule; idempotent, and no image it ever tagged is touched.
+#[tauri::command]
+pub async fn rules_delete(id: String, state: State<'_, AppState>) -> Result<()> {
+    with_library_off_main_thread(&state.library, move |library| rules::delete(library, &id)).await
+}
+
+/// Apply the current rules to every image already in the library, emitting
+/// `rules:progress` as it goes (design D9, D12). Mirrors `import_paths`: a
+/// blocking run over the shared library, released between images.
+#[tauri::command]
+pub async fn rules_run<R: Runtime>(
+    app: AppHandle<R>,
+    state: State<'_, AppState>,
+) -> Result<RulesRunReport> {
+    off_main_thread(&state.library, move |library| {
+        rules::run(library, &mut |done, total| {
+            // A dropped tick is a progress bar that skips a number; the run
+            // itself is unaffected, so it is not worth failing over.
+            let _ = app.emit(RULES_PROGRESS_EVENT, ExportProgress { done, total });
+        })
+    })
+    .await
+}
+
+/// Write the library's rules to `path` in the legacy JSON shape (design D10).
+#[tauri::command]
+pub async fn rules_export(path: String, state: State<'_, AppState>) -> Result<()> {
+    with_library_off_main_thread(&state.library, move |library| {
+        let json = rules::export_json(library)?;
+        std::fs::write(&path, json).map_err(AppError::Io)
+    })
+    .await
+}
+
+/// Read `path` and import its rules, skipping ones already present by
+/// fingerprint (design D10).
+#[tauri::command]
+pub async fn rules_import(path: String, state: State<'_, AppState>) -> Result<RulesImportReport> {
+    with_library_off_main_thread(&state.library, move |library| {
+        let text = std::fs::read_to_string(&path).map_err(AppError::Io)?;
+        rules::import_json(library, &text)
+    })
+    .await
+}
+
+/// The library's one note, empty on a library that has never been written to
+/// (`notes` design D3).
+#[tauri::command]
+pub async fn note_get(state: State<'_, AppState>) -> Result<Note> {
+    with_library_off_main_thread(&state.library, |library| notes::get(&library.conn)).await
+}
+
+/// Write the note and answer with it as stored, so the panel's autosave has
+/// the stamp without a second read.
+#[tauri::command]
+pub async fn note_set(content: String, state: State<'_, AppState>) -> Result<Note> {
+    with_library_off_main_thread(&state.library, move |library| {
+        notes::set(&library.conn, &content)
+    })
+    .await
+}
+
+/// The library's configured booru sites, ordered by name (`booru-sites`
+/// design D1).
+#[tauri::command]
+pub async fn booru_site_list(state: State<'_, AppState>) -> Result<Vec<BooruSite>> {
+    with_library_off_main_thread(&state.library, |library| booru::sites::list(&library.conn)).await
+}
+
+/// Create a site when `id` is absent, or edit the one it names; `id` itself
+/// never changes on an edit (design D2). `api_key` left absent leaves
+/// whatever credential the site already has untouched — the form field it
+/// backs is write-only and starts blank on every edit (task 5.2).
+///
+/// The database write always happens before the credential is ever touched
+/// (design D7): if the credential store then refuses `api_key`, this call
+/// fails with that reason, but the site's name, address and username are
+/// already saved — `booru_site_list` shows them.
+#[tauri::command]
+pub async fn booru_site_save(
+    id: Option<String>,
+    name: String,
+    base_url: String,
+    username: String,
+    api_key: Option<String>,
+    state: State<'_, AppState>,
+) -> Result<BooruSite> {
+    let credentials = state.credentials.clone();
+    with_library_off_main_thread(&state.library, move |library| {
+        booru::sites::save(
+            library,
+            credentials.as_ref(),
+            id.as_deref(),
+            &name,
+            &base_url,
+            &username,
+            api_key.as_deref(),
+        )
+    })
+    .await
+}
+
+/// Remove a site and its stored credential; posts already recorded against it
+/// are kept, since `posts.site` carries no reference to it (`booru-sites`
+/// design D2).
+#[tauri::command]
+pub async fn booru_site_delete(id: String, state: State<'_, AppState>) -> Result<()> {
+    let credentials = state.credentials.clone();
+    with_library_off_main_thread(&state.library, move |library| {
+        booru::sites::delete(library, credentials.as_ref(), &id)
+    })
+    .await
+}
+
+/// The credential a site posts with, or the `AppError::Credential` that
+/// refuses the call before it opens a socket (`booru-sites` design D7):
+/// missing entirely and refused by the store are both "cannot be read", and
+/// neither reaches the booru.
+fn require_credential(credentials: &dyn Credentials, site: &BooruSite) -> Result<String> {
+    let host = booru::sites::host_of(&site.base_url)?;
+    credentials
+        .get(&host, &site.username)?
+        .ok_or_else(|| AppError::Credential {
+            reason: format!(
+                "no API key is stored for {} on {}",
+                site.username, site.base_url
+            ),
+        })
+}
+
+/// Contact the site with its stored credential and report what happened,
+/// without changing anything on the booru (design D8).
+#[tauri::command]
+pub async fn booru_site_test(
+    id: String,
+    state: State<'_, AppState>,
+) -> Result<BooruConnectionTest> {
+    let credentials = state.credentials.clone();
+    let (site, api_key) = with_library_off_main_thread(&state.library, move |library| {
+        let site = booru::sites::require(&library.conn, &id)?;
+        let api_key = require_credential(credentials.as_ref(), &site)?;
+        Ok((site, api_key))
     })
     .await?;
-    status(&state).await
+
+    let client = booru::client::BooruClient::new(&site.base_url, &site.username, &api_key);
+    Ok(client.test_connection().await)
+}
+
+/// An upload will not be sent without tags and a rating (spec `booru-upload`).
+/// The webview's own form already refuses to submit without both (task 3.2);
+/// this is the same check made again on the far side of the IPC boundary,
+/// the way `rules::upsert` checks its own inputs regardless of what the form
+/// already enforced.
+fn validate_upload_form(form: &BooruUploadForm) -> Result<()> {
+    if form.tags.is_empty() {
+        return Err(AppError::BadRequest(
+            "an upload needs at least one tag".to_string(),
+        ));
+    }
+    if !tags::RATINGS.contains(&form.rating.as_str()) {
+        return Err(AppError::BadRequest(format!(
+            "{:?} is not a rating",
+            form.rating
+        )));
+    }
+    Ok(())
+}
+
+/// Read the image and the site, run the four-step upload sequence, and — only
+/// on success — record the post in the same transaction as the
+/// `images.updated_at` bump (`booru-upload` design D5). The library mutex is
+/// taken twice, briefly, and never across the network `.await`s in between: a
+/// missing or refused credential fails the call outright, before either
+/// touch, so an upload to an unusable site never opens a socket
+/// (`booru-sites` design D7).
+#[tauri::command]
+pub async fn booru_upload(
+    image_id: String,
+    site_id: String,
+    form: BooruUploadForm,
+    state: State<'_, AppState>,
+) -> Result<BooruUploadOutcome> {
+    validate_upload_form(&form)?;
+
+    let credentials = state.credentials.clone();
+    let (paths, image, site, api_key) =
+        with_library_off_main_thread(&state.library, move |library| {
+            let image = ingest::require_record(&library.conn, &image_id)?;
+            let site = booru::sites::require(&library.conn, &site_id)?;
+            let api_key = require_credential(credentials.as_ref(), &site)?;
+            Ok((library.paths.clone(), image, site, api_key))
+        })
+        .await?;
+
+    // Off the async thread: the file is as large as whatever was captured,
+    // and this runs on the runtime that is also serving the listener. Outside
+    // the library mutex too — nothing here needs it (design D5).
+    let image_path = paths.image_path(&image.id, &image.ext);
+    let bytes = tauri::async_runtime::spawn_blocking(move || {
+        std::fs::read(image_path).map_err(AppError::Io)
+    })
+    .await
+    .map_err(from_tauri)??;
+    let payload = booru::upload::UploadPayload {
+        filename: format!("{}.{}", image.id, image.ext),
+        mime: image.mime.clone(),
+        bytes,
+    };
+
+    let client = booru::client::BooruClient::new(&site.base_url, &site.username, &api_key);
+    let outcome = booru::upload::run(
+        &client,
+        payload,
+        &site.id,
+        &form,
+        booru::client::PollSchedule::default(),
+    )
+    .await;
+
+    let BooruUploadOutcome::Posted { post, commentary } = outcome else {
+        return Ok(outcome);
+    };
+    let post = PostRef {
+        posted_at: db::now_ms(),
+        ..post
+    };
+    let record_post = post.clone();
+    let image_id = image.id.clone();
+    with_library_off_main_thread(&state.library, move |library| {
+        booru::posts::record(library, &image_id, &record_post)
+    })
+    .await?;
+
+    Ok(BooruUploadOutcome::Posted { post, commentary })
 }
 
 /// Absolute path; the thumbnail is generated if it is not there yet.
@@ -514,7 +913,7 @@ mod tests {
     use super::*;
     use crate::http::test_support::{ask_for_status, free_port, nothing_answers_on, png_bytes};
     use crate::model::{
-        GRID_TILE_DEFAULT, GroupBy, ImportProgress, ImportStatus, ParsedTagSearch, Sort,
+        GRID_TILE_DEFAULT, GroupBy, ImportProgress, ImportStatus, ParsedTagSearch, SearchView, Sort,
     };
     use crate::test_support::mock_app;
 
@@ -524,7 +923,7 @@ mod tests {
         SearchRequest {
             query: ParsedTagSearch::default(),
             text: String::new(),
-            include_deleted: false,
+            view: SearchView::Library,
             sort: Sort::default(),
             group: GroupBy::default(),
             limit: 100,
@@ -909,15 +1308,58 @@ mod tests {
     }
 
     #[test]
-    fn dropping_a_record_returns_the_status_with_the_new_count() {
+    fn trash_restore_and_delete_forever_reach_the_library_through_the_commands() {
+        let (_library, app) = app_with_library();
+        import(&app, &folder_of_images(3));
+        let ids = ids_in_library(&app);
+
+        now(trash_images(vec![ids[0].clone()], app.state())).unwrap();
+        assert_eq!(now(trash_count(app.state())).unwrap(), 1);
+        assert!(!ids_in_library(&app).contains(&ids[0]));
+
+        now(restore_images(vec![ids[0].clone()], app.state())).unwrap();
+        assert_eq!(now(trash_count(app.state())).unwrap(), 0);
+        assert!(ids_in_library(&app).contains(&ids[0]));
+
+        now(trash_images(vec![ids[1].clone()], app.state())).unwrap();
+        let report = now(delete_forever(vec![ids[1].clone()], app.state())).unwrap();
+        assert_eq!(report.deleted, 1);
+        assert_eq!(now(trash_count(app.state())).unwrap(), 0);
+        assert_eq!(
+            status_of(&app).image_count,
+            2,
+            "ids[0] restored and ids[2] untouched; only ids[1] is gone",
+        );
+    }
+
+    #[test]
+    fn empty_trash_reaches_the_library_through_the_command() {
         let (_library, app) = app_with_library();
         import(&app, &folder_of_images(2));
-        let id = ids_in_library(&app).remove(0);
+        let ids = ids_in_library(&app);
+        now(trash_images(ids.clone(), app.state())).unwrap();
 
-        let status = now(drop_image_record(id, app.state())).unwrap();
+        let report = now(empty_trash(app.state())).unwrap();
 
-        assert_eq!(status.image_count, 1);
-        assert!(status.opened);
+        assert_eq!(report.deleted, 2);
+        assert_eq!(now(trash_count(app.state())).unwrap(), 0);
+    }
+
+    #[test]
+    fn the_trash_commands_need_a_library_before_they_answer() {
+        let app = mock_app();
+
+        let errors = [
+            now(trash_images(vec!["a".to_string()], app.state())).unwrap_err(),
+            now(restore_images(vec!["a".to_string()], app.state())).unwrap_err(),
+            now(delete_forever(vec!["a".to_string()], app.state())).unwrap_err(),
+            now(empty_trash(app.state())).unwrap_err(),
+            now(trash_count(app.state())).unwrap_err(),
+        ];
+
+        for error in errors {
+            assert!(matches!(error, AppError::NoLibrary), "{error:?}");
+        }
     }
 
     fn tag(app: &App, id: &str, tags: &[&str]) -> ImageRecord {
@@ -1008,6 +1450,209 @@ mod tests {
             now(set_rating("a".to_string(), None, app.state())).unwrap_err(),
             now(tag_suggestions("cat".to_string(), 8, app.state())).unwrap_err(),
             now(tag_counts(everything(), app.state())).unwrap_err(),
+        ];
+
+        for error in errors {
+            assert!(matches!(error, AppError::NoLibrary), "{error:?}");
+        }
+    }
+
+    #[test]
+    fn search_ids_matches_the_ids_search_would_page() {
+        let (_library, app) = app_with_library();
+        import(&app, &folder_of_images(5));
+
+        let req = SearchRequest {
+            limit: 2,
+            offset: 1,
+            ..everything()
+        };
+        let paged = now(search(req.clone(), app.state())).unwrap();
+        let ids = now(search_ids(req, app.state())).unwrap();
+
+        assert_eq!(
+            ids,
+            paged
+                .images
+                .iter()
+                .map(|image| image.id.clone())
+                .collect::<Vec<_>>(),
+        );
+    }
+
+    #[test]
+    fn bulk_update_tags_reaches_every_selected_image_through_the_command() {
+        let (_library, app) = app_with_library();
+        import(&app, &folder_of_images(2));
+        let ids = ids_in_library(&app);
+
+        now(bulk_update_tags(
+            ids.clone(),
+            vec!["cat".to_string()],
+            vec![],
+            app.state(),
+        ))
+        .unwrap();
+
+        let result = search_all(&app);
+        assert!(
+            result
+                .images
+                .iter()
+                .all(|image| image.tags.contains(&"cat".to_string())),
+            "{:?}",
+            result.images,
+        );
+    }
+
+    #[test]
+    fn bulk_set_rating_reaches_every_selected_image_through_the_command() {
+        let (_library, app) = app_with_library();
+        import(&app, &folder_of_images(2));
+        let ids = ids_in_library(&app);
+
+        now(bulk_set_rating(
+            ids.clone(),
+            Some("e".to_string()),
+            app.state(),
+        ))
+        .unwrap();
+
+        let result = search_all(&app);
+        assert!(
+            result
+                .images
+                .iter()
+                .all(|image| image.rating.as_deref() == Some("e")),
+            "{:?}",
+            result.images,
+        );
+    }
+
+    #[test]
+    fn selection_tag_counts_reaches_the_open_library_through_the_command() {
+        let (_library, app) = app_with_library();
+        import(&app, &folder_of_images(2));
+        let ids = ids_in_library(&app);
+        tag(&app, &ids[0], &["cat"]);
+        tag(&app, &ids[1], &["cat"]);
+
+        let counts = now(selection_tag_counts(ids, 10, app.state())).unwrap();
+
+        assert_eq!(
+            counts.first().map(|tag| (tag.name.as_str(), tag.count)),
+            Some(("cat", 2)),
+        );
+    }
+
+    #[test]
+    fn export_zip_writes_the_selected_originals_through_the_command() {
+        let (_library, app) = app_with_library();
+        import(&app, &folder_of_images(2));
+        let ids = ids_in_library(&app);
+        let out = tempfile::tempdir().unwrap();
+        let path = out.path().join("export.zip");
+
+        let report = now(export_zip(
+            ids.clone(),
+            path.display().to_string(),
+            0,
+            app.handle().clone(),
+            app.state(),
+        ))
+        .unwrap();
+
+        assert_eq!(report.written, 2);
+        assert!(report.missing.is_empty());
+        assert!(path.is_file());
+    }
+
+    /// The owner's Human update on task 6.1 ("selection-and-bulk"): a
+    /// UUID-only name has no order, and every entry carried the crate's
+    /// `1980-01-01` default mtime regardless of when the image was
+    /// captured. This pins the fix through the command: a tagged image's
+    /// entry is named `<id> <tag1> <tag2>…<ext>` (tags alphabetical, the
+    /// image's stored order), an untagged one keeps `<id>.<ext>`, and every
+    /// entry's mtime is the image's own `captured_at`, not the default.
+    #[test]
+    fn export_zip_names_entries_by_id_and_tags_and_dates_them_by_captured_at() {
+        let (_library, app) = app_with_library();
+        import(&app, &folder_of_images(2));
+        let ids = ids_in_library(&app);
+        tag(&app, &ids[0], &["skirt_lift", "kani_biimu"]);
+        let captured_at = search_all(&app)
+            .images
+            .into_iter()
+            .find(|image| image.id == ids[0])
+            .unwrap()
+            .captured_at;
+        let out = tempfile::tempdir().unwrap();
+        let path = out.path().join("export.zip");
+
+        now(export_zip(
+            ids.clone(),
+            path.display().to_string(),
+            0,
+            app.handle().clone(),
+            app.state(),
+        ))
+        .unwrap();
+
+        let mut archive = zip::ZipArchive::new(std::fs::File::open(&path).unwrap()).unwrap();
+        // Tags come back alphabetical (the image's stored order,
+        // `ingest::load_records`'s `ORDER BY tags.name`), not insertion order.
+        let tagged_entry = archive
+            .by_name(&format!("{} kani_biimu skirt_lift.png", ids[0]))
+            .expect("a tagged image's entry is named `<id> <tag1> <tag2>….<ext>`");
+        let expected = time::OffsetDateTime::from_unix_timestamp(captured_at.div_euclid(1000))
+            .unwrap()
+            .date();
+        let mtime = tagged_entry.last_modified().unwrap();
+        assert_eq!(
+            (mtime.year(), mtime.month(), mtime.day()),
+            (
+                expected.year() as u16,
+                u8::from(expected.month()),
+                expected.day()
+            ),
+            "the entry's mtime must be the image's captured_at, not the zip default",
+        );
+        assert_ne!(
+            mtime,
+            zip::DateTime::default(),
+            "captured_at is well past 1980, so the entry must not fall back to the crate default",
+        );
+        drop(tagged_entry);
+
+        assert!(
+            archive.by_name(&format!("{}.png", ids[1])).is_ok(),
+            "an untagged image keeps the `<id>.<ext>` name",
+        );
+    }
+
+    #[test]
+    fn the_new_bulk_and_export_commands_need_a_library_before_they_answer() {
+        let app = mock_app();
+
+        let errors = [
+            now(search_ids(everything(), app.state())).unwrap_err(),
+            now(bulk_update_tags(
+                vec!["a".to_string()],
+                vec![],
+                vec![],
+                app.state(),
+            ))
+            .unwrap_err(),
+            now(bulk_set_rating(vec!["a".to_string()], None, app.state())).unwrap_err(),
+            now(selection_tag_counts(vec!["a".to_string()], 10, app.state())).unwrap_err(),
+            now(export_zip(
+                vec!["a".to_string()],
+                "/tmp/export.zip".to_string(),
+                0,
+                app.handle().clone(),
+                app.state(),
+            ))
+            .unwrap_err(),
         ];
 
         for error in errors {
@@ -1153,5 +1798,723 @@ mod tests {
         );
         assert_eq!(result.total, 1);
         holder.join().unwrap();
+    }
+
+    fn new_rule(name: &str, pattern: &str, tags: &[&str]) -> crate::model::RuleInput {
+        crate::model::RuleInput {
+            id: None,
+            name: name.to_string(),
+            pattern: pattern.to_string(),
+            is_regex: false,
+            tags: tags.iter().map(|tag| (*tag).to_string()).collect(),
+            enabled: true,
+        }
+    }
+
+    #[test]
+    fn rules_list_upsert_and_delete_reach_the_open_library_through_the_commands() {
+        let (_library, app) = app_with_library();
+
+        let created = now(rules_upsert(
+            new_rule("pixiv", "pixiv", &["pixiv"]),
+            app.state(),
+        ))
+        .unwrap();
+        let listed = now(rules_list(app.state())).unwrap();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].rule, created);
+        assert_eq!(listed[0].pattern_error, None);
+
+        now(rules_delete(created.id, app.state())).unwrap();
+        assert!(now(rules_list(app.state())).unwrap().is_empty());
+    }
+
+    /// Design D6: the command surfaces the engine's reason, and creates
+    /// nothing.
+    #[test]
+    fn rules_upsert_returns_the_refusal_reason() {
+        let (_library, app) = app_with_library();
+
+        let error = now(rules_upsert(
+            crate::model::RuleInput {
+                is_regex: true,
+                ..new_rule("broken", "(unterminated", &["x"])
+            },
+            app.state(),
+        ))
+        .unwrap_err();
+
+        assert!(matches!(error, AppError::BadRequest(_)), "{error:?}");
+        assert!(now(rules_list(app.state())).unwrap().is_empty());
+    }
+
+    #[test]
+    fn rules_run_reaches_the_open_library_and_reports_progress() {
+        let (_library, app) = app_with_library();
+        now(rules_upsert(
+            new_rule("pixiv", "pixiv", &["pixiv"]),
+            app.state(),
+        ))
+        .unwrap();
+        import(&app, &folder_of_images(1));
+        let ticks = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let seen = ticks.clone();
+        app.listen(RULES_PROGRESS_EVENT, move |event| {
+            let progress: ExportProgress = serde_json::from_str(event.payload()).unwrap();
+            lock(&seen).push(progress);
+        });
+
+        let report = now(rules_run(app.handle().clone(), app.state())).unwrap();
+
+        assert_eq!(report.examined, 1);
+        let ticks = lock(&ticks).clone();
+        assert_eq!(
+            ticks.last().map(|last| (last.done, last.total)),
+            Some((1, 1)),
+        );
+    }
+
+    #[test]
+    fn the_rules_commands_need_a_library_before_they_answer() {
+        let app = mock_app();
+
+        for error in [
+            now(rules_list(app.state())).unwrap_err(),
+            now(rules_upsert(new_rule("a", "a", &["a"]), app.state())).unwrap_err(),
+            now(rules_delete("a".to_string(), app.state())).unwrap_err(),
+            now(rules_run(app.handle().clone(), app.state())).unwrap_err(),
+            now(rules_export("/tmp/rules.json".to_string(), app.state())).unwrap_err(),
+            now(rules_import("/tmp/rules.json".to_string(), app.state())).unwrap_err(),
+        ] {
+            assert!(matches!(error, AppError::NoLibrary), "{error:?}");
+        }
+    }
+
+    #[test]
+    fn export_written_to_a_temp_path_re_imports_with_everything_skipped() {
+        let (_library, app) = app_with_library();
+        now(rules_upsert(
+            new_rule("pixiv", "pixiv", &["pixiv"]),
+            app.state(),
+        ))
+        .unwrap();
+        let out = tempfile::tempdir().unwrap();
+        let path = out.path().join("rules.json");
+
+        now(rules_export(path.display().to_string(), app.state())).unwrap();
+        let report = now(rules_import(path.display().to_string(), app.state())).unwrap();
+
+        assert_eq!(report.imported, 0);
+        assert_eq!(report.skipped, 1);
+        assert_eq!(now(rules_list(app.state())).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn importing_a_missing_path_errors_without_touching_the_library() {
+        let (_library, app) = app_with_library();
+        now(rules_upsert(
+            new_rule("pixiv", "pixiv", &["pixiv"]),
+            app.state(),
+        ))
+        .unwrap();
+
+        let error = now(rules_import("/no/such/file.json".to_string(), app.state())).unwrap_err();
+
+        assert!(matches!(error, AppError::Io(_)), "{error:?}");
+        assert_eq!(now(rules_list(app.state())).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn the_note_round_trips_through_the_commands() {
+        let (_library, app) = app_with_library();
+
+        assert_eq!(now(note_get(app.state())).unwrap(), Note::default());
+
+        now(note_set("still to sort".to_string(), app.state())).unwrap();
+
+        assert_eq!(now(note_get(app.state())).unwrap().content, "still to sort");
+    }
+
+    #[test]
+    fn the_note_commands_need_a_library_before_they_answer() {
+        let app = mock_app();
+
+        for error in [
+            now(note_get(app.state())).unwrap_err(),
+            now(note_set(String::new(), app.state())).unwrap_err(),
+        ] {
+            assert!(matches!(error, AppError::NoLibrary), "{error:?}");
+        }
+    }
+
+    /// The panel's fold is a preference, so it has to survive the process, not
+    /// just the running state (`notes` design D13).
+    #[test]
+    fn the_notes_fold_reaches_the_state_and_the_store() {
+        let app = mock_app();
+
+        let answered = set_notes_collapsed(true, app.handle().clone(), app.state()).unwrap();
+
+        assert!(answered.notes_collapsed);
+        assert!(app_settings(app.state()).notes_collapsed);
+        assert!(settings::load(app.handle()).notes_collapsed);
+    }
+
+    // ---- booru sites and upload (`booru-upload` tasks 1.5, 2.5, 2.6) ----
+
+    mod booru_tests {
+        use serde_json::json;
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        use super::*;
+        use crate::booru::credentials::InMemoryCredentials;
+        use crate::model::{BooruUploadForm, CommentaryOutcome, PostRef, UploadStep};
+        use crate::test_support::mock_app_with_credentials;
+
+        fn app_with_library_and_credentials(
+            credentials: std::sync::Arc<dyn Credentials>,
+        ) -> (tempfile::TempDir, App) {
+            let dir = tempfile::tempdir().unwrap();
+            let app = mock_app_with_credentials(credentials);
+            open(&app, dir.path()).unwrap();
+            (dir, app)
+        }
+
+        fn upload_form(tags: &[&str], commentary_title: &str) -> BooruUploadForm {
+            BooruUploadForm {
+                tags: tags.iter().map(|tag| (*tag).to_string()).collect(),
+                rating: "s".to_string(),
+                source: "https://example.test/p".to_string(),
+                artist: String::new(),
+                commentary_title: commentary_title.to_string(),
+                commentary_body: String::new(),
+            }
+        }
+
+        fn posts_of(app: &App, image_id: &str) -> Vec<PostRef> {
+            with_library(&app.state::<AppState>().library, |library| {
+                ingest::require_record(&library.conn, image_id)
+            })
+            .unwrap()
+            .posts
+        }
+
+        /// The MD5 lookup that precedes every upload, answered "no such
+        /// post" (design D12).
+        async fn no_post_holds_the_file(server: &MockServer) {
+            Mock::given(method("GET"))
+                .and(path("/posts.json"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(json!([])))
+                .mount(server)
+                .await;
+        }
+
+        /// The lookup, `/uploads.json` and `/uploads/9.json` mocked to a
+        /// completed processing state; `POST /posts.json` left to each test
+        /// so a failure there, or past it, can still be driven.
+        async fn upload_and_processing_ok(server: &MockServer) {
+            no_post_holds_the_file(server).await;
+            Mock::given(method("POST"))
+                .and(path("/uploads.json"))
+                .respond_with(ResponseTemplate::new(201).set_body_json(json!({ "id": 9 })))
+                .mount(server)
+                .await;
+            Mock::given(method("GET"))
+                .and(path("/uploads/9.json"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                    "status": "completed",
+                    "upload_media_assets": [{ "id": 77, "media_asset_id": 4001 }],
+                })))
+                .mount(server)
+                .await;
+        }
+
+        #[test]
+        fn saving_a_site_then_listing_round_trips_it() {
+            let (_dir, app) = app_with_library();
+
+            let created = now(booru_site_save(
+                None,
+                "Danbooru".to_string(),
+                "https://danbooru.donmai.us".to_string(),
+                "alice".to_string(),
+                Some("secret-key".to_string()),
+                app.state(),
+            ))
+            .unwrap();
+
+            assert_eq!(created.id, "danbooru-donmai-us");
+            assert_eq!(now(booru_site_list(app.state())).unwrap(), vec![created]);
+        }
+
+        #[test]
+        fn deleting_a_site_removes_it_and_its_credential() {
+            let (_dir, app) = app_with_library();
+            let site = now(booru_site_save(
+                None,
+                "Danbooru".to_string(),
+                "https://danbooru.donmai.us".to_string(),
+                "alice".to_string(),
+                Some("secret-key".to_string()),
+                app.state(),
+            ))
+            .unwrap();
+
+            now(booru_site_delete(site.id.clone(), app.state())).unwrap();
+
+            assert!(now(booru_site_list(app.state())).unwrap().is_empty());
+            let credentials = app.state::<AppState>().credentials.clone();
+            assert_eq!(
+                credentials.get("danbooru.donmai.us", "alice").unwrap(),
+                None
+            );
+        }
+
+        #[test]
+        fn test_connection_reports_the_three_outcomes() {
+            let (_dir, app) = app_with_library();
+
+            now(async {
+                let server = MockServer::start().await;
+                Mock::given(method("GET"))
+                    .and(path("/profile.json"))
+                    .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "id": 1 })))
+                    .mount(&server)
+                    .await;
+                let working = booru_site_save(
+                    None,
+                    "Working".to_string(),
+                    server.uri(),
+                    "alice".to_string(),
+                    Some("secret-key".to_string()),
+                    app.state(),
+                )
+                .await
+                .unwrap();
+                assert_eq!(
+                    booru_site_test(working.id, app.state()).await.unwrap(),
+                    BooruConnectionTest::Connected
+                );
+
+                // A second server, so the two sites do not share a base
+                // address (`booru-sites`: two sites cannot share one).
+                let server2 = MockServer::start().await;
+                Mock::given(method("GET"))
+                    .and(path("/profile.json"))
+                    .respond_with(ResponseTemplate::new(401))
+                    .mount(&server2)
+                    .await;
+                let wrong_key = booru_site_save(
+                    None,
+                    "Wrong key".to_string(),
+                    server2.uri(),
+                    "alice".to_string(),
+                    Some("wrong-key".to_string()),
+                    app.state(),
+                )
+                .await
+                .unwrap();
+                assert_eq!(
+                    booru_site_test(wrong_key.id, app.state()).await.unwrap(),
+                    BooruConnectionTest::CredentialRejected
+                );
+            });
+        }
+
+        #[test]
+        fn test_connection_reports_unreachable_for_an_address_nothing_answers_on() {
+            let (_dir, app) = app_with_library();
+
+            now(async {
+                // A server that was bound and then dropped: its address no
+                // longer has anything listening on it.
+                let server = MockServer::start().await;
+                let uri = server.uri();
+                drop(server);
+
+                let site = booru_site_save(
+                    None,
+                    "Nowhere".to_string(),
+                    uri,
+                    "alice".to_string(),
+                    Some("secret-key".to_string()),
+                    app.state(),
+                )
+                .await
+                .unwrap();
+
+                let outcome = booru_site_test(site.id, app.state()).await.unwrap();
+                assert!(matches!(outcome, BooruConnectionTest::Unreachable { .. }));
+            });
+        }
+
+        #[test]
+        fn a_successful_upload_records_a_post_and_the_image_shows_it() {
+            let (_dir, app) = app_with_library();
+            import(&app, &folder_of_images(1));
+            let id = ids_in_library(&app)[0].clone();
+
+            now(async {
+                let server = MockServer::start().await;
+                upload_and_processing_ok(&server).await;
+                Mock::given(method("POST"))
+                    .and(path("/posts.json"))
+                    .respond_with(ResponseTemplate::new(201).set_body_json(json!({ "id": 555 })))
+                    .mount(&server)
+                    .await;
+                let site = booru_site_save(
+                    None,
+                    "Test booru".to_string(),
+                    server.uri(),
+                    "alice".to_string(),
+                    Some("secret-key".to_string()),
+                    app.state(),
+                )
+                .await
+                .unwrap();
+
+                let outcome = booru_upload(
+                    id.clone(),
+                    site.id.clone(),
+                    upload_form(&["1girl"], ""),
+                    app.state(),
+                )
+                .await
+                .unwrap();
+
+                match outcome {
+                    BooruUploadOutcome::Posted { post, commentary } => {
+                        assert_eq!(post.site, site.id);
+                        assert_eq!(post.remote_id, "555");
+                        assert_eq!(commentary, CommentaryOutcome::Skipped);
+                    }
+                    BooruUploadOutcome::Failed { error } => {
+                        panic!("expected success, got {error:?}")
+                    }
+                }
+            });
+
+            let posts = posts_of(&app, &id);
+            assert_eq!(posts.len(), 1);
+            assert_eq!(posts[0].remote_id, "555");
+        }
+
+        #[test]
+        fn a_missing_credential_fails_before_any_request_is_made() {
+            let (_dir, app) = app_with_library();
+            import(&app, &folder_of_images(1));
+            let id = ids_in_library(&app)[0].clone();
+
+            let error = now(async {
+                // Nothing is listening here; a request reaching the network
+                // would hang or refuse the connection rather than answer, so a
+                // fast `AppError::Credential` is proof this was never sent.
+                let site = booru_site_save(
+                    None,
+                    "No key yet".to_string(),
+                    "http://127.0.0.1:1".to_string(),
+                    "alice".to_string(),
+                    None,
+                    app.state(),
+                )
+                .await
+                .unwrap();
+
+                booru_upload(
+                    id.clone(),
+                    site.id,
+                    upload_form(&["1girl"], ""),
+                    app.state(),
+                )
+                .await
+            })
+            .unwrap_err();
+
+            assert!(matches!(error, AppError::Credential { .. }), "{error:?}");
+            assert!(posts_of(&app, &id).is_empty());
+        }
+
+        #[test]
+        fn a_refusing_credential_store_fails_the_upload_before_any_request_is_made() {
+            let credentials =
+                std::sync::Arc::new(InMemoryCredentials::refusing("keychain is locked"));
+            let (_dir, app) = app_with_library_and_credentials(credentials);
+            import(&app, &folder_of_images(1));
+            let id = ids_in_library(&app)[0].clone();
+
+            let error = now(async {
+                let site = booru_site_save(
+                    None,
+                    "Locked".to_string(),
+                    "http://127.0.0.1:1".to_string(),
+                    "alice".to_string(),
+                    Some("secret-key".to_string()),
+                    app.state(),
+                )
+                .await;
+                // Saving the site's own settings must not depend on the
+                // credential store (`booru-sites` design D7): only the key
+                // write fails.
+                assert!(matches!(site.unwrap_err(), AppError::Credential { .. }));
+
+                let saved = booru_site_list(app.state()).await.unwrap().remove(0);
+                booru_upload(
+                    id.clone(),
+                    saved.id,
+                    upload_form(&["1girl"], ""),
+                    app.state(),
+                )
+                .await
+            })
+            .unwrap_err();
+
+            assert!(matches!(error, AppError::Credential { .. }), "{error:?}");
+            assert!(posts_of(&app, &id).is_empty());
+        }
+
+        #[test]
+        fn a_refused_upload_records_nothing() {
+            let (_dir, app) = app_with_library();
+            import(&app, &folder_of_images(1));
+            let id = ids_in_library(&app)[0].clone();
+
+            let outcome = now(async {
+                let server = MockServer::start().await;
+                no_post_holds_the_file(&server).await;
+                Mock::given(method("POST"))
+                    .and(path("/uploads.json"))
+                    .respond_with(
+                        ResponseTemplate::new(422)
+                            .set_body_json(json!({ "message": "duplicate of post #1" })),
+                    )
+                    .mount(&server)
+                    .await;
+                let site = booru_site_save(
+                    None,
+                    "Test booru".to_string(),
+                    server.uri(),
+                    "alice".to_string(),
+                    Some("secret-key".to_string()),
+                    app.state(),
+                )
+                .await
+                .unwrap();
+
+                booru_upload(
+                    id.clone(),
+                    site.id,
+                    upload_form(&["1girl"], ""),
+                    app.state(),
+                )
+                .await
+                .unwrap()
+            });
+
+            match outcome {
+                BooruUploadOutcome::Failed { error } => {
+                    assert_eq!(error.step, UploadStep::CreateUpload)
+                }
+                BooruUploadOutcome::Posted { .. } => panic!("expected a failure"),
+            }
+            assert!(posts_of(&app, &id).is_empty());
+        }
+
+        #[test]
+        fn a_processing_timeout_records_nothing() {
+            let (_dir, app) = app_with_library();
+            import(&app, &folder_of_images(1));
+            let id = ids_in_library(&app)[0].clone();
+
+            let outcome = now(async {
+                let server = MockServer::start().await;
+                no_post_holds_the_file(&server).await;
+                Mock::given(method("POST"))
+                    .and(path("/uploads.json"))
+                    .respond_with(ResponseTemplate::new(201).set_body_json(json!({ "id": 9 })))
+                    .mount(&server)
+                    .await;
+                Mock::given(method("GET"))
+                    .and(path("/uploads/9.json"))
+                    .respond_with(
+                        ResponseTemplate::new(200).set_body_json(json!({ "status": "processing" })),
+                    )
+                    .mount(&server)
+                    .await;
+                let site = booru_site_save(
+                    None,
+                    "Test booru".to_string(),
+                    server.uri(),
+                    "alice".to_string(),
+                    Some("secret-key".to_string()),
+                    app.state(),
+                )
+                .await
+                .unwrap();
+
+                booru_upload(
+                    id.clone(),
+                    site.id,
+                    upload_form(&["1girl"], ""),
+                    app.state(),
+                )
+                .await
+                .unwrap()
+            });
+
+            match outcome {
+                BooruUploadOutcome::Failed { error } => {
+                    assert_eq!(error.step, UploadStep::AwaitProcessing);
+                    assert_eq!(error.remote_ref, Some("9".to_string()));
+                }
+                BooruUploadOutcome::Posted { .. } => panic!("expected a failure"),
+            }
+            assert!(posts_of(&app, &id).is_empty());
+        }
+
+        #[test]
+        fn a_refused_post_creation_records_nothing() {
+            let (_dir, app) = app_with_library();
+            import(&app, &folder_of_images(1));
+            let id = ids_in_library(&app)[0].clone();
+
+            let outcome = now(async {
+                let server = MockServer::start().await;
+                upload_and_processing_ok(&server).await;
+                Mock::given(method("POST"))
+                    .and(path("/posts.json"))
+                    .respond_with(
+                        ResponseTemplate::new(422)
+                            .set_body_json(json!({ "message": "invalid rating" })),
+                    )
+                    .mount(&server)
+                    .await;
+                let site = booru_site_save(
+                    None,
+                    "Test booru".to_string(),
+                    server.uri(),
+                    "alice".to_string(),
+                    Some("secret-key".to_string()),
+                    app.state(),
+                )
+                .await
+                .unwrap();
+
+                booru_upload(
+                    id.clone(),
+                    site.id,
+                    upload_form(&["1girl"], ""),
+                    app.state(),
+                )
+                .await
+                .unwrap()
+            });
+
+            match outcome {
+                BooruUploadOutcome::Failed { error } => {
+                    assert_eq!(error.step, UploadStep::CreatePost)
+                }
+                BooruUploadOutcome::Posted { .. } => panic!("expected a failure"),
+            }
+            assert!(posts_of(&app, &id).is_empty());
+        }
+
+        #[test]
+        fn a_commentary_failure_still_leaves_the_post_row() {
+            let (_dir, app) = app_with_library();
+            import(&app, &folder_of_images(1));
+            let id = ids_in_library(&app)[0].clone();
+
+            let outcome = now(async {
+                let server = MockServer::start().await;
+                upload_and_processing_ok(&server).await;
+                Mock::given(method("POST"))
+                    .and(path("/posts.json"))
+                    .respond_with(ResponseTemplate::new(201).set_body_json(json!({ "id": 555 })))
+                    .mount(&server)
+                    .await;
+                Mock::given(method("PUT"))
+                    .and(path("/posts/555/artist_commentary/create_or_update.json"))
+                    .respond_with(
+                        ResponseTemplate::new(422)
+                            .set_body_json(json!({ "message": "title too long" })),
+                    )
+                    .mount(&server)
+                    .await;
+                let site = booru_site_save(
+                    None,
+                    "Test booru".to_string(),
+                    server.uri(),
+                    "alice".to_string(),
+                    Some("secret-key".to_string()),
+                    app.state(),
+                )
+                .await
+                .unwrap();
+
+                booru_upload(
+                    id.clone(),
+                    site.id,
+                    upload_form(&["1girl"], "a title"),
+                    app.state(),
+                )
+                .await
+                .unwrap()
+            });
+
+            match outcome {
+                BooruUploadOutcome::Posted { post, commentary } => {
+                    assert_eq!(post.remote_id, "555");
+                    assert_eq!(
+                        commentary,
+                        CommentaryOutcome::Failed {
+                            message: "title too long".to_string()
+                        }
+                    );
+                }
+                BooruUploadOutcome::Failed { error } => panic!("expected success, got {error:?}"),
+            }
+            assert_eq!(posts_of(&app, &id).len(), 1);
+        }
+
+        #[test]
+        fn an_upload_with_no_tags_or_no_rating_is_refused_without_touching_the_network() {
+            let (_dir, app) = app_with_library();
+            import(&app, &folder_of_images(1));
+            let id = ids_in_library(&app)[0].clone();
+            let site = now(booru_site_save(
+                None,
+                "Test booru".to_string(),
+                "http://127.0.0.1:1".to_string(),
+                "alice".to_string(),
+                Some("secret-key".to_string()),
+                app.state(),
+            ))
+            .unwrap();
+
+            let no_tags = now(booru_upload(
+                id.clone(),
+                site.id.clone(),
+                BooruUploadForm {
+                    rating: "s".to_string(),
+                    ..upload_form(&[], "")
+                },
+                app.state(),
+            ))
+            .unwrap_err();
+            assert!(matches!(no_tags, AppError::BadRequest(_)));
+
+            let no_rating = now(booru_upload(
+                id,
+                site.id,
+                BooruUploadForm {
+                    rating: String::new(),
+                    ..upload_form(&["1girl"], "")
+                },
+                app.state(),
+            ))
+            .unwrap_err();
+            assert!(matches!(no_rating, AppError::BadRequest(_)));
+        }
     }
 }

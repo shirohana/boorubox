@@ -7,7 +7,7 @@ import type { SearchRequest, SearchResult, TagCounts } from '@boorubox/shared'
 import { clearMocks, mockIPC } from '@tauri-apps/api/mocks'
 import { img } from '$lib/domain/image-fixture'
 import { afterEach, expect, it, vi } from 'vitest'
-import { DEFAULT_GROUP, DEFAULT_SORT, PAGE_SIZE, SearchResults } from './search.svelte'
+import { DEFAULT_GROUP, DEFAULT_SORT, PAGE_SIZE, SearchResults, TRASH_DEFAULT_SORT } from './search.svelte'
 
 afterEach(() => {
   clearMocks()
@@ -56,7 +56,7 @@ it('sends the first page of a bare query', async () => {
 
   expect(onlyRequest(requests)).toMatchObject({
     text: '',
-    includeDeleted: false,
+    view: 'library',
     limit: PAGE_SIZE,
     offset: 0,
   })
@@ -199,6 +199,18 @@ it('defaults to newest capture first, ungrouped', async () => {
   expect(onlyRequest(requests)).toMatchObject({
     sort: { field: 'captured', direction: 'desc' },
     group: 'none',
+  })
+})
+
+it('the trash defaults to the last trashing first', async () => {
+  const requests = spyIPC(empty)
+  const results = new SearchResults('trash')
+  await results.run({ tagQuery: '', text: '' })
+
+  expect(results.sort).toEqual(TRASH_DEFAULT_SORT)
+  expect(onlyRequest(requests)).toMatchObject({
+    view: 'trash',
+    sort: { field: 'trashed', direction: 'desc' },
   })
 })
 

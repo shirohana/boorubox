@@ -1,10 +1,10 @@
 <script lang="ts">
-  // Slot Inspector · rating (design D17): the four ratings and the clear, with
-  // the image's own shown. The write goes through the store, which swaps the
-  // record it returns into the row it already occupies (design D10) — so the
-  // tile's badge and this control never disagree.
+  // Slot Inspector · rating (design D17), and the bulk rating in the selection
+  // toolbar (`selection-and-bulk` D8). The write is the caller's: one image's
+  // rating goes through the search store, a selection's through
+  // `bulk_set_rating`, and the control is the same four choices and the same
+  // clear in both.
   import type { Rating } from '@boorubox/shared'
-  import type { SearchResults } from '$lib/api'
   import { errorText } from '$lib/api'
   import * as ToggleGroup from '$lib/components/ui/toggle-group'
   import { ratingLabel } from '$lib/domain/format'
@@ -12,11 +12,25 @@
   import { RATING_COLOUR, RATING_COLOUR_DIM, RATINGS } from './ratings'
 
   interface Props {
-    image: { id: string, rating: Rating | null }
-    results: SearchResults
+    /**
+     * The choice shown as current. `null` is the explicit "unrated" one;
+     * `undefined` is "there is no single current rating", which is a whole
+     * selection and shows no choice as active.
+     */
+    value: Rating | null | undefined
+    /** Writes the picked rating; what it means is the caller's business. */
+    onchoose: (rating: Rating | null) => Promise<void>
+    /**
+     * A choice was made — before the write settles, because this is about the
+     * keyboard and not about the result. The viewer's placement takes its focus
+     * back here, since Space on a choice is the choice's press and would
+     * otherwise stop closing the viewer (`browse-polish` design D4, amended).
+     * Beside the grid nothing is passed and the focus stays on the choice.
+     */
+    onchosen?: () => void
   }
 
-  let { image, results }: Props = $props()
+  let { value, onchoose, onchosen }: Props = $props()
 
   /** Unrated is a value the user picks, not the absence of one (`is:unrated`). */
   const NONE = 'none'
@@ -25,7 +39,16 @@
   let error = $state<string | null>(null)
   let group = $state<HTMLDivElement | null>(null)
 
-  const current = $derived(image.rating ?? NONE)
+  const current = $derived(value === undefined ? '' : value ?? NONE)
+
+  /**
+   * What the group holds, written back from `current` after every choice. The
+   * group keeps its own value once clicked, and for a whole selection nothing
+   * ever comes back to correct it: the second click on a rating would deselect,
+   * arrive here as `''`, and unrate every selected image. Mirroring the props
+   * keeps every bulk click an explicit set.
+   */
+  let shown = $derived(current)
 
   /**
    * bits-ui offers roving focus and Tab-stepping as an either-or: its roving
@@ -53,18 +76,25 @@
   }
 
   async function choose(picked: string) {
+    // Every path below is a choice the user made, including the one that writes
+    // nothing, so the hook fires here rather than after the write.
+    onchosen?.()
     // A second click on the current choice deselects it, which the group reports
     // as an empty value; both it and `none` mean unrated.
     const rating = picked === NONE || picked === '' ? null : picked as Rating
-    if (rating === image.rating) return
+    if (rating === value) {
+      shown = current
+      return
+    }
     saving = true
     error = null
     try {
-      await results.saveRating(image.id, rating)
+      await onchoose(rating)
     } catch (cause) {
       error = errorText(cause)
     } finally {
       saving = false
+      shown = current
     }
   }
 </script>
@@ -74,7 +104,7 @@
   type="single"
   variant="outline"
   size="sm"
-  value={current}
+  bind:value={shown}
   disabled={saving}
   rovingFocus={false}
   onValueChange={choose}

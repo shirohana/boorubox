@@ -142,6 +142,21 @@ pub struct StatusResponse {
     pub image_count: i64,
 }
 
+/// One recorded post (`booru-upload` design D2, D5): `site` holds
+/// `BooruSite.id`, a stable slug rather than a foreign key, since the record
+/// must outlive the site being removed (spec `posted-label`, "A record
+/// outlives the site configuration"). The post's address is computed —
+/// `<base_url>/posts/<remote_id>` — never stored, so there is one source of
+/// truth for where a post lives.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PostRef {
+    pub site: String,
+    pub remote_id: String,
+    /// Epoch milliseconds.
+    pub posted_at: i64,
+}
+
 /// One row of the library, as the webview sees it.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -176,6 +191,9 @@ pub struct ImageRecord {
     pub deleted_at: Option<i64>,
     /// The file under `images/` was not there at the last check.
     pub missing: bool,
+    /// Where this image has been posted, one entry per site (`booru-upload`
+    /// design D5). Empty for an image never posted anywhere.
+    pub posts: Vec<PostRef>,
 }
 
 /// The `tagcount:` comparison, as `parseTagSearch` emits it.
@@ -244,6 +262,8 @@ pub enum SortField {
     Updated,
     Size,
     Dimensions,
+    /// `deleted_at`; meaningful in the trash view only (`trash` design D16).
+    Trashed,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -284,13 +304,25 @@ pub struct GroupSlice {
     pub count: i64,
 }
 
+/// Which set of images a `SearchRequest` draws from (`trash` design D2): the
+/// library, with deleted images excluded, or the trash, with only deleted
+/// images and never an undeleted one. No third `all` variant — nothing in the
+/// app shows both at once, and a variant with no caller is a dead control this
+/// type has no reason to carry.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum SearchView {
+    Library,
+    Trash,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SearchRequest {
     pub query: ParsedTagSearch,
     /// Free text matched against page title and URLs through FTS5 (design D14).
     pub text: String,
-    pub include_deleted: bool,
+    pub view: SearchView,
     pub sort: Sort,
     pub group: GroupBy,
     pub limit: i64,
@@ -312,6 +344,38 @@ pub struct SearchResult {
 pub struct TagCount {
     pub name: String,
     pub count: i64,
+}
+
+/// What `export_zip` answers with (`selection-and-bulk` design D11): how many
+/// of the selection made it into the archive, and which ids did not because
+/// their file was gone from `images/` by the time it was copied.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExportReport {
+    pub path: String,
+    pub written: i64,
+    pub missing: Vec<String>,
+}
+
+/// Payload of the `export:progress` event, emitted once per id including the
+/// ones left out — so the last tick's `done` always equals `total`, mirroring
+/// `ImportProgress` (design D13).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExportProgress {
+    pub done: i64,
+    pub total: i64,
+}
+
+/// What `delete_forever` and `empty_trash` answer with (`trash` design D4,
+/// D7): how many images were permanently removed, and the full path of every
+/// file that could not be unlinked — named on screen rather than swept, since
+/// the record is gone either way and there is no unlink left to retry.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeleteReport {
+    pub deleted: i64,
+    pub files_left: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -394,6 +458,11 @@ pub enum Theme {
 pub struct AppSettings {
     pub theme: Theme,
     pub grid_tile_size: u32,
+    /// Whether the sidebar's notes panel is folded away (`notes` design D13):
+    /// a preference held for months, not the session state app-shell keeps out
+    /// of `settings.json` — D13 records why that reading was right until a
+    /// panel big enough to write in sat in the sidebar.
+    pub notes_collapsed: bool,
 }
 
 /// One entry of the start screen's recent list. `name` and `available` are
@@ -449,6 +518,204 @@ pub struct ImportProgress {
     pub failed: u32,
 }
 
+/// A named pattern and the tags it adds (`auto-tag-rules` design D1, D2).
+/// Rules live in the library, not `settings.json`: library policy travels
+/// with the folder. `tags` is a rule's payload, not tag rows — it is never
+/// searched, counted or joined, only written later (design D2).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Rule {
+    pub id: String,
+    pub name: String,
+    pub pattern: String,
+    pub is_regex: bool,
+    pub tags: Vec<String>,
+    pub enabled: bool,
+    /// Epoch milliseconds.
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+
+/// What `rules_upsert` takes: `id` absent creates, present edits (design D6).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RuleInput {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    pub name: String,
+    pub pattern: String,
+    pub is_regex: bool,
+    pub tags: Vec<String>,
+    pub enabled: bool,
+}
+
+/// One row of the rules list: the rule plus its pattern's validity, compiled
+/// at read time and never stored (design D6) — a regular expression the
+/// engine cannot use is reported here rather than dropped.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RuleListEntry {
+    pub rule: Rule,
+    pub pattern_error: Option<String>,
+}
+
+/// What `rules_import` answers with (design D10).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RulesImportReport {
+    pub imported: u32,
+    pub skipped: u32,
+}
+
+/// One rule's outcome in a `rules_run`: how many images it matched, in the
+/// `rules` half of [`RulesRunReport`], or its `pattern_error` in the
+/// `invalid` half — the same shape serves both (design D9).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RuleRunCount {
+    pub id: String,
+    pub name: String,
+    pub matched: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pattern_error: Option<String>,
+}
+
+/// What `rules_run` answers with: how many images were examined and changed,
+/// and each rule's own count, invalid ones named separately with their reason
+/// rather than dropped (design D9).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RulesRunReport {
+    pub examined: i64,
+    pub changed: i64,
+    pub rules: Vec<RuleRunCount>,
+    pub invalid: Vec<RuleRunCount>,
+}
+
+/// The library's one free-text scratchpad (`notes` design D3). A library that
+/// has never been written to reads as an empty note, never an error.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Note {
+    pub content: String,
+    pub updated_at: i64,
+}
+
+/// A booru this library posts to (`booru-upload` design D1, D2; `booru-sites`).
+/// The API key is never a field of this type — it lives in the OS credential
+/// store, keyed on `<host>/<username>` (design D7), never in `library.sqlite`.
+///
+/// `id` is a slug derived once from `base_url`'s host at creation (design D2)
+/// and never changes afterwards, even across an edit to `base_url`: it is what
+/// `PostRef.site` holds, and it must outlive the row it came from.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BooruSite {
+    pub id: String,
+    pub name: String,
+    pub base_url: String,
+    pub username: String,
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+
+/// What `booru_site_test` answers with (design D8): judged by status code
+/// alone, never by the response body — a self-hosted fork's own profile shape
+/// must never fail a test a real Danbooru would pass.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "status", rename_all = "camelCase")]
+pub enum BooruConnectionTest {
+    Connected,
+    CredentialRejected,
+    /// The transport's own reason, or the status the site answered with.
+    Unreachable {
+        reason: String,
+    },
+}
+
+/// The upload form's values, prefilled per `booru-upload` design D10 and
+/// editable before sending; edits never reach the image's own row. `rating`
+/// is never empty here — the webview form refuses to send until one is
+/// chosen (spec `booru-upload`, "An upload will not be sent without tags and
+/// a rating"); [`crate::commands::booru_upload`] checks it again regardless,
+/// the same defence-in-depth `rules::upsert` applies to its own inputs.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BooruUploadForm {
+    /// Space-joined into `tag_string` at the request builder, not here —
+    /// `booru::client::BooruClient::create_post`.
+    pub tags: Vec<String>,
+    /// `g` | `s` | `q` | `e`, checked against [`crate::tags::RATINGS`].
+    pub rating: String,
+    /// The page the image was captured from, or the image's own address.
+    pub source: String,
+    /// Empty when no rule matched the page address (design D11); folded into
+    /// `tag_string` alongside `tags` when present, since Danbooru has no
+    /// separate artist field on `POST /posts.json` (design D3, D10).
+    pub artist: String,
+    pub commentary_title: String,
+    pub commentary_body: String,
+}
+
+/// The step an upload sequence failed at (design D6). `Authenticate` is the
+/// booru itself rejecting the credential — a 401/403 on any of the four
+/// calls — never a local credential-store failure: that fails the command
+/// outright as an [`AppError::Credential`] before any request is sent
+/// (`booru-sites` design D7), so it never reaches this type.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum UploadStep {
+    Authenticate,
+    CreateUpload,
+    AwaitProcessing,
+    CreatePost,
+    Commentary,
+}
+
+/// Which step failed, the booru's own message where it gave one — never a
+/// paraphrase (design D6) — and the remote reference a failure can point at:
+/// the upload id when processing times out, the post id when only the
+/// commentary fails.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UploadStepError {
+    pub step: UploadStep,
+    pub message: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remote_ref: Option<String>,
+}
+
+/// Whether the optional artist commentary call ran, and how it went. Its own
+/// failure is not the upload's failure (design D6): the post already exists,
+/// so [`BooruUploadOutcome::Posted`] still returns with this as a warning
+/// rather than turning the whole upload into a [`BooruUploadOutcome::Failed`].
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "status", rename_all = "camelCase")]
+pub enum CommentaryOutcome {
+    /// No commentary title or body was given.
+    Skipped,
+    Applied,
+    Failed {
+        message: String,
+    },
+}
+
+/// What `booru_upload` answers with. Only [`BooruUploadOutcome::Posted`] ever
+/// carries a [`PostRef`] — nothing is recorded against the image for a
+/// [`BooruUploadOutcome::Failed`], however far the sequence got before it
+/// failed (design D5).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "outcome", rename_all = "camelCase")]
+pub enum BooruUploadOutcome {
+    Posted {
+        post: PostRef,
+        commentary: CommentaryOutcome,
+    },
+    Failed {
+        error: UploadStepError,
+    },
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -461,11 +728,16 @@ mod tests {
         let settings = AppSettings {
             theme: Theme::Dark,
             grid_tile_size: GRID_TILE_DEFAULT,
+            notes_collapsed: true,
         };
 
         assert_eq!(
             serde_json::to_value(settings).unwrap(),
-            serde_json::json!({ "theme": "dark", "gridTileSize": 180 }),
+            serde_json::json!({
+                "theme": "dark",
+                "gridTileSize": 180,
+                "notesCollapsed": true,
+            }),
         );
     }
 
@@ -491,6 +763,7 @@ mod tests {
             updated_at: 0,
             deleted_at: None,
             missing: false,
+            posts: Vec::new(),
         }
     }
 
@@ -593,12 +866,42 @@ mod tests {
         );
     }
 
+    /// `trash` design D2: the webview matches on these two literal strings, so
+    /// a `rename_all` that quietly changed one would leave `search` filtering
+    /// on nothing the request meant.
+    #[test]
+    fn a_search_view_crosses_the_wire_as_library_or_trash() {
+        for (view, name) in [
+            (SearchView::Library, "library"),
+            (SearchView::Trash, "trash"),
+        ] {
+            assert_eq!(serde_json::to_value(view).unwrap(), name);
+            assert_eq!(
+                serde_json::from_value::<SearchView>(serde_json::json!(name)).unwrap(),
+                view,
+            );
+        }
+    }
+
+    #[test]
+    fn a_delete_report_crosses_the_wire_in_camel_case() {
+        let report = DeleteReport {
+            deleted: 3,
+            files_left: vec!["images/a.png".to_string()],
+        };
+
+        assert_eq!(
+            serde_json::to_value(report).unwrap(),
+            serde_json::json!({ "deleted": 3, "filesLeft": ["images/a.png"] }),
+        );
+    }
+
     #[test]
     fn a_search_carries_its_sort_and_group_and_answers_with_slices() {
         let req = SearchRequest {
             query: ParsedTagSearch::default(),
             text: String::new(),
-            include_deleted: false,
+            view: SearchView::Library,
             sort: Sort {
                 field: SortField::Size,
                 direction: SortDirection::Asc,
@@ -614,7 +917,7 @@ mod tests {
             serde_json::json!({ "field": "size", "direction": "asc" })
         );
         assert_eq!(json["group"], "x-account");
-        assert_eq!(json["includeDeleted"], false);
+        assert_eq!(json["view"], "library");
         assert_eq!(
             serde_json::from_value::<SearchRequest>(json).unwrap(),
             req,
@@ -665,6 +968,29 @@ mod tests {
     }
 
     #[test]
+    fn the_export_report_and_progress_cross_the_wire_in_camel_case() {
+        let report = ExportReport {
+            path: "/libraries/art/export.zip".to_string(),
+            written: 19,
+            missing: vec!["gone-1".to_string()],
+        };
+        assert_eq!(
+            serde_json::to_value(report).unwrap(),
+            serde_json::json!({
+                "path": "/libraries/art/export.zip",
+                "written": 19,
+                "missing": ["gone-1"],
+            }),
+        );
+
+        let progress = ExportProgress { done: 3, total: 20 };
+        assert_eq!(
+            serde_json::to_value(progress).unwrap(),
+            serde_json::json!({ "done": 3, "total": 20 }),
+        );
+    }
+
+    #[test]
     fn a_recent_library_carries_its_path_name_and_availability() {
         let entry = RecentLibrary {
             path: "/libraries/art".to_string(),
@@ -676,5 +1002,321 @@ mod tests {
             serde_json::to_value(entry).unwrap(),
             serde_json::json!({ "path": "/libraries/art", "name": "art", "available": false }),
         );
+    }
+
+    /// `auto-tag-rules` task 1.1: nothing checks this file against
+    /// `packages/shared/src/index.ts`, so the wire spellings a hand-mirrored
+    /// rename would silently break are pinned here — `isRegex`,
+    /// `patternError` and `createdAt` above all.
+    #[test]
+    fn a_rule_and_its_list_entry_cross_the_wire_in_camel_case() {
+        let rule = Rule {
+            id: "r-1".to_string(),
+            name: "pixiv".to_string(),
+            pattern: "pixiv".to_string(),
+            is_regex: false,
+            tags: vec!["pixiv".to_string()],
+            enabled: true,
+            created_at: 1_700_000_000_000,
+            updated_at: 1_700_000_000_001,
+        };
+
+        assert_eq!(
+            serde_json::to_value(&rule).unwrap(),
+            serde_json::json!({
+                "id": "r-1",
+                "name": "pixiv",
+                "pattern": "pixiv",
+                "isRegex": false,
+                "tags": ["pixiv"],
+                "enabled": true,
+                "createdAt": 1_700_000_000_000i64,
+                "updatedAt": 1_700_000_000_001i64,
+            }),
+        );
+
+        let entry = RuleListEntry {
+            rule: rule.clone(),
+            pattern_error: Some("unclosed group".to_string()),
+        };
+        let json = serde_json::to_value(&entry).unwrap();
+        assert_eq!(json["patternError"], "unclosed group");
+        assert_eq!(
+            serde_json::from_value::<RuleListEntry>(json).unwrap(),
+            entry
+        );
+    }
+
+    #[test]
+    fn a_rule_input_omits_the_id_when_creating() {
+        let creating = RuleInput {
+            id: None,
+            name: "pixiv".to_string(),
+            pattern: "pixiv".to_string(),
+            is_regex: false,
+            tags: vec!["pixiv".to_string()],
+            enabled: true,
+        };
+
+        assert_eq!(
+            serde_json::to_value(&creating).unwrap(),
+            serde_json::json!({
+                "name": "pixiv",
+                "pattern": "pixiv",
+                "isRegex": false,
+                "tags": ["pixiv"],
+                "enabled": true,
+            }),
+        );
+
+        let editing = RuleInput {
+            id: Some("r-1".to_string()),
+            ..creating
+        };
+        assert_eq!(
+            serde_json::to_value(&editing).unwrap()["id"],
+            "r-1".to_string()
+        );
+    }
+
+    #[test]
+    fn a_rules_run_report_names_its_invalid_rules_separately() {
+        let report = RulesRunReport {
+            examined: 400,
+            changed: 12,
+            rules: vec![RuleRunCount {
+                id: "r-1".to_string(),
+                name: "pixiv".to_string(),
+                matched: 12,
+                pattern_error: None,
+            }],
+            invalid: vec![RuleRunCount {
+                id: "r-2".to_string(),
+                name: "broken".to_string(),
+                matched: 0,
+                pattern_error: Some("unclosed group".to_string()),
+            }],
+        };
+
+        let json = serde_json::to_value(&report).unwrap();
+        assert_eq!(json["rules"][0]["matched"], 12);
+        assert!(json["rules"][0].get("patternError").is_none());
+        assert_eq!(json["invalid"][0]["patternError"], "unclosed group");
+        assert_eq!(
+            serde_json::from_value::<RulesRunReport>(json).unwrap(),
+            report
+        );
+    }
+
+    #[test]
+    fn a_note_crosses_the_wire_in_camel_case() {
+        let note = Note {
+            content: "remember to tag these".to_string(),
+            updated_at: 1_700_000_000_000,
+        };
+
+        assert_eq!(
+            serde_json::to_value(&note).unwrap(),
+            serde_json::json!({
+                "content": "remember to tag these",
+                "updatedAt": 1_700_000_000_000i64,
+            }),
+        );
+    }
+
+    /// `booru-upload` task 1.1: a `PostRef` crosses the wire in camel case, and
+    /// an `ImageRecord` with no posts carries an empty array rather than
+    /// omitting the key — the webview's `posted-label` reads `image.posts`
+    /// unconditionally.
+    #[test]
+    fn a_post_ref_crosses_the_wire_in_camel_case_and_an_image_defaults_to_no_posts() {
+        let post = PostRef {
+            site: "danbooru".to_string(),
+            remote_id: "12345".to_string(),
+            posted_at: 1_700_000_000_000,
+        };
+        assert_eq!(
+            serde_json::to_value(&post).unwrap(),
+            serde_json::json!({
+                "site": "danbooru",
+                "remoteId": "12345",
+                "postedAt": 1_700_000_000_000i64,
+            }),
+        );
+
+        let image = bare_image("a");
+        assert_eq!(
+            serde_json::to_value(&image).unwrap()["posts"],
+            serde_json::json!([])
+        );
+
+        let posted = ImageRecord {
+            posts: vec![post.clone()],
+            ..image
+        };
+        assert_eq!(
+            serde_json::to_value(&posted).unwrap()["posts"],
+            serde_json::json!([{ "site": "danbooru", "remoteId": "12345", "postedAt": 1_700_000_000_000i64 }]),
+        );
+    }
+
+    #[test]
+    fn a_booru_site_crosses_the_wire_in_camel_case_with_no_credential_field() {
+        let site = BooruSite {
+            id: "danbooru-donmai-us".to_string(),
+            name: "Danbooru".to_string(),
+            base_url: "https://danbooru.donmai.us".to_string(),
+            username: "alice".to_string(),
+            created_at: 1_700_000_000_000,
+            updated_at: 1_700_000_000_001,
+        };
+
+        let json = serde_json::to_value(&site).unwrap();
+        assert_eq!(
+            json,
+            serde_json::json!({
+                "id": "danbooru-donmai-us",
+                "name": "Danbooru",
+                "baseUrl": "https://danbooru.donmai.us",
+                "username": "alice",
+                "createdAt": 1_700_000_000_000i64,
+                "updatedAt": 1_700_000_000_001i64,
+            }),
+        );
+        // The whole point of design D7: nothing here ever names the API key.
+        assert!(json.get("apiKey").is_none());
+        assert!(json.get("api_key").is_none());
+    }
+
+    /// `booru-sites` design D8: the webview matches on these three tags.
+    #[test]
+    fn a_connection_test_crosses_the_wire_as_a_tagged_status() {
+        assert_eq!(
+            serde_json::to_value(BooruConnectionTest::Connected).unwrap(),
+            serde_json::json!({ "status": "connected" }),
+        );
+        assert_eq!(
+            serde_json::to_value(BooruConnectionTest::CredentialRejected).unwrap(),
+            serde_json::json!({ "status": "credentialRejected" }),
+        );
+        assert_eq!(
+            serde_json::to_value(BooruConnectionTest::Unreachable {
+                reason: "connection refused".to_string()
+            })
+            .unwrap(),
+            serde_json::json!({ "status": "unreachable", "reason": "connection refused" }),
+        );
+    }
+
+    #[test]
+    fn an_upload_form_crosses_the_wire_in_camel_case() {
+        let form = BooruUploadForm {
+            tags: vec!["1girl".to_string(), "blue_sky".to_string()],
+            rating: "s".to_string(),
+            source: "https://example.test/p".to_string(),
+            artist: "pixiv_user_1".to_string(),
+            commentary_title: "a title".to_string(),
+            commentary_body: String::new(),
+        };
+
+        assert_eq!(
+            serde_json::to_value(&form).unwrap(),
+            serde_json::json!({
+                "tags": ["1girl", "blue_sky"],
+                "rating": "s",
+                "source": "https://example.test/p",
+                "artist": "pixiv_user_1",
+                "commentaryTitle": "a title",
+                "commentaryBody": "",
+            }),
+        );
+    }
+
+    /// `booru-upload` design D6: the webview matches on these five step names,
+    /// and `remoteRef` is absent — not `null` — when there is none, the same
+    /// rule `CaptureWithdrawn.reason` follows.
+    #[test]
+    fn an_upload_step_error_names_its_step_and_omits_a_missing_remote_ref() {
+        for (step, name) in [
+            (UploadStep::Authenticate, "authenticate"),
+            (UploadStep::CreateUpload, "createUpload"),
+            (UploadStep::AwaitProcessing, "awaitProcessing"),
+            (UploadStep::CreatePost, "createPost"),
+            (UploadStep::Commentary, "commentary"),
+        ] {
+            assert_eq!(serde_json::to_value(step).unwrap(), name);
+        }
+
+        let without_ref = UploadStepError {
+            step: UploadStep::CreateUpload,
+            message: "duplicate of post #123".to_string(),
+            remote_ref: None,
+        };
+        assert_eq!(
+            serde_json::to_value(&without_ref).unwrap(),
+            serde_json::json!({ "step": "createUpload", "message": "duplicate of post #123" }),
+        );
+
+        let with_ref = UploadStepError {
+            remote_ref: Some("upload-9".to_string()),
+            ..without_ref
+        };
+        assert_eq!(
+            serde_json::to_value(&with_ref).unwrap()["remoteRef"],
+            "upload-9",
+        );
+    }
+
+    #[test]
+    fn a_commentary_outcome_crosses_the_wire_as_a_tagged_status() {
+        assert_eq!(
+            serde_json::to_value(CommentaryOutcome::Skipped).unwrap(),
+            serde_json::json!({ "status": "skipped" }),
+        );
+        assert_eq!(
+            serde_json::to_value(CommentaryOutcome::Applied).unwrap(),
+            serde_json::json!({ "status": "applied" }),
+        );
+        assert_eq!(
+            serde_json::to_value(CommentaryOutcome::Failed {
+                message: "title too long".to_string()
+            })
+            .unwrap(),
+            serde_json::json!({ "status": "failed", "message": "title too long" }),
+        );
+    }
+
+    /// `booru-upload` design D5, D6: only `Posted` ever carries a `PostRef`,
+    /// and the webview tells the two outcomes apart by `outcome`.
+    #[test]
+    fn an_upload_outcome_crosses_the_wire_as_a_tagged_union() {
+        let posted = BooruUploadOutcome::Posted {
+            post: PostRef {
+                site: "danbooru".to_string(),
+                remote_id: "9".to_string(),
+                posted_at: 1_700_000_000_000,
+            },
+            commentary: CommentaryOutcome::Applied,
+        };
+        assert_eq!(
+            serde_json::to_value(&posted).unwrap(),
+            serde_json::json!({
+                "outcome": "posted",
+                "post": { "site": "danbooru", "remoteId": "9", "postedAt": 1_700_000_000_000i64 },
+                "commentary": { "status": "applied" },
+            }),
+        );
+
+        let failed = BooruUploadOutcome::Failed {
+            error: UploadStepError {
+                step: UploadStep::AwaitProcessing,
+                message: "timed out".to_string(),
+                remote_ref: Some("upload-9".to_string()),
+            },
+        };
+        let json = serde_json::to_value(&failed).unwrap();
+        assert_eq!(json["outcome"], "failed");
+        assert_eq!(json["error"]["step"], "awaitProcessing");
+        assert_eq!(json["error"]["remoteRef"], "upload-9");
     }
 }

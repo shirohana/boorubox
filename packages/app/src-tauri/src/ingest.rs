@@ -13,7 +13,9 @@ use rusqlite::{Connection, Row, params, params_from_iter};
 use crate::db;
 use crate::error::{AppError, Result};
 use crate::library::Library;
-use crate::model::{ImageRecord, ImageSource, SiteAdapterRecord};
+use crate::model::{ImageRecord, ImageSource, PostRef, SiteAdapterRecord};
+use crate::rules;
+use crate::tags;
 
 /// Everything a caller knows about an image before it has a row. `id` is the
 /// caller's UUID, and delivery is idempotent on it.
@@ -25,8 +27,9 @@ pub struct IngestInput<'a> {
     pub image_url: Option<&'a str>,
     pub page_url: Option<&'a str>,
     pub page_title: Option<&'a str>,
-    /// What the caller's site adapter extracted. Stored as it arrived; ingest
-    /// reads nothing out of it (design D11).
+    /// What the caller's site adapter extracted. Stored as it arrived
+    /// (design D11); also matched against the enabled auto-tag rules
+    /// (`auto-tag-rules` design D5, D7), except for `source = LegacyBundle`.
     pub adapter: Option<&'a SiteAdapterRecord>,
     pub rating: Option<&'a str>,
     pub tags: &'a [String],
@@ -138,6 +141,7 @@ fn insert_rows(library: &Library, input: &IngestInput, decoded: &Decoded) -> Res
         .map_err(|error| {
             AppError::BadRequest(format!("adapter record cannot be stored: {error}"))
         })?;
+    let (final_tags, final_rating) = resolve_tags_and_rating(&tx, input)?;
     let inserted = tx.execute(
         "INSERT INTO images (id, ext, mime, size, width, height, source, source_ref, image_url,
                              page_url, page_title, adapter_json, rating, captured_at, created_at,
@@ -157,7 +161,7 @@ fn insert_rows(library: &Library, input: &IngestInput, decoded: &Decoded) -> Res
             input.page_url,
             input.page_title,
             adapter_json,
-            input.rating,
+            final_rating,
             input.captured_at,
             now,
             now,
@@ -173,29 +177,43 @@ fn insert_rows(library: &Library, input: &IngestInput, decoded: &Decoded) -> Res
         return Ok(Ingested::Existing(require_record(&library.conn, input.id)?));
     }
 
-    for tag in input.tags {
-        link_tag(&tx, input.id, tag)?;
+    for tag in &final_tags {
+        tags::link_tag(&tx, input.id, tag)?;
     }
     tx.commit()?;
 
     Ok(Ingested::Created(require_record(&library.conn, input.id)?))
 }
 
-/// Ensure the tag row exists and link the image to it. The one place a
-/// `tags` row is created: `tags::update_tags` links through here too, so a tag
-/// typed into the editor and a tag that arrived with a capture are the same row.
-pub fn link_tag(conn: &Connection, image_id: &str, tag: &str) -> Result<()> {
-    conn.execute(
-        "INSERT INTO tags (name) VALUES (?1) ON CONFLICT (name) DO NOTHING",
-        [tag],
-    )?;
-    conn.execute(
-        "INSERT INTO image_tags (image_id, tag_id)
-         SELECT ?1, id FROM tags WHERE name = ?2
-         ON CONFLICT DO NOTHING",
-        params![image_id, tag],
-    )?;
-    Ok(())
+/// What actually gets stored: `input.tags` unioned with the enabled rules'
+/// matches against the title and the adapter record (`auto-tag-rules` design
+/// D5, D7), except for `LegacyBundle` — `legacy-bundle-import` records
+/// "whatever the bundle carries is what is stored", and re-deriving tags for
+/// images that already carry the old library's would fight that and
+/// double-apply a rule that has since changed. The combined list then goes
+/// through `tags::split_rating` unconditionally, the same rule the tag editor
+/// applies (design D8), so a `rating:e` a rule names — or one a caller simply
+/// hands in through `input.tags` — never becomes a literal tag either way.
+/// `input.rating`, what the source itself supplied, wins over anything a rule
+/// extracted (design D8's "a rule SHALL NOT overwrite a rating the source
+/// supplied").
+fn resolve_tags_and_rating(
+    conn: &Connection,
+    input: &IngestInput,
+) -> Result<(Vec<String>, Option<String>)> {
+    let mut candidate: Vec<String> = input.tags.to_vec();
+    if input.source != ImageSource::LegacyBundle {
+        let enabled = rules::enabled_rules(conn)?;
+        let haystacks = rules::haystacks(input.page_title, input.adapter);
+        // Appended, not unioned: `split_rating` below is the one deduper of
+        // this list, and it drops repeats keeping the first occurrence — so a
+        // tag the source supplied and a rule also names is stored once, in the
+        // source's position, without a second dedupe spelling it here.
+        candidate.extend(rules::auto_tags(&enabled, &haystacks));
+    }
+    let (final_tags, extracted_rating) = tags::split_rating(&candidate);
+    let final_rating = input.rating.map(str::to_string).or(extracted_rating);
+    Ok((final_tags, final_rating))
 }
 
 /// Map a row selected with [`IMAGE_COLUMNS`]. `tags` comes back empty: tags are
@@ -227,6 +245,7 @@ pub fn row_to_record(row: &Row) -> rusqlite::Result<ImageRecord> {
         deleted_at: row.get(16)?,
         missing: row.get(17)?,
         file_modified_at: row.get(18)?,
+        posts: Vec::new(),
     })
 }
 
@@ -235,6 +254,12 @@ pub fn load_record(conn: &Connection, id: &str) -> Result<Option<ImageRecord>> {
 }
 
 /// Load records for `ids`, in the order given; ids with no row are dropped.
+///
+/// Three statements however many ids are asked for, never one per image: this
+/// is also what `booru-upload` design D5 relies on for `ImageRecord.posts` —
+/// the `posts` table is joined in here alongside the existing tags fill, so
+/// every caller of `load_record`/`load_records` (a search page and a single-
+/// image read alike) gets it for free.
 pub fn load_records(conn: &Connection, ids: &[String]) -> Result<Vec<ImageRecord>> {
     if ids.is_empty() {
         return Ok(Vec::new());
@@ -260,6 +285,30 @@ pub fn load_records(conn: &Connection, ids: &[String]) -> Result<Vec<ImageRecord
         let image_id: String = row.get(0)?;
         if let Some(record) = by_id.get_mut(&image_id) {
             record.tags.push(row.get(1)?);
+        }
+    }
+
+    // `remote_id`/`posted_at IS NOT NULL`: both columns are nullable from
+    // Phase 1's empty table (design D1) and `booru::posts::record` — the only
+    // writer — always sets both, so a row missing either came from outside
+    // this app. Reading one into `PostRef`'s non-optional fields would fail
+    // the whole query, so every page of the grid holding such a row would
+    // fail to load; dropping the row costs one label.
+    let mut stmt = conn.prepare(&format!(
+        "SELECT image_id, site, remote_id, posted_at FROM posts
+         WHERE image_id IN ({placeholders})
+           AND remote_id IS NOT NULL AND posted_at IS NOT NULL
+         ORDER BY site"
+    ))?;
+    let mut rows = stmt.query(params_from_iter(ids))?;
+    while let Some(row) = rows.next()? {
+        let image_id: String = row.get(0)?;
+        if let Some(record) = by_id.get_mut(&image_id) {
+            record.posts.push(PostRef {
+                site: row.get(1)?,
+                remote_id: row.get(2)?,
+                posted_at: row.get(3)?,
+            });
         }
     }
 
@@ -461,5 +510,299 @@ mod tests {
 
         let got: Vec<&str> = records.iter().map(|record| record.id.as_str()).collect();
         assert_eq!(got, vec!["c", "a"]);
+    }
+
+    /// `booru-upload` task 1.6: `load_records` — the one function a search
+    /// page and a single-image read both go through — fills `posts` the same
+    /// way it already fills `tags`, in one extra statement regardless of how
+    /// many images are asked for.
+    #[test]
+    fn load_records_fills_posts_alongside_tags() {
+        let (_dir, library) = library();
+        let bytes = png_bytes(2, 2);
+        let tags: Vec<String> = Vec::new();
+        store_image(&library, input("posted", &bytes, &tags)).unwrap();
+        store_image(&library, input("unposted", &bytes, &tags)).unwrap();
+        crate::booru::posts::record(
+            &library,
+            "posted",
+            &crate::model::PostRef {
+                site: "danbooru".to_string(),
+                remote_id: "42".to_string(),
+                posted_at: 1_700_000_000_000,
+            },
+        )
+        .unwrap();
+
+        let ids = vec!["posted".to_string(), "unposted".to_string()];
+        let records = load_records(&library.conn, &ids).unwrap();
+
+        assert_eq!(
+            records[0].posts,
+            vec![crate::model::PostRef {
+                site: "danbooru".to_string(),
+                remote_id: "42".to_string(),
+                posted_at: 1_700_000_000_000,
+            }]
+        );
+        assert!(records[1].posts.is_empty());
+    }
+
+    /// A `posts` row with a null column is one this app never wrote (only
+    /// `booru::posts::record` writes here, and it sets both). It must cost
+    /// its own label and nothing else: reading a null into `PostRef` would
+    /// fail the query, and with it every page of the grid the row appears on.
+    #[test]
+    fn a_posts_row_with_a_null_column_is_skipped_rather_than_failing_the_read() {
+        let (_dir, library) = library();
+        let bytes = png_bytes(2, 2);
+        let tags: Vec<String> = Vec::new();
+        store_image(&library, input("posted", &bytes, &tags)).unwrap();
+        library
+            .conn
+            .execute(
+                "INSERT INTO posts (image_id, site, remote_id, posted_at)
+                 VALUES ('posted', 'danbooru', '42', NULL)",
+                [],
+            )
+            .unwrap();
+
+        let record = require_record(&library.conn, "posted").unwrap();
+
+        assert!(record.posts.is_empty());
+    }
+
+    /// `auto-tag-rules` task 2.2: `insert_rows` splits a `rating:` token out of
+    /// `input.tags` unconditionally, the same rule the tag editor applies —
+    /// not only when a rule adds one.
+    #[test]
+    fn a_fresh_image_whose_input_tags_include_a_rating_token_is_stored_rated_with_no_such_tag() {
+        let (_dir, library) = library();
+        let bytes = png_bytes(2, 2);
+        let tags = vec!["cat".to_string(), "rating:s".to_string()];
+
+        let ingested = store_image(
+            &library,
+            IngestInput {
+                rating: None,
+                tags: &tags,
+                ..input("id-1", &bytes, &[])
+            },
+        )
+        .unwrap();
+
+        let record = ingested.record();
+        assert_eq!(record.tags, vec!["cat".to_string()]);
+        assert_eq!(record.rating.as_deref(), Some("s"));
+    }
+
+    /// `auto-tag-rules` task 2.4: an enabled rule adds its tags to a capture
+    /// whose title or adapter fields it matches (spec `auto-tag-rules`, "A
+    /// capture arrives tagged").
+    #[test]
+    fn a_capture_matching_a_rule_is_stored_with_its_tags() {
+        let (_dir, library) = library();
+        crate::rules::upsert(
+            &library,
+            &crate::model::RuleInput {
+                id: None,
+                name: "pixiv".to_string(),
+                pattern: "pixiv".to_string(),
+                is_regex: false,
+                tags: vec!["pixiv".to_string()],
+                enabled: true,
+            },
+        )
+        .unwrap();
+        let bytes = png_bytes(2, 2);
+
+        let ingested = store_image(
+            &library,
+            IngestInput {
+                page_title: Some("a pixiv piece"),
+                rating: None,
+                tags: &[],
+                ..input("id-1", &bytes, &[])
+            },
+        )
+        .unwrap();
+
+        assert_eq!(ingested.record().tags, vec!["pixiv".to_string()]);
+    }
+
+    /// A local import matches rules against its filename, which `import.rs`
+    /// already sets as the title (design D5).
+    #[test]
+    fn a_local_import_matching_on_its_filename_is_stored_with_the_rules_tags() {
+        let (_dir, library) = library();
+        crate::rules::upsert(
+            &library,
+            &crate::model::RuleInput {
+                id: None,
+                name: "scans".to_string(),
+                pattern: "scan".to_string(),
+                is_regex: false,
+                tags: vec!["scan".to_string()],
+                enabled: true,
+            },
+        )
+        .unwrap();
+        let bytes = png_bytes(2, 2);
+
+        let ingested = store_image(
+            &library,
+            IngestInput {
+                source: ImageSource::Local,
+                page_title: Some("a-scan.png"),
+                rating: None,
+                tags: &[],
+                ..input("id-1", &bytes, &[])
+            },
+        )
+        .unwrap();
+
+        assert_eq!(ingested.record().tags, vec!["scan".to_string()]);
+    }
+
+    /// `legacy-bundle-import` records "whatever the bundle carries is what is
+    /// stored" (design D7): a bundle-sourced ingest gains nothing from a rule
+    /// that would otherwise match its title.
+    #[test]
+    fn a_bundle_sourced_ingest_gains_no_rule_tags() {
+        let (_dir, library) = library();
+        crate::rules::upsert(
+            &library,
+            &crate::model::RuleInput {
+                id: None,
+                name: "pixiv".to_string(),
+                pattern: "pixiv".to_string(),
+                is_regex: false,
+                tags: vec!["pixiv".to_string()],
+                enabled: true,
+            },
+        )
+        .unwrap();
+        let bytes = png_bytes(2, 2);
+
+        let ingested = store_image(
+            &library,
+            IngestInput {
+                source: ImageSource::LegacyBundle,
+                page_title: Some("a pixiv piece"),
+                rating: None,
+                tags: &[],
+                ..input("id-1", &bytes, &[])
+            },
+        )
+        .unwrap();
+
+        assert!(ingested.record().tags.is_empty());
+    }
+
+    /// Design D8: the source's own rating wins over a rule's guess.
+    #[test]
+    fn a_rules_rating_tag_does_not_overwrite_a_supplied_rating() {
+        let (_dir, library) = library();
+        crate::rules::upsert(
+            &library,
+            &crate::model::RuleInput {
+                id: None,
+                name: "explicit".to_string(),
+                pattern: "pixiv".to_string(),
+                is_regex: false,
+                tags: vec!["rating:e".to_string()],
+                enabled: true,
+            },
+        )
+        .unwrap();
+        let bytes = png_bytes(2, 2);
+
+        let ingested = store_image(
+            &library,
+            IngestInput {
+                page_title: Some("a pixiv piece"),
+                rating: Some("s"),
+                tags: &[],
+                ..input("id-1", &bytes, &[])
+            },
+        )
+        .unwrap();
+
+        assert_eq!(ingested.record().rating.as_deref(), Some("s"));
+    }
+
+    /// Spec `auto-tag-rules`, "Retrying a delivery": re-delivering a stored id
+    /// adds no tags even after a matching rule was added.
+    #[test]
+    fn re_delivering_a_stored_id_adds_no_tags_from_a_rule_added_since() {
+        let (_dir, library) = library();
+        let bytes = png_bytes(2, 2);
+        store_image(
+            &library,
+            IngestInput {
+                page_title: Some("a pixiv piece"),
+                rating: None,
+                tags: &[],
+                ..input("id-1", &bytes, &[])
+            },
+        )
+        .unwrap();
+        crate::rules::upsert(
+            &library,
+            &crate::model::RuleInput {
+                id: None,
+                name: "pixiv".to_string(),
+                pattern: "pixiv".to_string(),
+                is_regex: false,
+                tags: vec!["pixiv".to_string()],
+                enabled: true,
+            },
+        )
+        .unwrap();
+
+        let ingested = store_image(
+            &library,
+            IngestInput {
+                page_title: Some("a pixiv piece"),
+                rating: None,
+                tags: &[],
+                ..input("id-1", &bytes, &[])
+            },
+        )
+        .unwrap();
+
+        assert!(matches!(ingested, Ingested::Existing(_)));
+        assert!(ingested.record().tags.is_empty());
+    }
+
+    /// Design D6: an unusable regex never stops a capture — it is skipped, and
+    /// the delivery still succeeds with whatever the other rules matched.
+    #[test]
+    fn a_rule_with_an_unusable_regex_leaves_the_capture_stored_and_successful() {
+        let (_dir, library) = library();
+        library
+            .conn
+            .execute(
+                "INSERT INTO rules (id, name, pattern, is_regex, tags_json, enabled, created_at,
+                                    updated_at)
+                 VALUES ('r-1', 'broken', '(unterminated', 1, '[\"x\"]', 1, 0, 0)",
+                [],
+            )
+            .unwrap();
+        let bytes = png_bytes(2, 2);
+
+        let ingested = store_image(
+            &library,
+            IngestInput {
+                page_title: Some("anything"),
+                rating: None,
+                tags: &[],
+                ..input("id-1", &bytes, &[])
+            },
+        )
+        .unwrap();
+
+        assert!(matches!(ingested, Ingested::Created(_)));
+        assert!(ingested.record().tags.is_empty());
     }
 }

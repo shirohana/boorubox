@@ -18,8 +18,8 @@ use rusqlite::{Connection, params_from_iter};
 use crate::error::Result;
 use crate::ingest;
 use crate::model::{
-    GroupBy, GroupSlice, ParsedTagSearch, RatingCounts, SearchRequest, SearchResult, Sort,
-    SortDirection, SortField, TagCount, TagCountOperator, TagCounts,
+    GroupBy, GroupSlice, ParsedTagSearch, RatingCounts, SearchRequest, SearchResult, SearchView,
+    Sort, SortDirection, SortField, TagCount, TagCountOperator, TagCounts,
 };
 
 /// Register the SQL functions the compiled queries call. `db::open` calls this
@@ -43,9 +43,17 @@ pub fn placeholders(count: usize) -> String {
     vec!["?"; count].join(", ")
 }
 
+/// How many ids a single `IN (…)` statement should bind at once. SQLite's
+/// bound-parameter limit is comfortably above this in the bundled build, but a
+/// selection spanning a whole large library still becomes one placeholder per
+/// id in one statement — a caller that builds an `IN` list over the whole
+/// selection (`bulk_set_rating`, `selection_tag_counts`, `export::export_zip`)
+/// chunks it to this size rather than trust the limit never to be reached.
+pub const ID_CHUNK: usize = 900;
+
 pub fn search(conn: &Connection, req: &SearchRequest) -> Result<SearchResult> {
     let plan = Plan::for_request(req, RatingClause::Included);
-    let ids = plan.page(conn, req.limit, req.offset)?;
+    let ids = search_ids(conn, req)?;
 
     Ok(SearchResult {
         total: plan.total(conn)?,
@@ -54,6 +62,14 @@ pub fn search(conn: &Connection, req: &SearchRequest) -> Result<SearchResult> {
         images: ingest::load_records(conn, &ids)?,
         groups: plan.groups(conn)?,
     })
+}
+
+/// Just the ids of a request's page, in the same order `search` pages them,
+/// with no records, no tags and no missing-file pass (`selection-and-bulk`
+/// design D3). `search` calls this too, so the selection's row *n* and the
+/// grid's row *n* are only ever read from the one `ORDER BY` this compiles.
+pub fn search_ids(conn: &Connection, req: &SearchRequest) -> Result<Vec<String>> {
+    Plan::for_request(req, RatingClause::Included).page(conn, req.limit, req.offset)
 }
 
 /// The sidebar's two halves for one request (design D8). Both ignore `limit`
@@ -98,7 +114,8 @@ struct Plan {
 
 /// The columns the sort, the group key, the rating counts and the page load
 /// read out of the matched set.
-const MATCHED_COLUMNS: &str = "id, page_url, rating, width, height, size, captured_at, updated_at";
+const MATCHED_COLUMNS: &str =
+    "id, page_url, rating, width, height, size, captured_at, updated_at, deleted_at";
 
 /// The account whose page the image came from. A page naming none is not in the
 /// group at all, so grouping by account also restricts the result (design D7).
@@ -283,6 +300,7 @@ fn sort_sql(sort: Sort) -> String {
         SortField::Size => "size",
         // The area, which is what the lifted `sortImages` compared.
         SortField::Dimensions => "width * height",
+        SortField::Trashed => "deleted_at",
     };
     let direction = match sort.direction {
         SortDirection::Asc => "ASC",
@@ -342,8 +360,9 @@ fn compile(req: &SearchRequest, rating: RatingClause) -> Filter {
     let query = &req.query;
     let mut filter = Filter::default();
 
-    if !req.include_deleted {
-        filter.add("images.deleted_at IS NULL");
+    match req.view {
+        SearchView::Library => filter.add("images.deleted_at IS NULL"),
+        SearchView::Trash => filter.add("images.deleted_at IS NOT NULL"),
     }
     if rating == RatingClause::Included {
         push_rating(&mut filter, query);
@@ -723,7 +742,7 @@ mod tests {
         SearchRequest {
             query,
             text: String::new(),
-            include_deleted: false,
+            view: SearchView::Library,
             sort: Sort::default(),
             group: GroupBy::default(),
             limit: 100,
@@ -771,19 +790,54 @@ mod tests {
         assert_eq!(result.total, 5);
     }
 
+    /// `selection-and-bulk` design D3: the selection resolves a range through
+    /// `search_ids`, and it only names the same images the grid pages if both
+    /// go through the one `ORDER BY` — this pins that `search_ids` is not a
+    /// second query that could drift from it.
     #[test]
-    fn deleted_rows_are_excluded_until_asked_for() {
+    fn search_ids_names_the_same_page_search_would_load() {
+        let fixture = fixture();
+        let req = SearchRequest {
+            limit: 2,
+            offset: 1,
+            ..request(ParsedTagSearch::default())
+        };
+
+        let paged = search(&fixture.library.conn, &req).unwrap();
+        let ids = search_ids(&fixture.library.conn, &req).unwrap();
+
+        assert_eq!(
+            ids,
+            paged
+                .images
+                .iter()
+                .map(|record| record.id.clone())
+                .collect::<Vec<_>>(),
+        );
+        assert_eq!(ids.len(), 2, "the limit must still apply");
+    }
+
+    #[test]
+    fn the_library_view_excludes_a_row_marked_deleted() {
         let fixture = fixture();
 
         assert!(!found(&fixture, &request(ParsedTagSearch::default())).contains(&"trashed".into()));
+    }
 
-        let with_deleted = SearchRequest {
-            include_deleted: true,
+    /// `trash` design D2: the trash view returns only marked rows, and never an
+    /// undeleted one.
+    #[test]
+    fn the_trash_view_returns_only_the_marked_row() {
+        let fixture = fixture();
+
+        let trash = SearchRequest {
+            view: SearchView::Trash,
             ..request(ParsedTagSearch::default())
         };
-        let result = search(&fixture.library.conn, &with_deleted).unwrap();
-        assert_eq!(result.total, 6);
-        assert!(result.images.iter().any(|record| record.id == "trashed"));
+        let result = search(&fixture.library.conn, &trash).unwrap();
+
+        assert_eq!(result.total, 1);
+        assert_eq!(result.images[0].id, "trashed");
     }
 
     #[test]
@@ -1273,6 +1327,32 @@ mod tests {
             sorted(&fixture, SortField::Size, SortDirection::Desc),
             vec!["heavy", "later", "flat"],
         );
+    }
+
+    /// `trash` design D16: the trash's own order is the time of trashing, so
+    /// what was thrown away last is first and a slip is one Restore away.
+    #[test]
+    fn the_trash_view_orders_by_trash_time() {
+        let fixture = sortable();
+        mark_deleted(&fixture.library.conn, "heavy", 10);
+        mark_deleted(&fixture.library.conn, "later", 20);
+        mark_deleted(&fixture.library.conn, "flat", 30);
+        let trashed = |direction| {
+            found(
+                &fixture,
+                &SearchRequest {
+                    view: SearchView::Trash,
+                    sort: Sort {
+                        field: SortField::Trashed,
+                        direction,
+                    },
+                    ..request(ParsedTagSearch::default())
+                },
+            )
+        };
+
+        assert_eq!(trashed(SortDirection::Desc), vec!["flat", "later", "heavy"]);
+        assert_eq!(trashed(SortDirection::Asc), vec!["heavy", "later", "flat"]);
     }
 
     /// The area, as the lifted `sortImages` compared it — not either edge, and

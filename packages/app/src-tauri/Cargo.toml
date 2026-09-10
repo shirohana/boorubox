@@ -37,6 +37,31 @@ axum = { version = "0.8", features = ["multipart"] }
 # dialog runs on the thread that owns the UI.
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "sync"] }
 tower = "0.5"
+# `time` turns `zip::DateTime::try_from(time::PrimitiveDateTime)` on, so an
+# export entry's mtime can be the image's `captured_at` (selection-and-bulk,
+# "Export" human update) instead of the crate's 1980-01-01 default; `time`
+# itself is already in the tree (pulled in transitively, e.g. by `chrono`),
+# so this names a feature rather than adding a new dependency.
+zip = { version = "8", default-features = false, features = ["time"] }
+time = { version = "0.3", default-features = false }
+# The auto-tag rules' regular-expression engine (`auto-tag-rules` design D6).
+regex = "1"
+# The OS credential store the booru API key lives in (`booru-sites` design
+# D7), never `settings.json` or the library file. Only the two target
+# platforms' native backends (§6 is macOS + Windows): no Linux backend, so a
+# CI box with no keychain fails loudly if it ever reaches the real store
+# rather than silently degrading — no test should, since `Credentials` is a
+# trait for exactly this reason (`booru-upload` design D7).
+keyring = { version = "3", default-features = false, features = ["apple-native", "windows-native"] }
+# The booru HTTP client (`booru-upload` design D4). `default-tls` is platform
+# TLS (native-tls), deliberately not `rustls` + bundled roots: a self-hosted
+# instance's certificate is one the machine has already been told to trust,
+# and bundled roots would reject it with no way to fix it from inside the app.
+reqwest = { version = "0.12", features = ["multipart", "json", "default-tls"] }
+# Danbooru keys posts by the file's MD5; the upload asks for it before sending
+# the file, because a duplicate is otherwise merged into the original post
+# rather than refused (`booru-upload` design D12).
+md-5 = "0.10"
 
 [dev-dependencies]
 http-body-util = "0.1"
@@ -47,6 +72,11 @@ tempfile = "3"
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 # `util` brings ServiceExt::oneshot, which drives the router in http tests.
 tower = { version = "0.5", features = ["util"] }
+# The mocked booru the upload client's tests run against (`booru-upload`
+# design D14): async-first, and each `MockServer` binds its own random port
+# with no global registry, so the poll tests — the slow ones — still run in
+# parallel under `cargo test`'s default scheduling.
+wiremock = "0.6.5"
 
 # https://tauri.app/concept/size/#cargo-configuration
 [profile.release]

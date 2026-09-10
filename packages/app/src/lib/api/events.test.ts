@@ -1,6 +1,12 @@
 // @vitest-environment jsdom
 
-import type { CaptureMeta, CaptureWithdrawn, ImageRecord, ImportProgress } from '@boorubox/shared'
+import type {
+  CaptureMeta,
+  CaptureWithdrawn,
+  ExportProgress,
+  ImageRecord,
+  ImportProgress,
+} from '@boorubox/shared'
 import { emit } from '@tauri-apps/api/event'
 import { clearMocks, mockIPC } from '@tauri-apps/api/mocks'
 import { afterEach, expect, it, vi } from 'vitest'
@@ -8,11 +14,15 @@ import {
   CAPTURE_PENDING_EVENT,
   CAPTURE_STORED_EVENT,
   CAPTURE_WITHDRAWN_EVENT,
+  EXPORT_PROGRESS_EVENT,
   IMPORT_PROGRESS_EVENT,
   onCapturePending,
   onCaptureStored,
   onCaptureWithdrawn,
+  onExportProgress,
   onImportProgress,
+  onRulesProgress,
+  RULES_PROGRESS_EVENT,
 } from './events'
 
 afterEach(() => {
@@ -71,6 +81,28 @@ it('hands the subscriber the capture that was announced', async () => {
   await emit(CAPTURE_PENDING_EVENT, meta)
 
   expect(handler).toHaveBeenCalledWith(meta)
+})
+
+it('hands the subscriber the export progress payload, unwrapped', async () => {
+  mockIPC(() => {}, { shouldMockEvents: true })
+  const handler = vi.fn()
+  const progress: ExportProgress = { done: 2, total: 5 }
+
+  await onExportProgress(handler)
+  await emit(EXPORT_PROGRESS_EVENT, progress)
+
+  expect(handler).toHaveBeenCalledWith(progress)
+})
+
+it('hands the subscriber the rules-run progress payload, unwrapped', async () => {
+  mockIPC(() => {}, { shouldMockEvents: true })
+  const handler = vi.fn()
+  const progress: ExportProgress = { done: 12, total: 400 }
+
+  await onRulesProgress(handler)
+  await emit(RULES_PROGRESS_EVENT, progress)
+
+  expect(handler).toHaveBeenCalledWith(progress)
 })
 
 it('hands the subscriber the announcement that was withdrawn, with its reason', async () => {

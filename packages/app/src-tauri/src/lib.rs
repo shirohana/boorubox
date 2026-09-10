@@ -1,16 +1,21 @@
+pub mod booru;
 pub mod commands;
 pub mod db;
 pub mod error;
+pub mod export;
 pub mod http;
 pub mod import;
 pub mod ingest;
 pub mod library;
 pub mod maintenance;
 pub mod model;
+pub mod notes;
 pub mod query;
+pub mod rules;
 pub mod settings;
 pub mod tags;
 pub mod thumbs;
+pub mod trash;
 
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
@@ -34,6 +39,12 @@ pub struct AppState {
     /// The running listener's off switch, so the port can be changed without a
     /// relaunch (design D6). `None` whenever nothing is listening.
     pub listener_shutdown: Mutex<Option<http::ListenerHandle>>,
+    /// The OS credential store behind `booru::credentials::Credentials`
+    /// (`booru-upload` design D7). Built once here rather than per call:
+    /// `KeyringCredentials` itself has no state, but a trait object is what
+    /// lets `test_support::mock_app` swap in an in-memory store, so no test
+    /// ever reaches a real keychain.
+    pub credentials: Arc<dyn booru::credentials::Credentials>,
 }
 
 impl Default for AppState {
@@ -45,6 +56,7 @@ impl Default for AppState {
             settings: Mutex::new(Settings::default()),
             listener: Mutex::new(ListenerStatus::default()),
             listener_shutdown: Mutex::new(None),
+            credentials: Arc::new(booru::credentials::KeyringCredentials),
         }
     }
 }
@@ -124,14 +136,37 @@ pub fn run() {
             commands::set_theme,
             commands::set_grid_tile_size,
             commands::search,
+            commands::search_ids,
             commands::tag_counts,
             commands::update_tags,
             commands::set_rating,
             commands::tag_suggestions,
             commands::image_counts,
-            commands::drop_image_record,
             commands::thumbnail_path,
             commands::import_paths,
+            commands::bulk_update_tags,
+            commands::bulk_set_rating,
+            commands::selection_tag_counts,
+            commands::export_zip,
+            commands::trash_images,
+            commands::restore_images,
+            commands::delete_forever,
+            commands::empty_trash,
+            commands::trash_count,
+            commands::rules_list,
+            commands::rules_upsert,
+            commands::rules_delete,
+            commands::rules_run,
+            commands::rules_export,
+            commands::rules_import,
+            commands::note_get,
+            commands::note_set,
+            commands::set_notes_collapsed,
+            commands::booru_site_list,
+            commands::booru_site_save,
+            commands::booru_site_delete,
+            commands::booru_site_test,
+            commands::booru_upload,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
@@ -166,11 +201,22 @@ fn open_remembered_library_and_listen(app: &tauri::App) {
 /// test wherever it wants an `AppHandle`.
 #[cfg(test)]
 pub mod test_support {
+    use std::sync::Arc;
+
     use tauri::test::{MockRuntime, mock_builder, mock_context, noop_assets};
 
     use crate::AppState;
+    use crate::booru::credentials::{Credentials, InMemoryCredentials};
 
+    /// An in-memory credential store, never the real keychain (`booru-upload`
+    /// design D7's "no test touches a real keychain"). Use
+    /// [`mock_app_with_credentials`] for a test that needs a specific store —
+    /// a refusing one, or one pre-loaded with a key.
     pub fn mock_app() -> tauri::App<MockRuntime> {
+        mock_app_with_credentials(Arc::new(InMemoryCredentials::default()))
+    }
+
+    pub fn mock_app_with_credentials(credentials: Arc<dyn Credentials>) -> tauri::App<MockRuntime> {
         // The mock context carries no identifier, and every app directory is the
         // platform root joined with it — so a store opened here would land on
         // the real `settings.json` and overwrite the user's own. Joining an
@@ -182,7 +228,10 @@ pub mod test_support {
 
         mock_builder()
             .plugin(tauri_plugin_store::Builder::new().build())
-            .manage(AppState::default())
+            .manage(AppState {
+                credentials,
+                ..AppState::default()
+            })
             // Managed so the folder outlives every store the app opens and is
             // deleted with the app.
             .manage(config_dir)

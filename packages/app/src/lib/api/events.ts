@@ -1,4 +1,10 @@
-import type { CaptureMeta, CaptureWithdrawn, ImageRecord, ImportProgress } from '@boorubox/shared'
+import type {
+  CaptureMeta,
+  CaptureWithdrawn,
+  ExportProgress,
+  ImageRecord,
+  ImportProgress,
+} from '@boorubox/shared'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 
 /** The event `import_paths` emits while it runs (design D12). */
@@ -12,6 +18,29 @@ export function onImportProgress(
   handler: (progress: ImportProgress) => void,
 ): Promise<UnlistenFn> {
   return listen<ImportProgress>(IMPORT_PROGRESS_EVENT, (event) => handler(event.payload))
+}
+
+/** The event `export_zip` emits once per id while it runs (design D13). */
+export const EXPORT_PROGRESS_EVENT = 'export:progress'
+
+/** Subscribes to export progress, mirroring `onImportProgress`. */
+export function onExportProgress(
+  handler: (progress: ExportProgress) => void,
+): Promise<UnlistenFn> {
+  return listen<ExportProgress>(EXPORT_PROGRESS_EVENT, (event) => handler(event.payload))
+}
+
+/**
+ * The event `rules_run` emits while it runs, the same `{ done, total }` shape
+ * as `EXPORT_PROGRESS_EVENT` (`auto-tag-rules` design D12).
+ */
+export const RULES_PROGRESS_EVENT = 'rules:progress'
+
+/** Subscribes to a rules run's progress, mirroring `onExportProgress`. */
+export function onRulesProgress(
+  handler: (progress: ExportProgress) => void,
+): Promise<UnlistenFn> {
+  return listen<ExportProgress>(RULES_PROGRESS_EVENT, (event) => handler(event.payload))
 }
 
 /**

@@ -112,9 +112,62 @@ const SCHEMA_V3: &str = r"
 ALTER TABLE images ADD COLUMN file_modified_at INTEGER;
 ";
 
+/// Schema v4 (`auto-tag-rules` design D1). This change owns v4, not v3: v1 is
+/// `phase-1-app-mvp`, v2 is `bridge-extension` (`adapter_json`), and
+/// `browse-polish` already took v3 (`file_modified_at`) before this change was
+/// implemented — the design's sketch named v3, written before that shipped.
+///
+/// `rules.id` is `TEXT` because rule ids come from `uuid::Uuid::new_v4()`, the
+/// same as image ids, and because the JSON import/export shape carries string
+/// ids (design D10). No index on either table: `rules` holds tens of rows and
+/// every read is "all of them", and `notes` is one row by its own `CHECK`.
+///
+/// `rules.tags_json` is a document, not a value ever compared with `=` — named
+/// `_json` for the reason `adapter_json` was (schema v2's comment).
+const SCHEMA_V4: &str = r"
+CREATE TABLE rules (
+    id         TEXT PRIMARY KEY,
+    name       TEXT NOT NULL,
+    pattern    TEXT NOT NULL,
+    is_regex   INTEGER NOT NULL,
+    tags_json  TEXT NOT NULL,
+    enabled    INTEGER NOT NULL,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+);
+
+CREATE TABLE notes (
+    id         INTEGER PRIMARY KEY CHECK (id = 1),
+    content    TEXT NOT NULL,
+    updated_at INTEGER NOT NULL
+);
+";
+
+/// Schema v5 (`booru-upload` design D1). This change owns v5, not the v4 its
+/// own design doc sketched before landing order was known: v1 is
+/// `phase-1-app-mvp`, v2 is `bridge-extension` (`adapter_json`), v3 is
+/// `browse-polish` (`file_modified_at`), and v4 is `auto-tag-rules` (`rules`,
+/// `notes`) — `tags-and-ratings` landed between them needing no migration of
+/// its own, so this is the fifth entry, not the fourth.
+///
+/// No `REFERENCES` to `images`: design D2 spells out why `posts.site` already
+/// holds no foreign key to this table either — a post record must outlive the
+/// site it was made against, and `base_url UNIQUE` alone is what "two sites
+/// SHALL NOT share a base address" (`booru-sites`) needs enforced in SQL.
+const SCHEMA_V5: &str = r"
+CREATE TABLE booru_sites (
+    id         TEXT PRIMARY KEY,
+    name       TEXT NOT NULL,
+    base_url   TEXT NOT NULL UNIQUE,
+    username   TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+);
+";
+
 /// One entry per schema version, applied in order. Appending is the only way to
 /// change the schema: `user_version` counts how many of these have run.
-const MIGRATIONS: &[&str] = &[SCHEMA_V1, SCHEMA_V2, SCHEMA_V3];
+const MIGRATIONS: &[&str] = &[SCHEMA_V1, SCHEMA_V2, SCHEMA_V3, SCHEMA_V4, SCHEMA_V5];
 
 /// Open (creating if needed) the library database with the pragmas D2 fixes,
 /// migrate it to the current schema, and register the SQL functions the query
@@ -228,6 +281,12 @@ mod tests {
             column_names(&conn, "images").contains(&"file_modified_at".to_string()),
             "schema v3 did not add file_modified_at"
         );
+        for expected in ["rules", "notes", "booru_sites"] {
+            assert!(
+                names.contains(&expected.to_string()),
+                "missing table {expected}: {names:?}"
+            );
+        }
     }
 
     /// A library written by the shipped v1 build has to reach the current
@@ -303,6 +362,83 @@ mod tests {
             "an existing row reads the new column as NULL"
         );
         assert_eq!(fts_matches(&conn, "kyoto"), vec!["a".to_string()]);
+    }
+
+    /// A library written after `browse-polish` shipped (v3, no `rules` or
+    /// `notes` tables) has to reach v4 with its rows intact — `auto-tag-rules`
+    /// adds nothing to `images`, only the two new tables.
+    #[test]
+    fn a_v3_library_migrates_to_v4_keeping_its_rows() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("library.sqlite");
+
+        let conn = Connection::open(&path).unwrap();
+        conn.execute_batch(SCHEMA_V1).unwrap();
+        conn.execute_batch(SCHEMA_V2).unwrap();
+        conn.execute_batch(SCHEMA_V3).unwrap();
+        conn.pragma_update(None, "user_version", 3i64).unwrap();
+        insert_bare_image(&conn, "a", "sunset over kyoto");
+        drop(conn);
+
+        let conn = open(&path).unwrap();
+
+        let version: i64 = conn
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, MIGRATIONS.len() as i64);
+        for expected in ["rules", "notes"] {
+            assert!(table_names(&conn).contains(&expected.to_string()));
+        }
+        assert_eq!(fts_matches(&conn, "kyoto"), vec!["a".to_string()]);
+    }
+
+    /// A library written after `auto-tag-rules` shipped (v4, no `booru_sites`
+    /// table) has to reach v5 with its rows intact — `booru-upload` adds
+    /// nothing to any existing table, only this one.
+    #[test]
+    fn a_v4_library_migrates_to_v5_keeping_its_rows() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("library.sqlite");
+
+        let conn = Connection::open(&path).unwrap();
+        conn.execute_batch(SCHEMA_V1).unwrap();
+        conn.execute_batch(SCHEMA_V2).unwrap();
+        conn.execute_batch(SCHEMA_V3).unwrap();
+        conn.execute_batch(SCHEMA_V4).unwrap();
+        conn.pragma_update(None, "user_version", 4i64).unwrap();
+        insert_bare_image(&conn, "a", "sunset over kyoto");
+        drop(conn);
+
+        let conn = open(&path).unwrap();
+
+        let version: i64 = conn
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, MIGRATIONS.len() as i64);
+        assert!(table_names(&conn).contains(&"booru_sites".to_string()));
+        assert_eq!(fts_matches(&conn, "kyoto"), vec!["a".to_string()]);
+    }
+
+    #[test]
+    fn a_second_row_in_notes_is_refused() {
+        let (_dir, conn) = temp_db();
+        conn.execute(
+            "INSERT INTO notes (id, content, updated_at) VALUES (1, 'first', 0)",
+            [],
+        )
+        .unwrap();
+
+        let error = conn
+            .execute(
+                "INSERT INTO notes (id, content, updated_at) VALUES (2, 'second', 0)",
+                [],
+            )
+            .unwrap_err();
+
+        assert!(
+            error.to_string().contains("CHECK"),
+            "expected a CHECK constraint failure, got {error}"
+        );
     }
 
     #[test]

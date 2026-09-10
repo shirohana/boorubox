@@ -76,6 +76,22 @@ export interface StatusResponse {
   imageCount: number
 }
 
+/**
+ * One recorded post: an image has been uploaded to `site` (a `BooruSite.id`,
+ * `booru-upload` design D2 — a stable slug, not a foreign key) and exists
+ * there as `remoteId`. The address is computed from the site's `baseUrl`
+ * (`<baseUrl>/posts/<remoteId>`), never stored, so there is one source of
+ * truth for where a post lives. The record outlives the site's own
+ * configuration: with no matching `BooruSite`, `posted-label` shows `site`
+ * itself and omits the link.
+ */
+export interface PostRef {
+  site: string
+  remoteId: string
+  /** Epoch milliseconds. */
+  postedAt: number
+}
+
 /** One row of the library, as the webview sees it. */
 export interface ImageRecord {
   id: string
@@ -105,6 +121,11 @@ export interface ImageRecord {
   deletedAt: number | null
   /** The file under `images/` was not there at the last check. */
   missing: boolean
+  /**
+   * Where this image has been posted, one entry per site (`booru-upload`
+   * design D5). Empty for an image never posted anywhere.
+   */
+  posts: PostRef[]
 }
 
 export interface TagCountFilter {
@@ -136,8 +157,12 @@ export interface ParsedTagSearch {
   excludeAccounts: string[]
 }
 
-/** What the four sorts compare. Rust maps each to a fixed column expression. */
-export type SortField = 'captured' | 'updated' | 'size' | 'dimensions'
+/**
+ * What the sorts compare. Rust maps each to a fixed column expression.
+ * `trashed` orders by the time of trashing and is only offered in the trash
+ * view: on a library row that time is NULL.
+ */
+export type SortField = 'captured' | 'updated' | 'size' | 'dimensions' | 'trashed'
 
 export type SortDirection = 'asc' | 'desc'
 
@@ -167,7 +192,12 @@ export interface SearchRequest {
   query: ParsedTagSearch
   /** Free text matched against page title and URLs through FTS5. */
   text: string
-  includeDeleted: boolean
+  /**
+   * Which set of images the request draws from: the library (deleted images
+   * excluded) or the trash (deleted images only, `trash` design D1, D2). Never
+   * both — nothing in the app shows the library and the trash at once.
+   */
+  view: 'library' | 'trash'
   sort: Sort
   group: GroupBy
   limit: number
@@ -185,6 +215,38 @@ export interface SearchResult {
 export interface TagCount {
   name: string
   count: number
+}
+
+/**
+ * What `exportZip` answers with (`selection-and-bulk` design D11): how many of
+ * the selection made it into the archive, and which ids did not because their
+ * file was gone from `images/` by the time it was copied.
+ */
+export interface ExportReport {
+  path: string
+  written: number
+  missing: string[]
+}
+
+/**
+ * Payload of the `export:progress` event, emitted once per id including the
+ * ones left out — so the last tick's `done` always equals `total`, mirroring
+ * `ImportProgress` (design D13).
+ */
+export interface ExportProgress {
+  done: number
+  total: number
+}
+
+/**
+ * What `deleteForever` and `emptyTrash` answer with (`trash` design D4, D7):
+ * how many images were permanently removed, and the full path of every file
+ * that could not be unlinked — named on screen rather than swept, since the
+ * record is gone either way and there is no unlink left to retry.
+ */
+export interface DeleteReport {
+  deleted: number
+  filesLeft: string[]
 }
 
 export interface RatingCounts {
@@ -242,6 +304,13 @@ export type Theme = 'system' | 'light' | 'dark'
 export interface AppSettings {
   theme: Theme
   gridTileSize: number
+  /**
+   * Whether the sidebar's notes panel is folded away (`notes` design D13).
+   * A preference held for months rather than a view toggle, which is why it
+   * is here and not session state — that decision reverses app-shell's, and
+   * D13 records why the old reading was right until the panel existed.
+   */
+  notesCollapsed: boolean
 }
 
 /**
@@ -282,3 +351,169 @@ export interface ImportProgress {
   skipped: number
   failed: number
 }
+
+/**
+ * A named pattern and the tags it adds (`auto-tag-rules` design D1, D2). Rules
+ * live in the library, not `settings.json`: library policy travels with the
+ * folder. `tags` is a rule's payload, not tag rows — it is never searched,
+ * counted or joined, only written later (design D2).
+ */
+export interface Rule {
+  id: string
+  name: string
+  pattern: string
+  isRegex: boolean
+  tags: string[]
+  enabled: boolean
+  /** Epoch milliseconds. */
+  createdAt: number
+  updatedAt: number
+}
+
+/** What `rules_upsert` takes: `id` absent creates, present edits (design D6). */
+export interface RuleInput {
+  id?: string
+  name: string
+  pattern: string
+  isRegex: boolean
+  tags: string[]
+  enabled: boolean
+}
+
+/**
+ * One row of the rules list: the rule plus its pattern's validity, compiled at
+ * read time and never stored (design D6) — a regular expression the engine
+ * cannot use is reported here rather than dropped.
+ */
+export interface RuleListEntry {
+  rule: Rule
+  patternError: string | null
+}
+
+/** What `rules_import` answers with (design D10). */
+export interface RulesImportReport {
+  imported: number
+  skipped: number
+}
+
+/**
+ * One rule's outcome in a `rules_run`: how many images it matched, in the
+ * `rules` half of {@link RulesRunReport}, or its `patternError` in the
+ * `invalid` half — the same shape serves both (design D9).
+ */
+export interface RuleRunCount {
+  id: string
+  name: string
+  matched: number
+  patternError?: string
+}
+
+/**
+ * What `rules_run` answers with: how many images were examined and changed,
+ * and each rule's own count, invalid ones named separately with their reason
+ * rather than dropped (design D9).
+ */
+export interface RulesRunReport {
+  examined: number
+  changed: number
+  rules: RuleRunCount[]
+  invalid: RuleRunCount[]
+}
+
+/**
+ * The library's one free-text scratchpad (`notes` design D3). A library that
+ * has never been written to reads as an empty note, never an error.
+ */
+export interface Note {
+  content: string
+  updatedAt: number
+}
+
+/**
+ * A booru this library posts to (`booru-upload` design D1, D2, `booru-sites`).
+ * Lives in `library.sqlite`; the API key never does — it goes to the OS
+ * credential store, keyed on `<host>/<username>` (design D7), and is never
+ * part of this type.
+ *
+ * `id` is a slug derived once from `baseUrl`'s host at creation and never
+ * changes afterwards (design D2), even if `baseUrl` is edited later: it is
+ * what `PostRef.site` and the `posts` table hold, and it must outlive the row
+ * it was derived from.
+ */
+export interface BooruSite {
+  id: string
+  name: string
+  baseUrl: string
+  username: string
+  createdAt: number
+  updatedAt: number
+}
+
+/**
+ * What `booru_site_test` answers with (design D8): the connection test is
+ * judged by status code alone, never by the response body, so a self-hosted
+ * fork's own profile shape never fails a test that a real Danbooru would pass.
+ */
+export type BooruConnectionTest
+  = | { status: 'connected' }
+    | { status: 'credentialRejected' }
+  /** The transport's own reason, or the status the site answered with. */
+    | { status: 'unreachable', reason: string }
+
+/**
+ * The upload form's values, prefilled per `booru-upload` design D10 and
+ * editable before sending. `rating` is never unset here: the form (webview
+ * side) refuses to send until one is chosen, so by the time this crosses IPC
+ * it is always one of the four letters — an unrated image simply starts the
+ * form with nothing preselected.
+ */
+export interface BooruUploadForm {
+  /** Space-joined at the request builder, not here — see `create_post`. */
+  tags: string[]
+  rating: Rating
+  /** The page the image was captured from, or the image's own address. */
+  source: string
+  /** Empty when no rule matched the page address (design D11). */
+  artist: string
+  commentaryTitle: string
+  commentaryBody: string
+}
+
+/**
+ * The step an upload sequence failed at (design D6): `authenticate` is the
+ * booru itself rejecting the credential (a 401/403 on any of the four calls),
+ * never a local credential-store failure — that fails the command outright
+ * (`AppError`) before any request is sent (`booru-sites` design D7).
+ */
+export type UploadStep = 'authenticate' | 'createUpload' | 'awaitProcessing' | 'createPost' | 'commentary'
+
+/**
+ * Which step failed, the booru's own message where it gave one (design D6 —
+ * never a paraphrase), and the remote reference a failure can point at: the
+ * upload id when processing times out, the post id when only the commentary
+ * fails.
+ */
+export interface UploadStepError {
+  step: UploadStep
+  message: string
+  remoteRef?: string
+}
+
+/**
+ * Whether the optional artist commentary call ran, and how it went. Its own
+ * failure is not the upload's failure (design D6): the post already exists,
+ * so `BooruUploadOutcome` still reports `Posted` with this as a warning.
+ */
+export type CommentaryOutcome
+  = | { status: 'skipped' }
+    | { status: 'applied' }
+    | { status: 'failed', message: string }
+
+/**
+ * What `booru_upload` answers with. Only `Posted` ever comes with a `PostRef`
+ * — nothing is recorded against the image for any `Failed` outcome, however
+ * far the sequence got (design D5).
+ */
+export type BooruUploadOutcome
+  = | { outcome: 'posted', post: PostRef, commentary: CommentaryOutcome }
+    | { outcome: 'failed', error: UploadStepError }

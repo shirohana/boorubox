@@ -56,8 +56,15 @@
   $effect(() => () => clearTimeout(timer))
 </script>
 
+<!--
+  The floor, not `min-w-0`: the fields are `flex-1` on a zero basis, so with no
+  floor they were the first thing in the band to give and at a half-screen
+  window with a selection they shrank to two empty rings. The selection row is
+  the one that gives instead (it scrolls). Two fields share the floor, so each
+  keeps about enough for a word.
+-->
 <form
-  class="flex min-w-0 flex-1 items-center gap-2"
+  class="flex min-w-56 flex-1 items-center gap-2"
   onsubmit={(event) => {
     event.preventDefault()
     searchNow()

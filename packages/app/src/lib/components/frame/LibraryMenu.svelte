@@ -12,6 +12,7 @@
     closeLibrary,
     errorText,
     library,
+    notes,
     openLibrary,
     pickLibrary,
     recentLibraries,
@@ -55,6 +56,11 @@
 
   async function run(action: () => Promise<void>) {
     try {
+      // Every action here can put a different library — or none — behind the
+      // note panel, and `note_set` writes to whichever is open when it lands.
+      // Flushing first is what makes "typed and switched away" survive (`notes`
+      // design D14).
+      await notes.flush()
       await action()
     } catch (cause) {
       onerror(errorText(cause))
