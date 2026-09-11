@@ -58,3 +58,37 @@ gated on the legacy repo shipping Phase 0.
 
 `mise.toml` is the only tool pin. Versions shared across packages live in the
 `catalog:` of `pnpm-workspace.yaml`.
+
+The app's own version lives in `packages/app/src-tauri/Cargo.toml` and nowhere else.
+`tauri.conf.json` carries no `version` key on purpose: tauri falls back to Cargo.toml when
+it is absent, and `VERSION` (`CARGO_PKG_VERSION`, what `/status` and `library_status`
+report) has to be the same string the updater finds in `latest.json`. Two keys can drift,
+and the drift shows up as an update that is offered forever or never.
+
+## Releases
+
+Tagging `v<the Cargo.toml version>` runs `.github/workflows/release.yml`: macOS and Windows
+bundles, the bridge extension as a zip, `latest.json` and its signatures, drafted first and
+published once every platform has uploaded. The release job fails if the tag and the
+Cargo.toml version disagree.
+
+Bundles are signed for the *updater* (minisign, `plugins.updater.pubkey` in
+`tauri.conf.json`, private half in the repo's Actions secrets) but not for the OS: no Apple
+Developer ID, no Authenticode, so first launch shows an unidentified-developer warning on
+macOS and SmartScreen on Windows. Deferred until a production release, not forgotten.
+
+Windows builds NSIS (`setup.exe`) only, not MSI: one file to tell a user to install, and
+WiX rejects version strings the updater is otherwise happy with.
+
+`mise run build:app` now needs the signing key, because a committed `pubkey` with no private
+key is a hard error ("A public key has been found, but no private key"), not a warning — the
+bundler refuses to emit an updater artifact it cannot sign. Export both before a local bundle
+build:
+
+```
+export TAURI_SIGNING_PRIVATE_KEY=$(cat ~/.tauri/boorubox.key)
+export TAURI_SIGNING_PRIVATE_KEY_PASSWORD=...
+```
+
+To check only that the app compiles, `pnpm --filter @boorubox/app tauri build --no-bundle`
+skips bundling and needs no key.

@@ -1,0 +1,46 @@
+# Node, pnpm and Rust at the versions `mise.toml` pins, without mise itself.
+#
+# mise-action is the obvious way to do this and is deliberately not used: its
+# Windows installation is a known-broken path (jdx/mise-action, "mise
+# installation on windows is faulty"), and the Windows bundle is the one this
+# workflow exists to produce. Reading the pins out of `mise.toml` here keeps
+# that file the only place a version is written, which is the rule
+# mise-action would otherwise have enforced for us.
+name: Toolchain
+description: Node, pnpm and optionally Rust, at the versions mise.toml pins
+
+inputs:
+  rust:
+    description: Install the Rust toolchain as well
+    default: 'false'
+
+runs:
+  using: composite
+  steps:
+    - id: pins
+      shell: bash
+      run: |
+        for tool in node pnpm rust; do
+          version=$(grep -m1 "^$tool = " mise.toml | cut -d'"' -f2)
+          if [ -z "$version" ]; then
+            echo "mise.toml pins no version for $tool"
+            exit 1
+          fi
+          echo "$tool=$version" >> "$GITHUB_OUTPUT"
+        done
+
+    # pnpm before node: `setup-node` looks for the package manager it is asked
+    # to cache for while it runs, not later.
+    - uses: pnpm/action-setup@v6.1.0
+      with:
+        version: ${{ steps.pins.outputs.pnpm }}
+
+    - uses: actions/setup-node@v7.0.0
+      with:
+        node-version: ${{ steps.pins.outputs.node }}
+        cache: pnpm
+
+    - if: inputs.rust == 'true'
+      uses: actions-rust-lang/setup-rust-toolchain@v2.0.0
+      with:
+        toolchain: ${{ steps.pins.outputs.rust }}

@@ -1,0 +1,122 @@
+# Cuts a release from a `v*` tag: the app for macOS and Windows, the bridge
+# extension as a zip, and the `latest.json` the updater will read.
+#
+# Draft first, publish last, on purpose: `latest.json` names one artifact per
+# platform, and each build job rewrites it as it uploads. A release that goes
+# public before the last job lands would advertise an update the other platform
+# cannot download.
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  draft:
+    runs-on: ubuntu-latest
+    outputs:
+      release_id: ${{ steps.create.outputs.result }}
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: ./.github/actions/toolchain
+      - run: pnpm install --frozen-lockfile
+
+      # A tag that disagrees with the app's own version ships a `latest.json`
+      # advertising a version no install will ever report, and the updater then
+      # either never offers the update or offers it forever. Cheaper to stop here.
+      - name: The tag and the app version agree
+        run: |
+          version=$(grep -m1 '^version = ' packages/app/src-tauri/Cargo.toml | cut -d'"' -f2)
+          if [ "v$version" != "$GITHUB_REF_NAME" ]; then
+            echo "tag $GITHUB_REF_NAME does not match Cargo.toml version $version"
+            exit 1
+          fi
+
+      # The bridge extension is not a Tauri bundle, so it rides along as its own
+      # asset: unzip, then Load unpacked in Chrome. The app's Origin check is a
+      # `chrome-extension://` prefix match, so the id Chrome assigns an unpacked
+      # folder does not have to be pinned anywhere.
+      - name: Build the bridge extension
+        run: pnpm --filter @boorubox/extension build
+      - name: Zip the bridge extension
+        run: cd packages/extension/dist && zip -r "$GITHUB_WORKSPACE/boorubox-extension-$GITHUB_REF_NAME.zip" .
+
+      - uses: actions/github-script@v9.0.0
+        id: create
+        with:
+          script: |
+            const tag = context.ref.replace('refs/tags/', '')
+            const { data } = await github.rest.repos.createRelease({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              tag_name: tag,
+              name: `BooruBox ${tag}`,
+              body: 'Pre-release. Unsigned: macOS shows an unidentified-developer warning, Windows shows SmartScreen.',
+              draft: true,
+              prerelease: true,
+            })
+            return data.id
+
+      - uses: actions/github-script@v9.0.0
+        with:
+          script: |
+            const fs = require('fs')
+            const tag = context.ref.replace('refs/tags/', '')
+            const name = `boorubox-extension-${tag}.zip`
+            await github.rest.repos.uploadReleaseAsset({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              release_id: ${{ steps.create.outputs.result }},
+              name,
+              data: fs.readFileSync(name),
+            })
+
+  build:
+    needs: draft
+    strategy:
+      # One platform's failure must not throw away the other's bundle: the draft
+      # is still there to inspect, and the failing job can be re-run alone.
+      fail-fast: false
+      matrix:
+        platform: [macos-latest, windows-latest]
+    runs-on: ${{ matrix.platform }}
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: ./.github/actions/toolchain
+        with:
+          rust: 'true'
+      - run: pnpm install --frozen-lockfile
+      - uses: tauri-apps/tauri-action@v1.0.0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Signs every updater artifact. Without these the build still produces
+          # bundles, but `latest.json` carries no signature and the updater
+          # refuses the download.
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          releaseId: ${{ needs.draft.outputs.release_id }}
+          projectPath: packages/app
+          tauriScript: pnpm tauri
+          # Windows builds NSIS only (see `bundle.targets`), so the updater's
+          # Windows entry has to point at the setup.exe.
+          updaterJsonPreferNsis: true
+
+  publish:
+    # `draft` too, not just `build`: the release id this job flips comes from it.
+    needs: [draft, build]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/github-script@v9.0.0
+        with:
+          script: |
+            await github.rest.repos.updateRelease({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              release_id: ${{ needs.draft.outputs.release_id }},
+              draft: false,
+              prerelease: true,
+            })
