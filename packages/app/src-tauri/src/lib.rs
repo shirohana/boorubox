@@ -12,8 +12,10 @@ pub mod maintenance;
 pub mod model;
 pub mod notes;
 pub mod query;
+pub mod recover;
 pub mod rules;
 pub mod settings;
+pub mod sidecar;
 pub mod tags;
 pub mod thumbs;
 pub mod trash;
@@ -48,6 +50,14 @@ pub struct AppState {
     /// run, and `import_pause`/`import_resume`/`import_cancel` are a no-op
     /// with nothing running.
     pub import_control: Mutex<Option<Arc<import::ImportControl>>>,
+    /// The last outcome of `open_into_state`, against whichever path it tried
+    /// (`library-sidecars` design D9): `None` on success, the path and why
+    /// otherwise. `LibraryStatus.damaged_path` reads this rather than
+    /// re-deriving it — repeating the open just to answer a status poll would
+    /// mean a `quick_check` (`db.rs`) on every poll. Written by exactly the
+    /// one function that can change the answer, on both outcomes, so nothing
+    /// else has to remember to clear it.
+    pub open_failure: Mutex<Option<(std::path::PathBuf, OpenFailureKind)>>,
     /// The OS credential store behind `booru::credentials::Credentials`
     /// (`booru-upload` design D7). Built once here rather than per call:
     /// `KeyringCredentials` itself has no state, but a trait object is what
@@ -66,9 +76,25 @@ impl Default for AppState {
             listener: Mutex::new(ListenerStatus::default()),
             listener_shutdown: Mutex::new(None),
             import_control: Mutex::new(None),
+            open_failure: Mutex::new(None),
             credentials: Arc::new(booru::credentials::KeyringCredentials),
         }
     }
+}
+
+/// Which kind of failure `AppState.open_failure` names (`library-sidecars`
+/// design D9): `Corrupt` surfaces as `LibraryStatus.damaged_path`;
+/// `SchemaTooNew` (a folder written by a newer build, `library-recovery`
+/// spec's "A library from a newer build") surfaces as `newer_path`, a slot of
+/// its own — it is not missing, and treating it as such would be wrong and
+/// frightening for a folder sitting right there, but reporting nothing at all
+/// loses the folder entirely; `Other` — a folder that really is gone,
+/// unreadable, or anything else — keeps today's `missing_path` reading.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OpenFailureKind {
+    Corrupt,
+    SchemaTooNew,
+    Other,
 }
 
 impl AppState {
@@ -143,6 +169,7 @@ pub fn run() {
             commands::open_library,
             commands::library_status,
             commands::close_library,
+            commands::rebuild_library,
             commands::recent_libraries,
             commands::forget_recent,
             commands::reveal_library,
@@ -205,11 +232,13 @@ fn open_remembered_library_and_listen(app: &tauri::App) {
     let settings = settings::load(&handle);
 
     if let Some(path) = &settings.library_path {
-        // The path stays in settings whether or not it opened: `library_status`
-        // reports a remembered path with no library open as `missing_path`, and
-        // only picking another replaces it. `ExistingOnly` is what makes that
-        // reachable — creating the folder here would report a healthy empty
-        // library instead of a missing one.
+        // The path stays in settings whether or not it opened, and only picking
+        // another replaces it. The refusal itself is not dropped with the
+        // `Result`: `open_into_state` records it in `AppState.open_failure`, so
+        // `library_status` names this folder as `damaged_path`, `newer_path` or
+        // `missing_path` depending on why it would not open (design D9).
+        // `ExistingOnly` is what makes that reachable — creating the folder here
+        // would report a healthy empty library instead of a missing one.
         let _ = commands::open_into_state(&handle, &state, path, commands::OpenMode::ExistingOnly);
     }
 

@@ -1,12 +1,15 @@
 <script lang="ts">
   // The one confirmation in the app: permanent deletion of images (`trash`
-  // design D7), deleting a rule, removing a booru site, and moving two or more
-  // images to the trash (design D12, amended). They ask the same question in
-  // the same shape — a dialog per caller would be that sentence four times.
-  // The bar for adding a fifth is still high: a confirmation on an act the user
+  // design D7), deleting a rule, removing a booru site, moving two or more
+  // images to the trash (design D12, amended), and rebuilding the library
+  // index (`library-sidecars` design D12). They ask the same question in the
+  // same shape — a dialog per caller would be that sentence five times.
+  // The bar for adding a sixth is still high: a confirmation on an act the user
   // can undo in one click teaches them to dismiss confirmations, and the trash
   // one clears it only on its scale — the count is what a `Cmd A` away from the
-  // whole library does not otherwise say.
+  // whole library does not otherwise say. The rebuild clears it on the same
+  // ground the spec does: it moves the user's database aside, and they are told
+  // it is kept before they are asked.
   import { Button } from '$lib/components/ui/button'
   import * as Dialog from '$lib/components/ui/dialog'
 

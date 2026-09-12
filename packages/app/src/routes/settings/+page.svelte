@@ -1,5 +1,5 @@
 <script lang="ts">
-  import type { Theme } from '@boorubox/shared'
+  import type { RebuildReport, Theme } from '@boorubox/shared'
   import { GRID_TILE_DEFAULT, GRID_TILE_MAX, GRID_TILE_MIN } from '@boorubox/shared'
   import ChevronsUpDownIcon from '@lucide/svelte/icons/chevrons-up-down'
   import {
@@ -7,11 +7,17 @@
     errorText,
     library,
     libraryCounts,
+    librarySwitch,
+    notes,
+    openLibrary,
+    rebuild,
     setListenerPort,
     settings,
     trash,
   } from '$lib/api'
   import BooruSection from '$lib/components/booru/BooruSection.svelte'
+  import ConfirmDialog from '$lib/components/common/ConfirmDialog.svelte'
+  import RebuildStatus from '$lib/components/common/RebuildStatus.svelte'
   import LibraryMenu from '$lib/components/frame/LibraryMenu.svelte'
   import RulesSection from '$lib/components/rules/RulesSection.svelte'
   import { Button } from '$lib/components/ui/button'
@@ -29,6 +35,12 @@
   const libraryPath = $derived(library.status?.libraryPath ?? '')
   const listener = $derived(library.status?.listener ?? null)
   const theme = $derived(settings.current?.theme ?? 'system')
+  // `/settings` is unreachable with no library open (the layout's gate
+  // redirects to `/start`), but the control still checks: nothing here should
+  // offer to rebuild a library that is not the one this screen is describing
+  // (`library-sidecars` task 3.5, "the control is absent with no library
+  // open").
+  const canRebuild = $derived(library.status?.opened === true)
 
   const themes: { value: Theme, label: string }[] = [
     { value: 'system', label: 'System' },
@@ -46,6 +58,11 @@
   // (design D4): `available` replaces Check with an Update control of its
   // own, so there is nothing more for this line to add.
   let checkMessage = $state<string | null>(null)
+  let rebuildConfirmOpen = $state(false)
+  // This screen's own copy of the last rebuild's report: `rebuild.report` is
+  // cleared as soon as the flow ends, so that a folder met as damaged later
+  // never opens the start screen on a report of some other rebuild.
+  let rebuildResult = $state<RebuildReport | null>(null)
 
   // `libraryCounts` (`legacy-bundle-import` design D7) is refreshed by
   // `Sidebar.svelte` on a library switch and on every import run, for both
@@ -107,6 +124,50 @@
     else if (outcome === 'failed') checkMessage = appUpdate.lastCheckError ?? 'The check failed.'
   // 'available': the button below switches to Update, which says the rest.
   }
+
+  /**
+   * Confirmed rebuild of the open library's own index (`library-sidecars`
+   * design D12, spec `library-recovery` "Rebuilding a library that opens").
+   * `rebuild_library` closes the library first, so the note is flushed before
+   * it goes — the same reasoning `LibraryMenu`'s close and switch actions
+   * follow (`notes` design D14).
+   *
+   * The reopen is not conditioned on the rebuild having worked: the command
+   * leaves nothing open either way (design D12), so returning early on a
+   * failure would leave this frame — the sidebar, the counts, the grid behind
+   * it — describing a library Rust has closed, with every command behind it
+   * answering that none is open. A reopen that fails records why in Rust
+   * (design D9), so the refreshed status sends the layout's gate to /start,
+   * where the damaged state offers the rebuild again.
+   */
+  async function confirmRebuild() {
+    rebuildConfirmOpen = false
+    const path = library.status?.libraryPath
+    if (!path) return
+    // A rebuild closes the library first, so it is a swap path like any other
+    // (`library-switching` spec): with an import running it asks before it
+    // cancels, through the one guard every such path goes through.
+    await librarySwitch.guard('close', async () => {
+      error = null
+      rebuildResult = null
+      await notes.flush()
+      const report = await rebuild.run(path)
+      rebuildResult = report
+      error = report ? null : rebuild.error
+      try {
+        library.set(await openLibrary(path))
+      } catch (cause) {
+        // The rebuild's own failure is the one worth reading when there are
+        // two: the reopen failed because of it.
+        error ??= errorText(cause)
+        await library.refresh()
+      }
+      // The store is the start screen's — it reads a report as the outcome of
+      // the rebuild it asked for — and this screen has taken its own copy
+      // above, so nothing is left behind for a later damaged folder to show.
+      rebuild.reset()
+    })
+  }
 </script>
 
 <!-- No toolbar band on this screen, so its background is the drag region (D13). -->
@@ -161,6 +222,56 @@
         </span>
         {trash.count === 1 ? 'image' : 'images'}, not counted above.
       </p>
+
+      {#if canRebuild}
+        <!--
+          `library-sidecars` design D12, spec `library-recovery`: manual, not
+          only for damage — a database can be stale rather than damaged (a
+          sync client resurrecting yesterday's file passes `quick_check`
+          perfectly), and this is the only way back for one.
+        -->
+        <div class="flex flex-wrap items-center justify-between gap-3 border-t border-border pt-4">
+          <div class="min-w-0">
+            <p class="text-sm font-medium">Rebuild library index</p>
+            <p class="text-sm text-muted-foreground">
+              Rebuilds the database from every image's own file. The current database is kept
+              aside, never deleted.
+            </p>
+          </div>
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={rebuild.running}
+            onclick={() => (rebuildConfirmOpen = true)}
+          >
+            {rebuild.running ? 'Rebuilding…' : 'Rebuild library index'}
+          </Button>
+        </div>
+
+      {/if}
+
+      <!--
+        The same progress and the same report the start screen shows (spec
+        `library-recovery`): a 25,000-image rebuild behind a disabled button
+        alone is the screen that "appears stalled", and the name the old
+        database was kept under is only ever said once — here.
+
+        Outside `canRebuild` on purpose: a rebuild that worked but whose reopen
+        did not leaves no library open, so gating the report on one would
+        unmount it at exactly the moment it is worth reading — and the
+        kept-aside name it carries cannot be asked for again. The local
+        `rebuildResult` is this screen's own copy and outlives the store's,
+        which `confirmRebuild` clears.
+      -->
+      {#if rebuild.running || rebuildResult}
+        <div class="flex flex-col gap-2">
+          <RebuildStatus
+            running={rebuild.running}
+            progress={rebuild.progress}
+            report={rebuildResult}
+          />
+        </div>
+      {/if}
     </section>
 
     <section class="flex flex-col gap-4">
@@ -310,3 +421,14 @@
     {/if}
   </div>
 </div>
+
+<ConfirmDialog
+  title="Rebuild the library index?"
+  description="The current database is kept aside, never deleted, under a name the result names.
+    This can take a while for a large library."
+  confirmLabel="Rebuild"
+  destructive={false}
+  open={rebuildConfirmOpen}
+  onclose={() => (rebuildConfirmOpen = false)}
+  onconfirm={() => void confirmRebuild()}
+/>

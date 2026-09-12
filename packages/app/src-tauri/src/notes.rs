@@ -6,6 +6,7 @@ use rusqlite::{Connection, OptionalExtension, params};
 
 use crate::db;
 use crate::error::Result;
+use crate::library::Library;
 use crate::model::Note;
 
 /// The note, or an empty one when the library has never been written to — the
@@ -30,14 +31,19 @@ pub fn get(conn: &Connection) -> Result<Note> {
 /// Write the note, creating the row on the first write. An upsert rather than
 /// an insert-then-update: `id = 1` is the only row there can be, so "does it
 /// exist yet" is not a question any caller should have to ask.
-pub fn set(conn: &Connection, content: &str) -> Result<Note> {
+///
+/// Takes the whole `Library`, not just its connection (`library-sidecars`
+/// design D3): the note is one third of `library.json`, and this is the one
+/// write path for it, rewritten here after the row's own commit.
+pub fn set(library: &Library, content: &str) -> Result<Note> {
     let updated_at = db::now_ms();
-    conn.execute(
+    library.conn.execute(
         "INSERT INTO notes (id, content, updated_at) VALUES (1, ?1, ?2)
          ON CONFLICT (id) DO UPDATE SET content = excluded.content,
                                         updated_at = excluded.updated_at",
         params![content, updated_at],
     )?;
+    crate::sidecar::write_library(&library.paths, &library.conn)?;
     Ok(Note {
         content: content.to_string(),
         updated_at,
@@ -66,7 +72,7 @@ mod tests {
     fn a_note_round_trips() {
         let (_dir, library) = library();
 
-        let written = set(&library.conn, "tags still to add").unwrap();
+        let written = set(&library, "tags still to add").unwrap();
 
         assert_eq!(get(&library.conn).unwrap(), written);
         assert_eq!(written.content, "tags still to add");
@@ -76,9 +82,9 @@ mod tests {
     #[test]
     fn writing_again_replaces_the_note_rather_than_adding_a_row() {
         let (_dir, library) = library();
-        set(&library.conn, "first").unwrap();
+        set(&library, "first").unwrap();
 
-        set(&library.conn, "second").unwrap();
+        set(&library, "second").unwrap();
 
         assert_eq!(get(&library.conn).unwrap().content, "second");
         let rows: i64 = library
@@ -95,10 +101,23 @@ mod tests {
     #[test]
     fn clearing_the_note_leaves_it_empty() {
         let (_dir, library) = library();
-        set(&library.conn, "something").unwrap();
+        set(&library, "something").unwrap();
 
-        set(&library.conn, "").unwrap();
+        set(&library, "").unwrap();
 
         assert_eq!(get(&library.conn).unwrap().content, "");
+    }
+
+    /// `library-sidecars` task 1.10: the note's text is in `library.json`
+    /// after a write.
+    #[test]
+    fn writing_the_note_is_visible_in_library_json() {
+        let (_dir, library) = library();
+
+        set(&library, "tags still to add").unwrap();
+
+        let file =
+            crate::sidecar::read_library(&crate::sidecar::library_path(&library.paths)).unwrap();
+        assert_eq!(file.note.content, "tags still to add");
     }
 }

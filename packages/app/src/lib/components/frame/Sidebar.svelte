@@ -7,7 +7,7 @@
   import Trash2Icon from '@lucide/svelte/icons/trash-2'
   import { resolve } from '$app/paths'
   import { page } from '$app/state'
-  import { imports, library, libraryCounts, trash } from '$lib/api'
+  import { imports, library, libraryCounts, sidecarsBackfill, trash } from '$lib/api'
   import LibraryMenu from '$lib/components/frame/LibraryMenu.svelte'
   import { libraryName } from '$lib/components/frame/library-name'
   import NotesPanel from '$lib/components/notes/NotesPanel.svelte'
@@ -50,11 +50,16 @@
   // `libraryCounts` (`legacy-bundle-import` design D7): the sidebar is mounted
   // for every route with a library open, unlike `LibraryScreen` or `/import`,
   // so this is the one place the reset does not depend on which screen the
-  // switch was made from.
+  // switch was made from. The sidecar catch-up tile is reset here too
+  // (`library-sidecars` design D13, `pending-work` spec "Switching libraries
+  // mid-pass"): Rust stops writing into the folder that was left on its own,
+  // but the webview has no further tick to tell it the tile it was showing no
+  // longer describes the library now open.
   $effect(() => {
     void path
     void trash.refresh()
     imports.dismissAll()
+    sidecarsBackfill.reset()
     void libraryCounts.refresh()
   })
 

@@ -56,6 +56,8 @@ pub fn update_tags(library: &Library, id: &str, tags: &[String]) -> Result<Image
     collect_orphans(&tx, &unlinked)?;
     tx.commit()?;
 
+    // After the commit, never inside it (`library-sidecars` design D4).
+    crate::sidecar::write_one(&library.paths, &library.conn, id)?;
     ingest::require_record(&library.conn, id)
 }
 
@@ -81,6 +83,7 @@ pub fn set_rating(library: &Library, id: &str, rating: Option<&str>) -> Result<I
         return Err(AppError::NotFound(format!("image {id}")));
     }
 
+    crate::sidecar::write_one(&library.paths, &library.conn, id)?;
     ingest::require_record(&library.conn, id)
 }
 
@@ -112,6 +115,8 @@ pub fn bulk_update_tags(
     }
     collect_orphans(&tx, &unlinked)?;
     tx.commit()?;
+
+    crate::sidecar::write_for(&library.paths, &library.conn, ids)?;
     Ok(())
 }
 
@@ -195,6 +200,8 @@ pub fn bulk_set_rating(library: &Library, ids: &[String], rating: Option<&str>) 
         )?;
     }
     tx.commit()?;
+
+    crate::sidecar::write_for(&library.paths, &library.conn, ids)?;
     Ok(())
 }
 
@@ -665,6 +672,21 @@ mod tests {
         );
     }
 
+    /// `library-sidecars` task 1.6: a tag edit and a rating change (through
+    /// the `rating:` metatag) are both visible in the sidecar afterwards, and
+    /// the metatag never lands there as a literal tag.
+    #[test]
+    fn an_edit_rewrites_the_sidecar_with_the_new_tags_and_rating() {
+        let (_dir, library) = library();
+        store(&library, "a", None, &["cat"]);
+
+        edit(&library, "a", &["cat", "rating:s"]);
+
+        let sidecar = crate::sidecar::read(&crate::sidecar::path(&library.paths, "a")).unwrap();
+        assert_eq!(sidecar.tags, vec!["cat".to_string()]);
+        assert_eq!(sidecar.rating.as_deref(), Some("s"));
+    }
+
     #[test]
     fn an_edit_for_an_image_that_is_not_there_changes_nothing() {
         let (_dir, library) = library();
@@ -751,6 +773,22 @@ mod tests {
     }
 
     #[test]
+    fn a_bulk_add_rewrites_all_three_sidecars() {
+        let (_dir, library) = library();
+        let ids = strs(&["a", "b", "c"]);
+        for id in &ids {
+            store(&library, id, None, &[]);
+        }
+
+        bulk_update_tags(&library, &ids, &strs(&["cat", "cute"]), &[]).unwrap();
+
+        for id in &ids {
+            let sidecar = crate::sidecar::read(&crate::sidecar::path(&library.paths, id)).unwrap();
+            assert_eq!(sidecar.tags, vec!["cat".to_string(), "cute".to_string()]);
+        }
+    }
+
+    #[test]
     fn a_bulk_removal_taking_the_last_use_of_a_tag_collects_it() {
         let (_dir, library) = library();
         store(&library, "a", None, &["cat", "solo"]);
@@ -805,6 +843,22 @@ mod tests {
 
         assert_eq!(rating_of(&library, "a"), None);
         assert_eq!(rating_of(&library, "b"), None);
+    }
+
+    #[test]
+    fn a_bulk_rating_rewrites_every_touched_sidecar() {
+        let (_dir, library) = library();
+        let ids = strs(&["a", "b"]);
+        for id in &ids {
+            store(&library, id, None, &[]);
+        }
+
+        bulk_set_rating(&library, &ids, Some("q")).unwrap();
+
+        for id in &ids {
+            let sidecar = crate::sidecar::read(&crate::sidecar::path(&library.paths, id)).unwrap();
+            assert_eq!(sidecar.rating.as_deref(), Some("q"));
+        }
     }
 
     #[test]
@@ -1031,6 +1085,17 @@ mod tests {
         let error = set_rating(&library, "nobody", Some("s")).unwrap_err();
 
         assert!(matches!(error, AppError::NotFound(_)), "got {error}");
+    }
+
+    #[test]
+    fn setting_a_rating_rewrites_the_sidecar() {
+        let (_dir, library) = library();
+        store(&library, "a", None, &[]);
+
+        set_rating(&library, "a", Some("e")).unwrap();
+
+        let sidecar = crate::sidecar::read(&crate::sidecar::path(&library.paths, "a")).unwrap();
+        assert_eq!(sidecar.rating.as_deref(), Some("e"));
     }
 
     #[test]

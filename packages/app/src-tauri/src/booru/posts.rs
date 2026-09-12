@@ -28,6 +28,9 @@ pub fn record(library: &Library, image_id: &str, post: &PostRef) -> Result<()> {
         params![post.posted_at, image_id],
     )?;
     tx.commit()?;
+
+    // After the commit, never inside it (`library-sidecars` design D4).
+    crate::sidecar::write_one(&library.paths, &library.conn, image_id)?;
     Ok(())
 }
 
@@ -80,6 +83,35 @@ mod tests {
             }]
         );
         assert_eq!(record.updated_at, 1_700_000_000_000);
+    }
+
+    /// `library-sidecars` task 1.8: the file lists the post with its site,
+    /// remote id and time.
+    #[test]
+    fn recording_a_post_rewrites_the_sidecar_with_it() {
+        let (_dir, library) = library();
+        insert_bare_image(&library, "img-1");
+
+        record(
+            &library,
+            "img-1",
+            &PostRef {
+                site: "danbooru".to_string(),
+                remote_id: "42".to_string(),
+                posted_at: 1_700_000_000_000,
+            },
+        )
+        .unwrap();
+
+        let sidecar = crate::sidecar::read(&crate::sidecar::path(&library.paths, "img-1")).unwrap();
+        assert_eq!(
+            sidecar.posts,
+            vec![PostRef {
+                site: "danbooru".to_string(),
+                remote_id: "42".to_string(),
+                posted_at: 1_700_000_000_000,
+            }]
+        );
     }
 
     #[test]

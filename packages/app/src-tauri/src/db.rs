@@ -173,12 +173,32 @@ const MIGRATIONS: &[&str] = &[SCHEMA_V1, SCHEMA_V2, SCHEMA_V3, SCHEMA_V4, SCHEMA
 /// migrate it to the current schema, and register the SQL functions the query
 /// compiler needs.
 pub fn open(path: &Path) -> Result<Connection> {
-    let mut conn = Connection::open(path)?;
+    let mut conn = Connection::open(path).map_err(|error| AppError::from_rusqlite(path, error))?;
+    quick_check(&conn, path)?;
     assert_rollback_journal(&conn)?;
     conn.pragma_update(None, "foreign_keys", "ON")?;
     migrate(&mut conn)?;
     crate::query::register_functions(&conn)?;
     Ok(conn)
+}
+
+/// `PRAGMA quick_check(1)` before anything else touches the file (design D8):
+/// it reads every page and verifies each b-tree, and `(1)` stops at the first
+/// problem because one problem is the whole answer. A file so damaged it is
+/// not a database at all fails the query itself; a `quick_check` that runs but
+/// answers with anything but `"ok"` is damage `quick_check` could name in
+/// detail but this app only ever reports as one thing: `LibraryCorrupt`.
+fn quick_check(conn: &Connection, path: &Path) -> Result<()> {
+    let result: String = conn
+        .query_row("PRAGMA quick_check(1)", [], |row| row.get(0))
+        .map_err(|error| AppError::from_rusqlite(path, error))?;
+    if result == "ok" {
+        Ok(())
+    } else {
+        Err(AppError::LibraryCorrupt {
+            path: path.to_path_buf(),
+        })
+    }
 }
 
 /// WAL splits the library across `library.sqlite`, `-wal` and `-shm`. A cloud
@@ -462,6 +482,44 @@ mod tests {
             .query_row("PRAGMA user_version", [], |row| row.get(0))
             .unwrap();
         assert_eq!(version, MIGRATIONS.len() as i64);
+    }
+
+    /// design D8: bytes overwritten past the header trip `quick_check`, which
+    /// refuses the open as `LibraryCorrupt` and leaves the file exactly as
+    /// `open` found it — a refused open must never rewrite the very evidence
+    /// a rebuild would need.
+    #[test]
+    fn a_database_with_bytes_overwritten_mid_file_is_refused_as_library_corrupt() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("library.sqlite");
+        drop(open(&path).unwrap());
+
+        let mut bytes = std::fs::read(&path).unwrap();
+        assert!(
+            bytes.len() > 4096,
+            "the schema must have grown past the first page: {} bytes",
+            bytes.len()
+        );
+        // Well past the header (`SQLite format 3\0`, the first 16 bytes) and
+        // into a later page, so this corrupts a b-tree rather than turning the
+        // file into something SQLite refuses to recognise as a database at
+        // all — the other corrupt-class code, exercised in `error.rs`.
+        for byte in &mut bytes[4096..4200] {
+            *byte ^= 0xff;
+        }
+        std::fs::write(&path, &bytes).unwrap();
+
+        let error = open(&path).unwrap_err();
+
+        assert!(
+            matches!(&error, AppError::LibraryCorrupt { path: found } if found == &path),
+            "unexpected error: {error}"
+        );
+        assert_eq!(
+            std::fs::read(&path).unwrap(),
+            bytes,
+            "a refused open must not touch the file"
+        );
     }
 
     #[test]

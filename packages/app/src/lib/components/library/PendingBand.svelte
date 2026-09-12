@@ -7,17 +7,19 @@
   //
   // Outside the scroll container also means it stays in view while the user
   // scrolls, which is what "the thing I just asked for is coming" needs.
-  import { imports, pendingCaptures } from '$lib/api'
+  import { imports, pendingCaptures, sidecarsBackfill } from '$lib/api'
   import { columnsFor, EDGE, GAP } from './grid-window'
   import ImportRunTile from './ImportRunTile.svelte'
   import PendingCaptureTile from './PendingCaptureTile.svelte'
+  import SidecarsTile from './SidecarsTile.svelte'
 
   /** The grid's tile edge, so the band's tiles are the grid's tiles. */
   let { tile }: { tile: number } = $props()
 
   let width = $state(0)
 
-  const showing = $derived(imports.runs.length > 0 || pendingCaptures.entries.length > 0)
+  const hasQueuedWork = $derived(imports.runs.length > 0 || pendingCaptures.entries.length > 0)
+  const showing = $derived(hasQueuedWork || sidecarsBackfill.progress !== null)
   // The same module the grid lays its rows out with, at the same width: the
   // wrapper is measured unpadded and the column count takes `EDGE` off itself,
   // exactly as the grid's scroll container does.
@@ -35,6 +37,7 @@
           grid-template-columns: repeat({columns}, minmax(0, 1fr));
       "
     >
+      <SidecarsTile />
       {#each imports.runs as run (run.id)}
         <ImportRunTile {run} />
       {/each}

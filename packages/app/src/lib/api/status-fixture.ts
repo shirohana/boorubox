@@ -9,6 +9,8 @@ export function status(overrides: Partial<LibraryStatus> = {}): LibraryStatus {
     opened: true,
     libraryPath: '/library',
     missingPath: null,
+    damagedPath: null,
+    newerPath: null,
     imageCount: 0,
     listener: { running: true, port: DEFAULT_PORT, error: null },
     version: '0.1.0',

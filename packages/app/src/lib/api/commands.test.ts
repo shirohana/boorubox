@@ -7,6 +7,7 @@ import type {
   DeleteReport,
   ExportReport,
   Note,
+  RebuildReport,
   RuleInput,
   RuleListEntry,
   RulesImportReport,
@@ -40,6 +41,7 @@ import {
   openLibrary,
   pickLibrary,
   recentLibraries,
+  rebuildLibrary,
   restoreImages,
   revealLibrary,
   rulesDelete,
@@ -122,6 +124,20 @@ it('reveal_library takes no arguments', async () => {
   const calls = spyIPC(null)
   await revealLibrary()
   expect(calls).toHaveBeenCalledWith('reveal_library', {})
+})
+
+it('rebuild_library passes the path and returns the report', async () => {
+  const report: RebuildReport = {
+    images: 25_000,
+    failed: 1,
+    failures: [{ file: 'images/ab/cd/abcd.json', reason: 'truncated' }],
+    keptAs: 'library.sqlite.corrupt-1700000000000',
+    rules: 2,
+    sites: 1,
+  }
+  const calls = spyIPC(report)
+  await expect(rebuildLibrary('/library')).resolves.toEqual(report)
+  expect(calls).toHaveBeenCalledWith('rebuild_library', { path: '/library' })
 })
 
 it('app_settings takes no arguments', async () => {

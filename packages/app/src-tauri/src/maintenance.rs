@@ -203,6 +203,29 @@ mod tests {
         assert!(!missing_flag(&library, "ignored"));
     }
 
+    /// `library-sidecars` design D2: `missing` is a cache of the last
+    /// file-presence check, recomputed by the rebuild from the folder rather
+    /// than mirrored — writing a sidecar here would turn scrolling a syncing
+    /// library's grid into thousands of sidecar rewrites for a fact that is
+    /// about to change back. This is the one write to `images` that is not a
+    /// sidecar write path (design D5); do not "fix" this test by adding one.
+    #[test]
+    fn refresh_missing_for_writes_no_sidecar() {
+        let (_dir, library) = library();
+        store(&library, "a", ImageSource::Extension, &[]);
+        let sidecar_path = crate::sidecar::path(&library.paths, "a");
+        std::fs::remove_file(&sidecar_path).unwrap();
+        std::fs::remove_file(library.paths.image_path("a", "png")).unwrap();
+
+        refresh_missing_for(&library, &["a".to_string()]).unwrap();
+
+        assert!(missing_flag(&library, "a"));
+        assert!(
+            !sidecar_path.exists(),
+            "refresh_missing_for must not write a sidecar"
+        );
+    }
+
     #[test]
     fn an_empty_id_list_and_an_unchanged_library_are_both_no_ops() {
         let (_dir, library) = library();

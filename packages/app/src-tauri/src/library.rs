@@ -8,6 +8,7 @@ use rusqlite::Connection;
 
 use crate::db;
 use crate::error::{AppError, Result};
+use crate::sidecar;
 
 const IMAGES_DIR: &str = "images";
 const INBOX_DIR: &str = "inbox";
@@ -47,6 +48,13 @@ pub fn with_library<T>(
 /// Borrow whatever is open, `None` included. Only for the callers a closed
 /// library is an answer to rather than a refusal — `library_status` reports a
 /// closed library, it does not fail on one.
+///
+/// Every command and every capture reaches the database through here, which is
+/// why this is where a rusqlite corrupt-class code becomes `LibraryCorrupt`
+/// (`library-sidecars` design D8: the same message "wherever the damage
+/// surfaces ... at open or mid-session"). `?` has already turned it into `Db`
+/// by the time `work` returns, and this is the innermost frame that knows
+/// which file it happened to.
 pub fn with_library_if_open<T>(
     library: &SharedLibrary,
     work: impl FnOnce(Option<&Library>) -> Result<T>,
@@ -57,7 +65,96 @@ pub fn with_library_if_open<T>(
     let guard = library
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    work(guard.as_ref())
+    match (work(guard.as_ref()), guard.as_ref()) {
+        (Err(error), Some(open)) => Err(error.or_corrupt(&open.paths.db_path())),
+        (result, _) => result,
+    }
+}
+
+/// Write a sidecar for every image that does not have one, and `library.json`
+/// if it is absent (design D7): the repair "opening a library SHALL write a
+/// describing file for every image that has none" runs from here, called by
+/// `commands::open_into_state` on a blocking thread.
+///
+/// The one query takes the library once, briefly; the 25,000 stats after it do
+/// not — `LibraryPaths` is `Clone` and a file check needs nothing else — and
+/// each write takes it again for one image through `with_library` (Phase 1
+/// D13's shape, the same `import::import_paths` and `rules::run` use), which
+/// is what lets a search or a capture during the pass be answered between two
+/// of them.
+///
+/// `root` is the path this pass was started for: every write checks the open
+/// library's root still matches it, so a switch mid-pass (`pending-work`
+/// spec's "Switching libraries mid-pass") stops the pass without writing into
+/// a folder it no longer belongs to, rather than needing a control handle of
+/// its own (design D7 — "this pass has no controls").
+pub fn backfill_sidecars(
+    library: &SharedLibrary,
+    root: &Path,
+    on_progress: &mut dyn FnMut(i64, i64),
+) -> Result<()> {
+    let (paths, ids) = with_library(library, |open| {
+        Ok((open.paths.clone(), all_image_ids(&open.conn)?))
+    })?;
+    if paths.root != root {
+        return Ok(());
+    }
+
+    let missing: Vec<&String> = ids
+        .iter()
+        .filter(|id| !sidecar::path(&paths, id).is_file())
+        .collect();
+
+    // A library already in step must show no tile at all (`pending-work`
+    // spec's "A library already in step") — the webview's tile hides once
+    // `done >= total` but shows for *any* event with `total > 0`, so even a
+    // single `(0, 0)` tick here would flash one on every open. `total` is
+    // therefore the count of rows that still lack a sidecar, and nothing at
+    // all is emitted when that count is zero.
+    let total = missing.len() as i64;
+    if total > 0 {
+        on_progress(0, total);
+        for (index, id) in missing.iter().enumerate() {
+            let stopped = with_library_if_open(library, |open| match open {
+                Some(open) if open.paths.root == root => {
+                    sidecar::write_one(&open.paths, &open.conn, id)?;
+                    Ok(false)
+                }
+                // The library closed, or a switch moved it onto another root
+                // (`open_into_state`'s D13's "tears a library down"): nothing
+                // more of this pass belongs to write.
+                _ => Ok(true),
+            })?;
+            if stopped {
+                return Ok(());
+            }
+            on_progress(index as i64 + 1, total);
+        }
+    }
+
+    write_library_json_if_missing(library, root)
+}
+
+/// `library.json` is written by the same pass when it is absent (design D7),
+/// unconditionally on the sidecar count above: a library with every sidecar
+/// already in place can still be missing its one library-level file, and this
+/// repair carries no progress event of its own to gate on.
+fn write_library_json_if_missing(library: &SharedLibrary, root: &Path) -> Result<()> {
+    with_library_if_open(library, |open| match open {
+        Some(open) if open.paths.root == root => {
+            if !sidecar::library_path(&open.paths).is_file() {
+                sidecar::write_library(&open.paths, &open.conn)?;
+            }
+            Ok(())
+        }
+        _ => Ok(()),
+    })
+}
+
+fn all_image_ids(conn: &Connection) -> Result<Vec<String>> {
+    let mut stmt = conn.prepare("SELECT id FROM images")?;
+    let ids = stmt.query_map([], |row| row.get::<_, String>(0))?;
+    Ok(ids.collect::<rusqlite::Result<_>>()?)
 }
 
 impl Library {
@@ -610,5 +707,210 @@ mod tests {
         let library = Library::open_existing(dir.path()).unwrap();
 
         assert_eq!(library.image_count().unwrap(), 0);
+    }
+
+    fn shared(library: Library) -> SharedLibrary {
+        std::sync::Arc::new(std::sync::Mutex::new(Some(library)))
+    }
+
+    fn store(library: &Library, id: &str) {
+        crate::ingest::store_image(
+            library,
+            crate::ingest::IngestInput {
+                id,
+                bytes: &png_bytes(),
+                source: crate::model::ImageSource::Local,
+                source_ref: None,
+                image_url: None,
+                page_url: None,
+                page_title: None,
+                adapter: None,
+                rating: None,
+                tags: &[],
+                captured_at: 0,
+                file_modified_at: None,
+                deleted_at: None,
+            },
+        )
+        .unwrap();
+    }
+
+    /// `library-sidecars` design D8: damage met mid-session — a query failing
+    /// with a corrupt-class code long after the library opened — is reported
+    /// as `LibraryCorrupt` naming the open library's own database, not as the
+    /// bare `Db` error `?` produced, which says nothing the user could act on.
+    #[test]
+    fn a_corrupt_class_failure_inside_a_command_names_the_open_library_as_damaged() {
+        let dir = tempfile::tempdir().unwrap();
+        let library = Library::open_or_create(dir.path()).unwrap();
+        let db_path = library.paths.db_path();
+        let shared = shared(library);
+
+        let error = with_library(&shared, |_| -> Result<()> {
+            Err(AppError::Db(rusqlite::Error::SqliteFailure(
+                rusqlite::ffi::Error {
+                    code: rusqlite::ErrorCode::DatabaseCorrupt,
+                    extended_code: 11,
+                },
+                Some("database disk image is malformed".to_string()),
+            )))
+        })
+        .unwrap_err();
+
+        assert!(
+            matches!(&error, AppError::LibraryCorrupt { path } if path == &db_path),
+            "unexpected error: {error:?}"
+        );
+    }
+
+    /// `library-sidecars` task 2.7: a library whose sidecars were deleted gets
+    /// exactly those written again, and a second run writes nothing further.
+    #[test]
+    fn a_library_whose_sidecars_were_deleted_gets_exactly_those_written_again() {
+        let dir = tempfile::tempdir().unwrap();
+        let library = Library::open_or_create(dir.path()).unwrap();
+        for id in ["a", "b", "c"] {
+            store(&library, id);
+        }
+        let paths = library.paths.clone();
+        std::fs::remove_file(sidecar::path(&paths, "a")).unwrap();
+        std::fs::remove_file(sidecar::path(&paths, "c")).unwrap();
+        let root = paths.root.clone();
+        let shared = shared(library);
+
+        let mut ticks = Vec::new();
+        backfill_sidecars(&shared, &root, &mut |done, total| ticks.push((done, total))).unwrap();
+
+        for id in ["a", "b", "c"] {
+            assert!(sidecar::path(&paths, id).is_file());
+        }
+        assert_eq!(ticks.last(), Some(&(2, 2)));
+
+        let a_bytes = std::fs::read(sidecar::path(&paths, "a")).unwrap();
+        let mut second_ticks = Vec::new();
+        backfill_sidecars(&shared, &root, &mut |done, total| {
+            second_ticks.push((done, total))
+        })
+        .unwrap();
+        assert_eq!(
+            second_ticks,
+            Vec::<(i64, i64)>::new(),
+            "a library already in step must emit no library:sidecars event at all, \
+             not even a (0, 0) tick — the webview shows a tile for any event with total > 0"
+        );
+        assert_eq!(
+            std::fs::read(sidecar::path(&paths, "a")).unwrap(),
+            a_bytes,
+            "an already-written sidecar must not be rewritten"
+        );
+    }
+
+    /// A library whose sidecars are all already there emits no
+    /// `library:sidecars` event at all — not a `(0, 0)` tick — since the
+    /// webview's tile shows for any event with `total > 0` and would
+    /// otherwise flash on every single open (constraint from the webview
+    /// reviewer on tasks 2.7/2.8).
+    #[test]
+    fn a_library_already_in_step_emits_no_sidecars_event() {
+        let dir = tempfile::tempdir().unwrap();
+        let library = Library::open_or_create(dir.path()).unwrap();
+        for id in ["a", "b"] {
+            store(&library, id);
+        }
+        let root = library.paths.root.clone();
+        let shared = shared(library);
+
+        let mut ticks = Vec::new();
+        backfill_sidecars(&shared, &root, &mut |done, total| ticks.push((done, total))).unwrap();
+
+        assert!(
+            ticks.is_empty(),
+            "nothing was missing, so nothing should have been ticked: {ticks:?}"
+        );
+    }
+
+    /// `library-sidecars` design D3, D7: `library.json` is written by the same
+    /// pass when it is absent.
+    #[test]
+    fn a_library_json_missing_at_open_is_written_by_the_pass() {
+        let dir = tempfile::tempdir().unwrap();
+        let library = Library::open_or_create(dir.path()).unwrap();
+        store(&library, "a");
+        let paths = library.paths.clone();
+        assert!(
+            !sidecar::library_path(&paths).is_file(),
+            "nothing has written library.json yet"
+        );
+        let root = paths.root.clone();
+        let shared = shared(library);
+
+        backfill_sidecars(&shared, &root, &mut |_, _| {}).unwrap();
+
+        assert!(sidecar::library_path(&paths).is_file());
+    }
+
+    /// `library-sidecars` task 2.7 / `pending-work` spec "Switching libraries
+    /// mid-pass": a pass told to run against a library that has since been
+    /// switched stops without writing into the new folder.
+    #[test]
+    fn a_pass_stops_without_writing_when_the_open_library_has_switched() {
+        let dir = tempfile::tempdir().unwrap();
+        let library = Library::open_or_create(dir.path()).unwrap();
+        store(&library, "a");
+        let started_for = library.paths.root.clone();
+        let shared = shared(library);
+
+        // The switch this pass must notice: a different library is now open
+        // in the same slot, the shape `open_into_state` leaves behind.
+        let other_dir = tempfile::tempdir().unwrap();
+        let other = Library::open_or_create(other_dir.path()).unwrap();
+        *shared.lock().unwrap() = Some(other);
+
+        backfill_sidecars(&shared, &started_for, &mut |_, _| {}).unwrap();
+
+        assert!(
+            !sidecar::library_path(&LibraryPaths {
+                root: other_dir.path().to_path_buf()
+            })
+            .is_file(),
+            "the pass must not write into the folder that is open now"
+        );
+    }
+
+    /// `library-sidecars` task 2.7: a 500-row library's pass leaves every
+    /// sidecar matching what `sidecar::write_for` would have written.
+    #[test]
+    fn a_five_hundred_row_librarys_pass_matches_what_write_for_would_write() {
+        let dir = tempfile::tempdir().unwrap();
+        let library = Library::open_or_create(dir.path()).unwrap();
+        let ids: Vec<String> = (0..500).map(|index| format!("id-{index:04}")).collect();
+        for id in &ids {
+            store(&library, id);
+        }
+        let paths = library.paths.clone();
+        for id in &ids {
+            std::fs::remove_file(sidecar::path(&paths, id)).unwrap();
+        }
+        let root = paths.root.clone();
+        let shared = shared(library);
+
+        backfill_sidecars(&shared, &root, &mut |_, _| {}).unwrap();
+
+        // What `sidecar::write_for` would have produced for the same ids and
+        // rows, byte for byte — the pass writes through `write_one`, and this
+        // is the guarantee that the two never disagree.
+        with_library(&shared, |open| {
+            for id in &ids {
+                let written = std::fs::read(sidecar::path(&open.paths, id)).unwrap();
+                let record = crate::ingest::load_record(&open.conn, id).unwrap().unwrap();
+                let expected = serde_json::to_vec_pretty(&sidecar::Sidecar::from(&record)).unwrap();
+                assert_eq!(
+                    written, expected,
+                    "{id} does not match what write_for would write"
+                );
+            }
+            Ok(())
+        })
+        .unwrap();
     }
 }

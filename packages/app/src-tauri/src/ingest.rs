@@ -81,8 +81,20 @@ struct Decoded {
 /// hold (design D13). Every caller calls `thumbs::warm_thumbnail` on the record
 /// once it has let the library go — a new caller that forgets leaves images
 /// whose thumbnail is only built the first time the grid asks for one.
+///
+/// The sidecar is written after the row's own transaction commits, never
+/// inside it (`library-sidecars` design D4): a failed commit must never leave
+/// a sidecar for a row that does not exist, and a bulk edit holding the
+/// library for thousands of file writes is the window this change must not
+/// widen. The write happens on both outcomes, `Created` and `Existing` alike
+/// — a redelivered capture that stored its row but never reached its sidecar
+/// (this same call, failing on the line below, on a prior delivery) writes the
+/// missing file on retry rather than reporting success with the hole still
+/// open. A sidecar write failure fails this call even though the row is
+/// already committed, which is what makes that retry the way back.
 pub fn store_image(library: &Library, input: IngestInput) -> Result<Ingested> {
     if let Some(existing) = load_record(&library.conn, input.id)? {
+        write_sidecar(library, &existing)?;
         return Ok(Ingested::Existing(existing));
     }
 
@@ -90,13 +102,23 @@ pub fn store_image(library: &Library, input: IngestInput) -> Result<Ingested> {
     let path = library.paths.image_path(input.id, decoded.ext);
     write_through_inbox(library, input.id, input.bytes, &path)?;
 
-    match insert_rows(library, &input, &decoded) {
-        Ok(ingested) => Ok(ingested),
+    let ingested = match insert_rows(library, &input, &decoded) {
+        Ok(ingested) => ingested,
         Err(error) => {
             let _ = std::fs::remove_file(&path);
-            Err(error)
+            return Err(error);
         }
-    }
+    };
+    write_sidecar(library, ingested.record())?;
+    Ok(ingested)
+}
+
+/// From the record this call already holds, not a re-read of the row it just
+/// wrote: `sidecar::write_for`'s three statements per image are pure cost on
+/// the one door 25,000 bundle-imported images come through, and a sidecar
+/// built from the record the caller is handed back cannot disagree with it.
+fn write_sidecar(library: &Library, record: &ImageRecord) -> Result<()> {
+    crate::sidecar::write(&library.paths, &crate::sidecar::Sidecar::from(record))
 }
 
 /// Undecodable bytes are an error before anything is written, so a rejected
@@ -395,6 +417,73 @@ mod tests {
         (dir, library)
     }
 
+    /// `library-sidecars` task 1.5: a stored image has its sidecar beside its
+    /// file with the row's tags and rating.
+    #[test]
+    fn storing_an_image_writes_its_sidecar_with_the_right_tags_and_rating() {
+        let (_dir, library) = library();
+        let bytes = png_bytes(4, 7);
+        let tags = vec!["blue_sky".to_string(), "1girl".to_string()];
+
+        store_image(&library, input("id-1", &bytes, &tags)).unwrap();
+
+        let sidecar = crate::sidecar::read(&crate::sidecar::path(&library.paths, "id-1")).unwrap();
+        assert_eq!(
+            sidecar.tags,
+            vec!["1girl".to_string(), "blue_sky".to_string()]
+        );
+        assert_eq!(sidecar.rating.as_deref(), Some("s"));
+    }
+
+    /// `library-sidecars` task 1.5: deleting the sidecar and redelivering the
+    /// same id writes it again and still reports `Existing`, with no second
+    /// image file created.
+    #[test]
+    fn redelivering_a_stored_id_after_its_sidecar_was_deleted_writes_it_again() {
+        let (_dir, library) = library();
+        let bytes = png_bytes(4, 7);
+        let tags: Vec<String> = Vec::new();
+        store_image(&library, input("id-1", &bytes, &tags)).unwrap();
+        let sidecar_path = crate::sidecar::path(&library.paths, "id-1");
+        std::fs::remove_file(&sidecar_path).unwrap();
+
+        let ingested = store_image(&library, input("id-1", &bytes, &tags)).unwrap();
+
+        assert!(matches!(ingested, Ingested::Existing(_)));
+        assert!(sidecar_path.is_file());
+        assert_eq!(
+            recursive_file_count(&library.paths.images_dir()),
+            2,
+            "the one image file and its one rewritten sidecar, no second of either"
+        );
+    }
+
+    /// `library-sidecars` design D4: the row is already committed by the time
+    /// the sidecar is written, so a sidecar write failure still fails the
+    /// call — the caller's non-2xx is what makes a retry (and the repair
+    /// above) reachable at all.
+    #[test]
+    fn a_sidecar_write_failure_fails_the_call_even_though_the_row_is_committed() {
+        let (_dir, library) = library();
+        let bytes = png_bytes(4, 7);
+        let tags: Vec<String> = Vec::new();
+        let sidecar_path = crate::sidecar::path(&library.paths, "id-1");
+        // Occupy the sidecar's own destination with a directory, so the
+        // rename `sidecar::write` ends with cannot land.
+        std::fs::create_dir_all(&sidecar_path).unwrap();
+
+        let error = store_image(&library, input("id-1", &bytes, &tags)).unwrap_err();
+
+        assert!(
+            matches!(error, AppError::Io(_)),
+            "unexpected error: {error}"
+        );
+        assert!(
+            load_record(&library.conn, "id-1").unwrap().is_some(),
+            "the row still landed"
+        );
+    }
+
     #[test]
     fn stores_the_file_and_the_row() {
         let (_dir, library) = library();
@@ -441,8 +530,9 @@ mod tests {
         assert!(library.paths.image_path("id-1", "png").is_file());
         assert_eq!(
             recursive_file_count(&library.paths.images_dir()),
-            1,
-            "no second file anywhere under images/, not just at the top level"
+            2,
+            "no second image or sidecar file anywhere under images/, not just at the top \
+             level — one image file and its one sidecar (`library-sidecars` design D1)"
         );
         assert_eq!(library.image_count().unwrap(), 1);
     }

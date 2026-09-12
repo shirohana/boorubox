@@ -227,7 +227,7 @@ pub fn upsert(library: &Library, input: &RuleInput) -> Result<Rule> {
     let tags_json = serde_json::to_string(&input.tags)
         .map_err(|error| AppError::BadRequest(format!("tags cannot be stored: {error}")))?;
 
-    match &input.id {
+    let rule = match &input.id {
         Some(id) => {
             library.conn.execute(
                 "UPDATE rules SET name = ?1, pattern = ?2, is_regex = ?3, tags_json = ?4,
@@ -243,7 +243,7 @@ pub fn upsert(library: &Library, input: &RuleInput) -> Result<Rule> {
                     id
                 ],
             )?;
-            require_rule(&library.conn, id)
+            require_rule(&library.conn, id)?
         }
         None => {
             let id = uuid::Uuid::new_v4().to_string();
@@ -261,9 +261,13 @@ pub fn upsert(library: &Library, input: &RuleInput) -> Result<Rule> {
                     now
                 ],
             )?;
-            require_rule(&library.conn, &id)
+            require_rule(&library.conn, &id)?
         }
-    }
+    };
+    // Library-level, after the commit (`library-sidecars` design D3, D5): a
+    // single `execute` outside a transaction is already its own commit.
+    crate::sidecar::write_library(&library.paths, &library.conn)?;
+    Ok(rule)
 }
 
 /// Whether this edit leaves the pattern exactly as the row already holds it,
@@ -284,6 +288,7 @@ pub fn delete(library: &Library, id: &str) -> Result<()> {
     library
         .conn
         .execute("DELETE FROM rules WHERE id = ?1", [id])?;
+    crate::sidecar::write_library(&library.paths, &library.conn)?;
     Ok(())
 }
 
@@ -454,6 +459,10 @@ fn apply_rules_to_image(
     tags::stamp(&tx, &image.id, written_rating.as_deref())?;
     tx.commit()?;
 
+    // After the commit, never inside it (`library-sidecars` design D4, D5):
+    // one image's sidecar, per image, exactly as this run touches images.
+    crate::sidecar::write_one(&library.paths, &library.conn, &image.id)?;
+
     tally(&fired, &written_tags, written_rating.as_deref(), added_by);
     Ok(true)
 }
@@ -614,6 +623,8 @@ pub fn import_json(library: &Library, text: &str) -> Result<RulesImportReport> {
         report.imported += 1;
     }
     tx.commit()?;
+
+    crate::sidecar::write_library(&library.paths, &library.conn)?;
     Ok(report)
 }
 
@@ -877,6 +888,38 @@ mod tests {
         );
     }
 
+    /// `library-sidecars` task 1.9: saving, disabling and deleting a rule are
+    /// each visible in `library.json`.
+    #[test]
+    fn saving_disabling_and_deleting_a_rule_are_each_visible_in_library_json() {
+        let (_dir, library) = library();
+        let library_json = crate::sidecar::library_path(&library.paths);
+
+        let created = upsert(&library, &new_rule("pixiv", "pixiv", false, &["pixiv"])).unwrap();
+        let file = crate::sidecar::read_library(&library_json).unwrap();
+        assert_eq!(file.rules.len(), 1);
+        assert!(file.rules[0].enabled);
+
+        upsert(
+            &library,
+            &RuleInput {
+                id: Some(created.id.clone()),
+                name: created.name.clone(),
+                pattern: created.pattern.clone(),
+                is_regex: created.is_regex,
+                tags: created.tags.clone(),
+                enabled: false,
+            },
+        )
+        .unwrap();
+        let file = crate::sidecar::read_library(&library_json).unwrap();
+        assert!(!file.rules[0].enabled);
+
+        delete(&library, &created.id).unwrap();
+        let file = crate::sidecar::read_library(&library_json).unwrap();
+        assert!(file.rules.is_empty());
+    }
+
     #[test]
     fn enabled_rules_omits_the_disabled_ones() {
         let (_dir, library) = library();
@@ -1015,6 +1058,27 @@ mod tests {
         let mut out = std::io::Cursor::new(Vec::new());
         image.write_to(&mut out, image::ImageFormat::Png).unwrap();
         out.into_inner()
+    }
+
+    #[test]
+    fn importing_rules_is_visible_in_library_json() {
+        let (_dir, library) = library();
+        let json = serde_json::json!([{
+            "id": "other",
+            "name": "pixiv",
+            "pattern": "pixiv",
+            "isRegex": false,
+            "tags": ["pixiv"],
+            "enabled": true,
+        }])
+        .to_string();
+
+        import_json(&library, &json).unwrap();
+
+        let file =
+            crate::sidecar::read_library(&crate::sidecar::library_path(&library.paths)).unwrap();
+        assert_eq!(file.rules.len(), 1);
+        assert_eq!(file.rules[0].name, "pixiv");
     }
 
     #[test]
@@ -1224,6 +1288,37 @@ mod tests {
             Ok(())
         })
         .unwrap();
+    }
+
+    /// `library-sidecars` task 1.9: a run over three images where one matches
+    /// rewrites exactly that one image's sidecar.
+    #[test]
+    fn a_run_rewrites_only_the_matching_images_sidecar() {
+        let (_dir, library) = library();
+        store_captured(&library, "a", Some("a pixiv piece"), &[]);
+        store_captured(&library, "b", Some("something else"), &[]);
+        store_captured(&library, "c", Some("yet another thing"), &[]);
+        upsert(&library, &new_rule("pixiv", "pixiv", false, &["pixiv"])).unwrap();
+        let b_path = crate::sidecar::path(&library.paths, "b");
+        let c_path = crate::sidecar::path(&library.paths, "c");
+        let b_before = std::fs::read(&b_path).unwrap();
+        let c_before = std::fs::read(&c_path).unwrap();
+        let shared = shared(library);
+
+        run_now(&shared);
+
+        with_library(&shared, |library| {
+            let sidecar = crate::sidecar::read(&crate::sidecar::path(&library.paths, "a")).unwrap();
+            assert_eq!(sidecar.tags, vec!["pixiv".to_string()]);
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(
+            std::fs::read(&b_path).unwrap(),
+            b_before,
+            "an image no rule matched keeps its sidecar untouched"
+        );
+        assert_eq!(std::fs::read(&c_path).unwrap(), c_before);
     }
 
     #[test]

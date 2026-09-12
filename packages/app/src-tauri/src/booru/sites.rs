@@ -249,6 +249,10 @@ pub fn save(
         }
     };
 
+    // Library-level, after the commit (`library-sidecars` design D3, D5): a
+    // single `execute` outside a transaction is already its own commit.
+    crate::sidecar::write_library(&library.paths, &library.conn)?;
+
     if let Some(api_key) = api_key {
         credentials.set(&host, username, api_key)?;
     }
@@ -280,6 +284,7 @@ pub fn delete(library: &Library, credentials: &dyn Credentials, id: &str) -> Res
     library
         .conn
         .execute("DELETE FROM booru_sites WHERE id = ?1", [id])?;
+    crate::sidecar::write_library(&library.paths, &library.conn)?;
     let host = host_of(&site.base_url)?;
     forget_account(library, credentials, &host, &site.username, id)
 }
@@ -412,6 +417,33 @@ mod tests {
             credentials.get("danbooru.donmai.us", "alice").unwrap(),
             Some("secret-key".to_string())
         );
+    }
+
+    /// `library-sidecars` task 1.10: the site list is in `library.json` after
+    /// a save, and removing a site removes it from the file.
+    #[test]
+    fn saving_and_deleting_a_site_are_each_visible_in_library_json() {
+        let (_dir, library) = library();
+        let credentials = InMemoryCredentials::default();
+        let library_json = crate::sidecar::library_path(&library.paths);
+
+        let site = save(
+            &library,
+            &credentials,
+            None,
+            "Danbooru",
+            "https://danbooru.donmai.us",
+            "alice",
+            Some("secret-key"),
+        )
+        .unwrap();
+        let file = crate::sidecar::read_library(&library_json).unwrap();
+        assert_eq!(file.booru_sites.len(), 1);
+        assert_eq!(file.booru_sites[0].name, "Danbooru");
+
+        delete(&library, &credentials, &site.id).unwrap();
+        let file = crate::sidecar::read_library(&library_json).unwrap();
+        assert!(file.booru_sites.is_empty());
     }
 
     #[test]

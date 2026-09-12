@@ -54,6 +54,9 @@ fn set_deleted_at(
         }
     }
     tx.commit()?;
+
+    // After the commit, never inside it (`library-sidecars` design D4).
+    crate::sidecar::write_for(&library.paths, &library.conn, ids)?;
     Ok(())
 }
 
@@ -109,6 +112,17 @@ pub fn delete_forever(library: &Library, ids: &[String]) -> Result<DeleteReport>
 
     let mut files_left = Vec::new();
     for (id, ext) in &removed {
+        // Before the image file (`library-sidecars` design D5): a sidecar
+        // that survives a permanent delete is the one thing that can
+        // resurrect the image on a later rebuild, so its failure is named
+        // exactly like a file that will not unlink rather than shrugged off.
+        if crate::sidecar::remove_for(&library.paths, id).is_err() {
+            files_left.push(
+                crate::sidecar::path(&library.paths, id)
+                    .display()
+                    .to_string(),
+            );
+        }
         let path = library.paths.image_path(id, ext);
         if remove_if_present(&path).is_err() {
             files_left.push(path.display().to_string());
@@ -335,6 +349,26 @@ mod tests {
         assert_eq!(record.deleted_at, None);
     }
 
+    /// `library-sidecars` task 1.7: a trashed image's sidecar records
+    /// `deletedAt` and a restored one clears it, with the file never removed
+    /// by either.
+    #[test]
+    fn trashing_records_deleted_at_in_the_sidecar_and_restoring_clears_it() {
+        let (_dir, library) = library();
+        store(&library, "a", &["cat"], Some("s"));
+        let sidecar_path = crate::sidecar::path(&library.paths, "a");
+
+        trash_images(&library, &strs(&["a"])).unwrap();
+        let sidecar = crate::sidecar::read(&sidecar_path).unwrap();
+        assert!(sidecar.deleted_at.is_some());
+        assert!(sidecar_path.is_file());
+
+        restore_images(&library, &strs(&["a"])).unwrap();
+        let sidecar = crate::sidecar::read(&sidecar_path).unwrap();
+        assert!(sidecar.deleted_at.is_none());
+        assert!(sidecar_path.is_file());
+    }
+
     #[test]
     fn an_unknown_id_fails_trash_and_restore_and_changes_no_row() {
         let (_dir, library) = library();
@@ -448,6 +482,35 @@ mod tests {
         );
     }
 
+    /// `library-sidecars` task 1.7: `delete_forever` leaves no sidecar behind.
+    #[test]
+    fn delete_forever_leaves_no_sidecar() {
+        let (_dir, library) = library();
+        store(&library, "a", &[], None);
+        trash_images(&library, &strs(&["a"])).unwrap();
+
+        delete_forever(&library, &strs(&["a"])).unwrap();
+
+        assert!(!crate::sidecar::path(&library.paths, "a").exists());
+    }
+
+    /// `library-sidecars` task 1.7: `empty_trash` over three images leaves
+    /// none of their three sidecars.
+    #[test]
+    fn emptying_the_trash_leaves_no_sidecar_for_any_of_the_trashed_images() {
+        let (_dir, library) = library();
+        for id in ["a", "b", "c"] {
+            store(&library, id, &[], None);
+        }
+        trash_images(&library, &strs(&["a", "b", "c"])).unwrap();
+
+        empty_trash(&library).unwrap();
+
+        for id in ["a", "b", "c"] {
+            assert!(!crate::sidecar::path(&library.paths, id).exists());
+        }
+    }
+
     /// The `library-browse` search index must not keep matching an image the
     /// library no longer has.
     #[test]
@@ -533,11 +596,13 @@ mod tests {
         store(&library, "a", &[], None);
         trash_images(&library, &strs(&["a"])).unwrap();
         let path = library.paths.image_path("a", "png");
+        let sidecar_path = crate::sidecar::path(&library.paths, "a");
         let bucket = path.parent().unwrap().to_path_buf();
         // Removing a directory entry needs write access to the directory that
         // holds it, not to the file itself — this is what makes the unlink
         // below fail without touching the file's own permissions. That
-        // directory is the id's bucket (design D1), not `images/` itself.
+        // directory is the id's bucket (design D1), not `images/` itself, and
+        // it holds the sidecar too, so both unlinks fail the same way.
         std::fs::set_permissions(&bucket, std::fs::Permissions::from_mode(0o555)).unwrap();
 
         let report = delete_forever(&library, &strs(&["a"]));
@@ -548,7 +613,13 @@ mod tests {
         let report = report.unwrap();
 
         assert_eq!(report.deleted, 1);
-        assert_eq!(report.files_left, vec![path.display().to_string()]);
+        assert_eq!(
+            report.files_left,
+            vec![
+                sidecar_path.display().to_string(),
+                path.display().to_string()
+            ]
+        );
         assert_eq!(trash_count(&library).unwrap(), 0, "the row went anyway");
     }
 

@@ -2,7 +2,14 @@
   import { goto } from '$app/navigation'
   import { resolve } from '$app/paths'
   import { page } from '$app/state'
-  import { appUpdate, library, onCaptureStored, pendingCaptures, settings } from '$lib/api'
+  import {
+    appUpdate,
+    library,
+    onCaptureStored,
+    pendingCaptures,
+    settings,
+    sidecarsBackfill,
+  } from '$lib/api'
   import AppSidebar from '$lib/components/frame/Sidebar.svelte'
   import LibrarySwitchDialog from '$lib/components/frame/LibrarySwitchDialog.svelte'
   import TopBar from '$lib/components/frame/TopBar.svelte'
@@ -53,6 +60,17 @@
   // listener is simply lost.
   $effect(() => {
     const subscription = pendingCaptures.subscribe()
+    subscription.catch(() => {})
+    return () => {
+      void subscription.then((unlisten) => unlisten()).catch(() => {})
+    }
+  })
+
+  // Same reasoning as the subscription above: a library's catch-up pass can
+  // finish while the user is on another screen, and the pending-work band
+  // reads `sidecarsBackfill.progress` on whichever route shows it.
+  $effect(() => {
+    const subscription = sidecarsBackfill.subscribe()
     subscription.catch(() => {})
     return () => {
       void subscription.then((unlisten) => unlisten()).catch(() => {})

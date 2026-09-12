@@ -372,6 +372,55 @@ pub struct ExportProgress {
     pub total: i64,
 }
 
+/// One sidecar `recover::rebuild` could not read (`library-sidecars` design
+/// D11): the file's own path, and why, so the report can name it rather than
+/// silently drop the image.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RebuildFailure {
+    pub file: String,
+    pub reason: String,
+}
+
+/// What `rebuild_library` answers with (design D11, D13), the contract pinned
+/// in the change's `tasks.md` header: how many images came back, how many
+/// sidecars could not be read and which, the rules and sites restored from
+/// `library.json`, and the name the previous database was kept under (design
+/// D10) — never a path the user has to go looking for.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RebuildReport {
+    pub images: i64,
+    pub failed: i64,
+    pub failures: Vec<RebuildFailure>,
+    pub kept_as: String,
+    pub rules: i64,
+    pub sites: i64,
+}
+
+/// Payload of the `library:rebuild` event, shown where no library is open
+/// (design D13): its own event and type, never `import:progress` — that
+/// carries fields this pass has no answer for and would put a phantom import
+/// tile on a screen that has no import running.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RebuildProgress {
+    pub done: i64,
+    pub total: i64,
+}
+
+/// Payload of the `library:sidecars` event, shown as one tile in the pending-
+/// work band while a library is open (design D13, spec `pending-work`) — the
+/// backfill's own progress, distinct from [`RebuildProgress`] even though the
+/// shape is the same, because the two are seen in different places and mirror
+/// separately into `packages/shared`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SidecarsProgress {
+    pub done: i64,
+    pub total: i64,
+}
+
 /// What `delete_forever` and `empty_trash` answer with (`trash` design D4,
 /// D7): how many images were permanently removed, and the full path of every
 /// file that could not be unlinked — named on screen rather than swept, since
@@ -440,6 +489,18 @@ pub struct LibraryStatus {
     pub library_path: Option<String>,
     /// A remembered path that could not be opened; kept until another is picked.
     pub missing_path: Option<String>,
+    /// A remembered path that could not be opened *because it is damaged*
+    /// (`library-sidecars` design D9) — distinct from `missing_path`, which
+    /// covers every other reason, so the start screen never has to guess
+    /// which wording fits.
+    pub damaged_path: Option<String>,
+    /// A remembered path that could not be opened *because a newer build
+    /// wrote it* (`library-recovery`'s "A library from a newer build"). Its
+    /// own slot rather than a silence: a status naming none of the three
+    /// reads on the start screen as "choose a library folder", which loses
+    /// the folder the user already has and says nothing about why it will
+    /// not open. Never offered a rebuild — rebuilding it would downgrade it.
+    pub newer_path: Option<String>,
     pub image_count: i64,
     pub listener: ListenerStatus,
     pub version: String,
@@ -951,6 +1012,86 @@ mod tests {
                 view,
             );
         }
+    }
+
+    /// `library-sidecars` task 2.6: the pinned contract's exact field names,
+    /// since this is the hand-mirrored half of `packages/shared` a rename here
+    /// would silently break — `keptAs` above all, the one name a `rename_all`
+    /// could not derive from `kept_as` by accident-proofing alone.
+    #[test]
+    fn a_rebuild_report_and_its_progress_cross_the_wire_in_camel_case() {
+        let report = RebuildReport {
+            images: 24_998,
+            failed: 2,
+            failures: vec![RebuildFailure {
+                file: "images/ab/c/abc.json".to_string(),
+                reason: "sidecar at images/ab/c/abc.json cannot be read: EOF".to_string(),
+            }],
+            kept_as: "library.sqlite.corrupt-1757000000000".to_string(),
+            rules: 3,
+            sites: 1,
+        };
+
+        assert_eq!(
+            serde_json::to_value(&report).unwrap(),
+            serde_json::json!({
+                "images": 24_998,
+                "failed": 2,
+                "failures": [{
+                    "file": "images/ab/c/abc.json",
+                    "reason": "sidecar at images/ab/c/abc.json cannot be read: EOF",
+                }],
+                "keptAs": "library.sqlite.corrupt-1757000000000",
+                "rules": 3,
+                "sites": 1,
+            }),
+        );
+        assert_eq!(
+            serde_json::from_value::<RebuildReport>(serde_json::to_value(&report).unwrap())
+                .unwrap(),
+            report
+        );
+
+        let rebuild_progress = RebuildProgress { done: 3, total: 20 };
+        assert_eq!(
+            serde_json::to_value(rebuild_progress).unwrap(),
+            serde_json::json!({ "done": 3, "total": 20 }),
+        );
+        let sidecars_progress = SidecarsProgress { done: 3, total: 20 };
+        assert_eq!(
+            serde_json::to_value(sidecars_progress).unwrap(),
+            serde_json::json!({ "done": 3, "total": 20 }),
+        );
+    }
+
+    /// `library-sidecars` design D9: `damagedPath` and `newerPath` are two
+    /// further independent slots beside `missingPath` — a status naming none
+    /// of them, or exactly one, must be representable, since the start screen
+    /// keys its wording on which one is set.
+    #[test]
+    fn a_library_status_carries_damaged_and_newer_paths_alongside_missing_path() {
+        let none_of_them = LibraryStatus::default();
+        assert_eq!(none_of_them.missing_path, None);
+        assert_eq!(none_of_them.damaged_path, None);
+        assert_eq!(none_of_them.newer_path, None);
+
+        let damaged = LibraryStatus {
+            damaged_path: Some("/libraries/art".to_string()),
+            ..LibraryStatus::default()
+        };
+        let json = serde_json::to_value(&damaged).unwrap();
+        assert_eq!(json["damagedPath"], "/libraries/art");
+        assert_eq!(json["missingPath"], serde_json::Value::Null);
+        assert_eq!(json["newerPath"], serde_json::Value::Null);
+
+        let newer = LibraryStatus {
+            newer_path: Some("/libraries/art".to_string()),
+            ..LibraryStatus::default()
+        };
+        let json = serde_json::to_value(&newer).unwrap();
+        assert_eq!(json["newerPath"], "/libraries/art");
+        assert_eq!(json["missingPath"], serde_json::Value::Null);
+        assert_eq!(json["damagedPath"], serde_json::Value::Null);
     }
 
     #[test]

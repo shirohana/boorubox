@@ -18,6 +18,7 @@ import type {
   ListenerStatus,
   Note,
   Rating,
+  RebuildReport,
   RecentLibrary,
   Rule,
   RuleInput,
@@ -63,6 +64,17 @@ export function forgetRecent(path: string): Promise<RecentLibrary[]> {
 /** Shows the open library's folder in the file manager. */
 export function revealLibrary(): Promise<void> {
   return invoke('reveal_library')
+}
+
+/**
+ * Rebuilds `path`'s database from the files in its folder alone
+ * (`library-sidecars` design D11, D12). Closes the library first if `path` is
+ * the one open and leaves nothing open afterwards — the caller reopens it
+ * through {@link openLibrary}. Progress arrives on the `library:rebuild`
+ * event.
+ */
+export function rebuildLibrary(path: string): Promise<RebuildReport> {
+  return invoke('rebuild_library', { path })
 }
 
 /** The theme and the tile size; the listener port is on `LibraryStatus` (D5). */

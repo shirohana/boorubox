@@ -3,6 +3,14 @@
 Local image library and staging area in front of boorus. A Tauri desktop app owns the
 files and metadata; a bridge Chrome extension is one of several sources that feed it.
 Requirements and every closed decision: [docs/requirements.md](docs/requirements.md).
+What a library folder holds and how it behaves in a cloud-synced location:
+[docs/storage.md](docs/storage.md).
+
+> **Status: alpha.** It works for daily use by its author and is changing weekly. Installers
+> are not signed for the OS on either platform (see Install below). Your library is safe to
+> keep across versions: the app migrates an older library forward on its own, and this build
+> adds a describing file beside every image the first time it opens one. Problems go to
+> <https://github.com/shirohana/boorubox/issues>.
 
 ## Install
 

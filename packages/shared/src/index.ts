@@ -238,6 +238,13 @@ export interface ExportReport {
  * Payload of the `export:progress` event, emitted once per id including the
  * ones left out — so the last tick's `done` always equals `total`, mirroring
  * `ImportProgress` (design D13).
+ *
+ * Also the payload of every other `{ done, total }` event: `rules:progress`
+ * (`auto-tag-rules` D12), `library:rebuild` and `library:sidecars`
+ * (`library-sidecars` D13), each of which has its own name on the Rust side.
+ * A field added here for the export's sake would therefore be a field three
+ * other subscribers type and never receive — give that event its own
+ * interface instead.
  */
 export interface ExportProgress {
   done: number
@@ -253,6 +260,33 @@ export interface ExportProgress {
 export interface DeleteReport {
   deleted: number
   filesLeft: string[]
+}
+
+/**
+ * One sidecar `rebuildLibrary` could not read (`library-sidecars` design
+ * D11): a malformed document is counted and named rather than taking the
+ * whole rebuild down with it, the same rule `ImageRecord`'s own reader
+ * applies to a bad `adapter` field.
+ */
+export interface RebuildFailure {
+  file: string
+  reason: string
+}
+
+/**
+ * What `rebuildLibrary` answers with (design D10–D13): how many images came
+ * back, every sidecar that could not be read, the name the previous
+ * database was kept under (never deleted), and how many rules and sites
+ * came back from `library.json`.
+ */
+export interface RebuildReport {
+  images: number
+  failed: number
+  failures: RebuildFailure[]
+  /** Where the old database was moved; empty when there was none to keep. */
+  keptAs: string
+  rules: number
+  sites: number
 }
 
 export interface RatingCounts {
@@ -294,6 +328,25 @@ export interface LibraryStatus {
   libraryPath: string | null
   /** A remembered path that could not be opened; kept until another is picked. */
   missingPath: string | null
+  /**
+   * A remembered path that could not be opened because its database is
+   * damaged (`library-sidecars` design D9) — set only for that one reason.
+   * Every other reason a library failed to open, including a folder that is
+   * simply gone, keeps `missingPath` instead: the start screen has to tell
+   * "damaged" from "gone" apart, and re-deriving that on every status poll
+   * would mean a `quick_check` per poll, so it is recorded by the attempt
+   * that met it rather than guessed from the folder.
+   */
+  damagedPath: string | null
+  /**
+   * A remembered path that could not be opened because a newer build of
+   * BooruBox wrote it (`library-recovery`'s "A library from a newer build").
+   * Its own slot rather than a silence: a status naming none of the three
+   * reads on the start screen as "choose a library folder", which loses the
+   * folder the user already has and says nothing about why it will not open.
+   * A rebuild is never offered for one — rebuilding it would downgrade it.
+   */
+  newerPath: string | null
   imageCount: number
   listener: ListenerStatus
   version: string

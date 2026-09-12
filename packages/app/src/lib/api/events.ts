@@ -87,3 +87,33 @@ export function onCaptureWithdrawn(
 ): Promise<UnlistenFn> {
   return listen<CaptureWithdrawn>(CAPTURE_WITHDRAWN_EVENT, (event) => handler(event.payload))
 }
+
+/**
+ * The event `rebuild_library` emits while it runs, the same `{ done, total }`
+ * shape as `EXPORT_PROGRESS_EVENT` (`library-sidecars` design D13). Rendered
+ * on the start screen's damaged state or the Settings dialog, where no
+ * library is open.
+ */
+export const REBUILD_PROGRESS_EVENT = 'library:rebuild'
+
+/** Subscribes to a rebuild's progress, mirroring `onExportProgress`. */
+export function onRebuildProgress(
+  handler: (progress: ExportProgress) => void,
+): Promise<UnlistenFn> {
+  return listen<ExportProgress>(REBUILD_PROGRESS_EVENT, (event) => handler(event.payload))
+}
+
+/**
+ * The event the sidecar backfill emits while it writes the describing files a
+ * library is missing (`library-sidecars` design D7, D13), the same
+ * `{ done, total }` shape. Rendered as one tile in the pending-work band,
+ * where a library is open.
+ */
+export const SIDECARS_PROGRESS_EVENT = 'library:sidecars'
+
+/** Subscribes to the backfill's progress, mirroring `onExportProgress`. */
+export function onSidecarsProgress(
+  handler: (progress: ExportProgress) => void,
+): Promise<UnlistenFn> {
+  return listen<ExportProgress>(SIDECARS_PROGRESS_EVENT, (event) => handler(event.payload))
+}

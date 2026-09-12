@@ -19,14 +19,14 @@ use crate::library::{self, Library, SharedLibrary, with_library, with_library_if
 use crate::model::{
     AppSettings, BooruConnectionTest, BooruSite, BooruUploadForm, BooruUploadOutcome, BundlePlan,
     DeleteReport, ExportProgress, ExportReport, GRID_TILE_MAX, GRID_TILE_MIN, ImageCounts,
-    ImageRecord, ImportReport, LibraryStatus, ListenerStatus, Note, PostRef, RecentLibrary, Rule,
-    RuleInput, RuleListEntry, RulesImportReport, RulesRunReport, SearchRequest, SearchResult,
-    TagCount, TagCounts, Theme,
+    ImageRecord, ImportReport, LibraryStatus, ListenerStatus, Note, PostRef, RebuildProgress,
+    RebuildReport, RecentLibrary, Rule, RuleInput, RuleListEntry, RulesImportReport,
+    RulesRunReport, SearchRequest, SearchResult, SidecarsProgress, TagCount, TagCounts, Theme,
 };
 use crate::settings::Settings;
 use crate::{
-    AppState, VERSION, booru, db, export, from_tauri, http, import, ingest, lock, maintenance,
-    notes, query, rules, settings, tags, thumbs, trash,
+    AppState, OpenFailureKind, VERSION, booru, db, export, from_tauri, http, import, ingest, lock,
+    maintenance, notes, query, recover, rules, settings, tags, thumbs, trash,
 };
 
 /// Progress while `import_paths` runs. The webview subscribes under this name;
@@ -56,6 +56,15 @@ const EXPORT_PROGRESS_EVENT: &str = "export:progress";
 /// Progress while `rules_run` runs, the same `{ done, total }` shape as
 /// `IMPORT_PROGRESS_EVENT` (`auto-tag-rules` design D12).
 const RULES_PROGRESS_EVENT: &str = "rules:progress";
+
+/// Progress while `rebuild_library` runs, shown where no library is open
+/// (`library-sidecars` design D13) — its own event, not `import:progress`.
+const REBUILD_PROGRESS_EVENT: &str = "library:rebuild";
+
+/// Progress while `open_into_state`'s backfill writes the sidecars a library
+/// is missing, shown as one tile in the pending-work band (`library-sidecars`
+/// design D7, D13, spec `pending-work`).
+const SIDECARS_PROGRESS_EVENT: &str = "library:sidecars";
 
 /// Run `work` against the shared library on a blocking thread.
 ///
@@ -141,6 +150,46 @@ pub async fn close_library<R: Runtime>(
     *lock(&state.library) = None;
     write_settings(&app, &state, |settings| settings.library_path = None)?;
     status(&state).await
+}
+
+/// Rebuild `path`'s database from the sidecars in its folder alone
+/// (`library-sidecars` design D11, D12), emitting `library:rebuild` as it
+/// goes. Closes the library first if `path` is the one open, and leaves
+/// nothing open either way — the caller reopens it through [`open_library`]
+/// once the report is on screen, the two callers being the start screen (a
+/// damaged remembered library) and Settings (the one already open).
+#[tauri::command]
+pub async fn rebuild_library<R: Runtime>(
+    path: String,
+    app: AppHandle<R>,
+    state: State<'_, AppState>,
+) -> Result<RebuildReport> {
+    let root = PathBuf::from(path);
+    let target = root.clone();
+    // A rebuild tears the library down and renames a database onto its folder,
+    // so it is one of the "every place that tears down or replaces
+    // `state.library`" `cancel_running_import` names: an import left running
+    // would go on writing rows into the database about to be moved aside, and
+    // those rows would come back only as whatever sidecars happened to land
+    // before the walk reached their bucket.
+    cancel_running_import(&state);
+    off_main_thread(&state.library, move |shared| {
+        {
+            let mut guard = shared
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            if guard.as_ref().is_some_and(|open| open.paths.root == target) {
+                *guard = None;
+            }
+        }
+        let paths = library::LibraryPaths { root };
+        recover::rebuild(&paths, &mut |done, total| {
+            // A dropped tick is a progress bar that skips a number; the
+            // rebuild itself is unaffected, so it is not worth failing over.
+            let _ = app.emit(REBUILD_PROGRESS_EVENT, RebuildProgress { done, total });
+        })
+    })
+    .await
 }
 
 /// Cancel whatever import is running, waking a thread parked at the
@@ -583,10 +632,7 @@ pub async fn note_get(state: State<'_, AppState>) -> Result<Note> {
 /// the stamp without a second read.
 #[tauri::command]
 pub async fn note_set(content: String, state: State<'_, AppState>) -> Result<Note> {
-    with_library_off_main_thread(&state.library, move |library| {
-        notes::set(&library.conn, &content)
-    })
-    .await
+    with_library_off_main_thread(&state.library, move |library| notes::set(library, &content)).await
 }
 
 /// The library's configured booru sites, ordered by name (`booru-sites`
@@ -962,7 +1008,42 @@ pub enum OpenMode {
 
 /// Open the library at `path` into the shared state. `setup` calls this too,
 /// for the path it remembered, which is why it is not folded into the command.
+///
+/// `AppState.open_failure` is written on both outcomes (`library-sidecars`
+/// design D9) — set to `path` and why on a refusal, cleared on success — so
+/// `status` can tell a damaged remembered library from one that is simply
+/// missing without repeating the open. A successful open also starts the
+/// sidecar backfill (design D7) on its own blocking thread, emitting
+/// `library:sidecars`: the command that opened the library returns without
+/// waiting for it, exactly as `pending-work`'s tile is meant to appear after
+/// the grid is already on screen.
 pub fn open_into_state<R: Runtime>(
+    app: &AppHandle<R>,
+    state: &AppState,
+    path: &Path,
+    mode: OpenMode,
+) -> Result<()> {
+    match open_and_start_backfill(app, state, path, mode) {
+        Ok(()) => {
+            *lock(&state.open_failure) = None;
+            Ok(())
+        }
+        Err(error) => {
+            *lock(&state.open_failure) = Some((path.to_path_buf(), open_failure_kind(&error)));
+            Err(error)
+        }
+    }
+}
+
+fn open_failure_kind(error: &AppError) -> OpenFailureKind {
+    match error {
+        AppError::LibraryCorrupt { .. } => OpenFailureKind::Corrupt,
+        AppError::SchemaTooNew { .. } => OpenFailureKind::SchemaTooNew,
+        _ => OpenFailureKind::Other,
+    }
+}
+
+fn open_and_start_backfill<R: Runtime>(
     app: &AppHandle<R>,
     state: &AppState,
     path: &Path,
@@ -978,6 +1059,18 @@ pub fn open_into_state<R: Runtime>(
     // D7's "tears a library down" — a failed open never does).
     cancel_running_import(state);
     *lock(&state.library) = Some(library);
+
+    let root = path.to_path_buf();
+    let shared = state.library.clone();
+    let handle = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let _ = library::backfill_sidecars(&shared, &root, &mut |done, total| {
+            // A dropped tick is a tile that skips a number; the pass itself is
+            // unaffected, so it is not worth failing over (mirrors every other
+            // progress emitter in this file).
+            let _ = handle.emit(SIDECARS_PROGRESS_EVENT, SidecarsProgress { done, total });
+        });
+    });
     Ok(())
 }
 
@@ -1022,6 +1115,33 @@ async fn status(state: &AppState) -> Result<LibraryStatus> {
     .await?;
     let remembered = lock(&state.settings).library_path.clone();
 
+    // The one failure kind recorded against exactly `remembered`, if any
+    // (design D9) — set by `open_into_state` on the same attempt that left it
+    // unopened. A failure recorded against some other path (a `pick_library`
+    // the user then abandoned) never surfaces here.
+    let failure_kind = remembered.as_ref().and_then(|remembered| {
+        lock(&state.open_failure)
+            .as_ref()
+            .filter(|(path, _)| path == remembered)
+            .map(|(_, kind)| *kind)
+    });
+
+    // Three slots, at most one of them ever set (`library-recovery`'s "reported
+    // as damaged, distinctly from a library folder that is missing and from one
+    // written by a newer version"): `LibraryCorrupt` is `damaged_path`,
+    // `SchemaTooNew` is `newer_path`, everything else keeps `missing_path`.
+    // A newer library has to name its folder in a slot of its own — reporting
+    // none of the three leaves the start screen on "choose a library folder",
+    // which says nothing about the library the user already has.
+    let failed_path = |kind: OpenFailureKind| match (&open, failure_kind) {
+        (None, Some(recorded)) if recorded == kind => {
+            remembered.as_ref().map(|path| path.display().to_string())
+        }
+        _ => None,
+    };
+    let damaged_path = failed_path(OpenFailureKind::Corrupt);
+    let newer_path = failed_path(OpenFailureKind::SchemaTooNew);
+
     Ok(LibraryStatus {
         opened: open.is_some(),
         library_path: open.as_ref().map(|library| library.path.clone()),
@@ -1031,8 +1151,11 @@ async fn status(state: &AppState) -> Result<LibraryStatus> {
         // wherever a library opens, and one day would not be.
         missing_path: match &open {
             Some(_) => None,
+            None if damaged_path.is_some() || newer_path.is_some() => None,
             None => remembered.map(|path| path.display().to_string()),
         },
+        damaged_path,
+        newer_path,
         image_count: open.map_or(0, |library| library.image_count),
         listener: lock(&state.listener).clone(),
         version: VERSION.to_string(),
@@ -2321,6 +2444,327 @@ mod tests {
         assert!(answered.notes_collapsed);
         assert!(app_settings(app.state()).notes_collapsed);
         assert!(settings::load(app.handle()).notes_collapsed);
+    }
+
+    // ---- damage, the backfill and the rebuild (`library-sidecars` tasks
+    // 2.8, 2.9) ----
+
+    /// Bytes overwritten well past the header, so `db::open`'s `quick_check`
+    /// refuses the file as `LibraryCorrupt` rather than `NotADatabase` — the
+    /// same corruption `db.rs`'s own test exercises, reused here to drive the
+    /// command layer's response to it.
+    fn corrupt_db(path: &Path) {
+        let mut bytes = std::fs::read(path).unwrap();
+        assert!(
+            bytes.len() > 4200,
+            "the schema must have grown past one page"
+        );
+        for byte in &mut bytes[4096..4200] {
+            *byte ^= 0xff;
+        }
+        std::fs::write(path, bytes).unwrap();
+    }
+
+    /// `library-sidecars` task 2.8: reopening a damaged remembered library
+    /// leaves `damagedPath` set and `missingPath` null.
+    #[test]
+    fn a_damaged_remembered_library_leaves_damaged_path_set_and_missing_path_null() {
+        let (dir, app) = app_with_library();
+        *lock(&app.state::<AppState>().library) = None;
+        corrupt_db(&dir.path().join("library.sqlite"));
+
+        let state = app.state::<AppState>();
+        let error = open_into_state(
+            &app.handle().clone(),
+            &state,
+            dir.path(),
+            OpenMode::ExistingOnly,
+        )
+        .unwrap_err();
+        assert!(
+            matches!(error, AppError::LibraryCorrupt { .. }),
+            "{error:?}"
+        );
+
+        let status = status_of(&app);
+        assert_eq!(status.damaged_path, Some(dir.path().display().to_string()));
+        assert_eq!(status.missing_path, None);
+        assert_eq!(status.newer_path, None);
+    }
+
+    /// `library-sidecars` task 2.8: a folder that is simply gone leaves
+    /// `missingPath` set and `damagedPath` null.
+    #[test]
+    fn a_folder_that_is_simply_gone_leaves_missing_path_set_and_damaged_path_null() {
+        let (dir, app) = app_with_library();
+        let gone = dir.path().to_path_buf();
+        *lock(&app.state::<AppState>().library) = None;
+        drop(dir);
+
+        let state = app.state::<AppState>();
+        open_into_state(&app.handle().clone(), &state, &gone, OpenMode::ExistingOnly).unwrap_err();
+
+        let status = status_of(&app);
+        assert_eq!(status.missing_path, Some(gone.display().to_string()));
+        assert_eq!(status.damaged_path, None);
+        assert_eq!(status.newer_path, None);
+    }
+
+    /// `library-sidecars` task 2.8: a library written by a newer build sets
+    /// `newerPath` and neither of the other two — it is not missing, and
+    /// `library-recovery`'s "A library from a newer build" says it must not
+    /// be treated as damaged either, but it still has to name its folder:
+    /// with all three null the start screen offers "choose a library folder"
+    /// and never mentions the library the user already has.
+    #[test]
+    fn a_schema_too_new_library_sets_newer_path_only() {
+        let (dir, app) = app_with_library();
+        {
+            let library = app.state::<AppState>().library.clone();
+            let guard = library
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            guard
+                .as_ref()
+                .unwrap()
+                .conn
+                .pragma_update(None, "user_version", 99i64)
+                .unwrap();
+        }
+        *lock(&app.state::<AppState>().library) = None;
+
+        let state = app.state::<AppState>();
+        let error = open_into_state(
+            &app.handle().clone(),
+            &state,
+            dir.path(),
+            OpenMode::ExistingOnly,
+        )
+        .unwrap_err();
+        assert!(matches!(error, AppError::SchemaTooNew { .. }), "{error:?}");
+
+        let status = status_of(&app);
+        assert_eq!(status.newer_path, Some(dir.path().display().to_string()));
+        assert_eq!(status.missing_path, None);
+        assert_eq!(status.damaged_path, None);
+    }
+
+    /// `library-sidecars` task 2.8: opening a healthy library clears all
+    /// three — proven by leaving a stale failure in `open_failure` from a
+    /// previous attempt against the same path.
+    #[test]
+    fn opening_a_healthy_library_clears_missing_damaged_and_newer_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let app = mock_app();
+        *lock(&app.state::<AppState>().open_failure) =
+            Some((dir.path().to_path_buf(), crate::OpenFailureKind::Corrupt));
+
+        open(&app, dir.path()).unwrap();
+
+        let status = status_of(&app);
+        assert_eq!(status.missing_path, None);
+        assert_eq!(status.damaged_path, None);
+        assert_eq!(status.newer_path, None);
+    }
+
+    /// `library-sidecars` task 2.8: opening a library with sidecars missing
+    /// emits `library:sidecars` progress and does not block the command that
+    /// opened it — the pass runs on its own thread, detached from the
+    /// `open_library` call.
+    #[test]
+    fn opening_a_library_with_missing_sidecars_emits_progress_without_blocking() {
+        let dir = tempfile::tempdir().unwrap();
+        {
+            let library = Library::open_or_create(dir.path()).unwrap();
+            for id in ["a", "b", "c"] {
+                crate::ingest::store_image(
+                    &library,
+                    crate::ingest::IngestInput {
+                        id,
+                        bytes: &png_bytes(2, 2),
+                        source: crate::model::ImageSource::Local,
+                        source_ref: None,
+                        image_url: None,
+                        page_url: None,
+                        page_title: None,
+                        adapter: None,
+                        rating: None,
+                        tags: &[],
+                        captured_at: 0,
+                        file_modified_at: None,
+                        deleted_at: None,
+                    },
+                )
+                .unwrap();
+                std::fs::remove_file(crate::sidecar::path(&library.paths, id)).unwrap();
+            }
+        }
+        let app = mock_app();
+        let (sender, receiver) = mpsc::channel();
+        app.listen(SIDECARS_PROGRESS_EVENT, move |event| {
+            let progress: SidecarsProgress = serde_json::from_str(event.payload()).unwrap();
+            let _ = sender.send(progress);
+        });
+
+        let status = open(&app, dir.path()).unwrap();
+        assert!(
+            status.opened,
+            "the command must return without waiting for the pass"
+        );
+
+        let mut last = None;
+        while last.map(|p: SidecarsProgress| p.done) != Some(3) {
+            last = Some(
+                receiver
+                    .recv_timeout(A_LOCK_IS_NOT_COMING)
+                    .expect("the backfill must emit progress"),
+            );
+        }
+        assert_eq!(last, Some(SidecarsProgress { done: 3, total: 3 }));
+        for id in ["a", "b", "c"] {
+            assert!(
+                crate::sidecar::path(&Library::open_existing(dir.path()).unwrap().paths, id)
+                    .is_file()
+            );
+        }
+    }
+
+    /// `library-sidecars` task 2.9: rebuilding the open library closes it and
+    /// leaves nothing open.
+    #[test]
+    fn rebuilding_the_open_library_closes_it_and_leaves_nothing_open() {
+        let (dir, app) = app_with_library();
+        import(&app, &folder_of_images(2));
+
+        let report = now(rebuild_library(
+            dir.path().display().to_string(),
+            app.handle().clone(),
+            app.state(),
+        ))
+        .unwrap();
+
+        assert_eq!(report.images, 2);
+        assert!(!status_of(&app).opened, "rebuild must leave nothing open");
+    }
+
+    /// `library-sidecars` task 2.9: rebuilding a path that is not open works
+    /// with no library open at all.
+    #[test]
+    fn rebuilding_a_path_that_is_not_open_works_with_no_library_open() {
+        let dir = tempfile::tempdir().unwrap();
+        {
+            let library = Library::open_or_create(dir.path()).unwrap();
+            crate::ingest::store_image(
+                &library,
+                crate::ingest::IngestInput {
+                    id: "a",
+                    bytes: &png_bytes(2, 2),
+                    source: crate::model::ImageSource::Local,
+                    source_ref: None,
+                    image_url: None,
+                    page_url: None,
+                    page_title: None,
+                    adapter: None,
+                    rating: None,
+                    tags: &[],
+                    captured_at: 0,
+                    file_modified_at: None,
+                    deleted_at: None,
+                },
+            )
+            .unwrap();
+        }
+        let app = mock_app();
+
+        let report = now(rebuild_library(
+            dir.path().display().to_string(),
+            app.handle().clone(),
+            app.state(),
+        ))
+        .unwrap();
+
+        assert_eq!(report.images, 1);
+        assert!(!status_of(&app).opened);
+    }
+
+    /// `import-pause-cancel` design D7 again, for the third door onto it: a
+    /// rebuild tears the library down and renames a database onto its folder,
+    /// so a run left going would write the rest of its rows into the database
+    /// about to be moved aside — rows the rebuilt library would then be
+    /// missing, whatever the import's own report said.
+    #[test]
+    fn rebuilding_wakes_a_paused_import_and_ends_it() {
+        let (dir, app) = app_with_library();
+        let images = folder_of_images(3);
+        let control = Arc::new(import::ImportControl::default());
+        control.pause();
+        *lock(&app.state::<AppState>().import_control) = Some(control.clone());
+
+        let library = app.state::<AppState>().library.clone();
+        let paths = vec![images.path().to_path_buf()];
+        let run_control = control.clone();
+        let (first_item_done, confirm_first_item) = mpsc::channel();
+        let run = std::thread::spawn(move || {
+            import::import_paths(&library, &paths, &run_control, &mut |progress| {
+                if progress.done == 1 {
+                    let _ = first_item_done.send(());
+                }
+            })
+        });
+        confirm_first_item
+            .recv_timeout(A_LOCK_IS_NOT_COMING)
+            .unwrap();
+
+        let report = now(rebuild_library(
+            dir.path().display().to_string(),
+            app.handle().clone(),
+            app.state(),
+        ))
+        .unwrap();
+
+        let (finished, import_report) = mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = finished.send(run.join().unwrap());
+        });
+        let import_report = import_report
+            .recv_timeout(A_LOCK_IS_NOT_COMING)
+            .expect("a rebuild must wake the paused run rather than hang it")
+            .expect("a cancelled run still answers with a report, not an error");
+
+        assert!(import_report.cancelled);
+        assert_eq!(
+            report.images,
+            i64::from(import_report.imported),
+            "the rebuilt library holds exactly what the import had landed"
+        );
+    }
+
+    /// `library-sidecars` task 2.9: the progress event reaches a listener.
+    #[test]
+    fn rebuild_library_ticks_progress_to_a_listener() {
+        let (dir, app) = app_with_library();
+        import(&app, &folder_of_images(3));
+        let ticks = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let seen = ticks.clone();
+        app.listen(REBUILD_PROGRESS_EVENT, move |event| {
+            let progress: RebuildProgress = serde_json::from_str(event.payload()).unwrap();
+            lock(&seen).push(progress);
+        });
+
+        let report = now(rebuild_library(
+            dir.path().display().to_string(),
+            app.handle().clone(),
+            app.state(),
+        ))
+        .unwrap();
+
+        assert_eq!(report.images, 3);
+        let ticks = lock(&ticks).clone();
+        assert_eq!(
+            ticks.last(),
+            Some(&RebuildProgress { done: 3, total: 3 }),
+            "the last tick must show the rebuild finished: {ticks:?}"
+        );
     }
 
     // ---- booru sites and upload (`booru-upload` tasks 1.5, 2.5, 2.6) ----

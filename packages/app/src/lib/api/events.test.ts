@@ -21,8 +21,12 @@ import {
   onCaptureWithdrawn,
   onExportProgress,
   onImportProgress,
+  onRebuildProgress,
   onRulesProgress,
+  onSidecarsProgress,
+  REBUILD_PROGRESS_EVENT,
   RULES_PROGRESS_EVENT,
+  SIDECARS_PROGRESS_EVENT,
 } from './events'
 
 afterEach(() => {
@@ -101,6 +105,28 @@ it('hands the subscriber the rules-run progress payload, unwrapped', async () =>
 
   await onRulesProgress(handler)
   await emit(RULES_PROGRESS_EVENT, progress)
+
+  expect(handler).toHaveBeenCalledWith(progress)
+})
+
+it('hands the subscriber the rebuild progress payload, unwrapped', async () => {
+  mockIPC(() => {}, { shouldMockEvents: true })
+  const handler = vi.fn()
+  const progress: ExportProgress = { done: 100, total: 25_000 }
+
+  await onRebuildProgress(handler)
+  await emit(REBUILD_PROGRESS_EVENT, progress)
+
+  expect(handler).toHaveBeenCalledWith(progress)
+})
+
+it('hands the subscriber the sidecar backfill progress payload, unwrapped', async () => {
+  mockIPC(() => {}, { shouldMockEvents: true })
+  const handler = vi.fn()
+  const progress: ExportProgress = { done: 12, total: 400 }
+
+  await onSidecarsProgress(handler)
+  await emit(SIDECARS_PROGRESS_EVENT, progress)
 
   expect(handler).toHaveBeenCalledWith(progress)
 })

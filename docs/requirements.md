@@ -3,7 +3,8 @@
 
 # Native App + Bridge Extension — Requirements
 
-> Status: **v3 — decisions closed** (§11 is the decision log). Ready to hand to the planner.
+> Status: **v3 — decisions closed** (§11 is the decision log; the storage row was reversed
+> on 2026-09-12, with the argument, in §7). Ready to hand to the planner.
 > Audience: the agent that will turn this into an implementation plan. Not a spec — it says
 > what and why, not how.
 
@@ -132,7 +133,9 @@ zero registration.
                                   folder listings and cloud sync degrade well past tens of
                                   thousands of files in one folder; still usable in
                                   Finder/Explorer, backup = copy folder
+    images/<a1>/<b2>/<id>.json   that image's record, tags and posts, beside it (§7)
     library.sqlite             metadata + tags + search index (see §7)
+    library.json               the rules, the booru sites and the note, for a rebuild (§7)
     inbox/                     staging for uploads in progress (temp-write, then rename)
   ```
   The app must tolerate files removed or renamed externally (show as missing, offer to drop
@@ -147,15 +150,36 @@ startup; zero admin; safe to copy as a folder; Rust bindings.
 | Candidate | Verdict |
 |---|---|
 | **SQLite** (rusqlite / tauri-plugin-sql) with normalized `images` / `tags` / `image_tags` + **FTS5** for title/URL text | **Locked for day one.** Single file, embedded, ACID, mature Rust support, FTS built in. Every comparable local media manager uses it (Hydrus, digiKam, Lightroom catalogs). We chose it before for browser compatibility; it happens to also be the right desktop choice, for different reasons. |
-| Per-image JSON sidecars as the canonical record, SQLite as a **rebuildable index** (Eagle-style) | Attractive add-on, not a replacement: makes the folder self-describing and lets a corrupted DB (e.g. cloud sync) be rebuilt by re-scanning. Costs a second write per edit. **Deferred**: SQLite-only on day one; sidecars are a Phase-3 candidate. |
+| Per-image JSON sidecars beside every image, SQLite as a **rebuildable index** (Eagle-style) | **Locked, 2026-09-12.** Makes the folder self-describing and lets a corrupted DB be rebuilt by re-scanning. Costs a second write per edit. Deferred on day one, and that was right until it wasn't — see the reversal below. |
 | Embedded KV stores (redb, sled, LMDB, RocksDB) | No query language; tag search would be reimplemented by hand. No. |
 | DuckDB | Analytical, columnar; poor fit for per-row edits. No. |
 | Embedded document/graph DBs (SurrealDB, PoloDB) | Immature or heavy for this; no advantage over SQLite+FTS5. No. |
 | Plain JSON/YAML only | Fine to 1k images, then every search is a full scan and every edit rewrites a big file. No. |
 
+**Reversal, 2026-09-12 — sidecars are no longer deferred.** The original call was "SQLite-only
+on day one; sidecars are a Phase-3 candidate", and it was the right call for the six days it
+held: sidecars buy nothing until there is data worth recovering, and the second write per edit
+is real cost paid from the first image. What ended it was not an argument but an event. A
+library living in a Synology Drive bi-directional sync folder went `database disk image is
+malformed` part-way through a 200-row bundle import and would not reopen: the sync client
+rewrites `library.sqlite` and its `-journal` underneath the app while a capture commits once
+per image, which sqlite.org/howtocorrupt calls a stale hot journal. Every image file was
+intact on disk; every tag the user had typed was in the one file that was gone. The deferral
+assumed the risk was hypothetical and the cost immediate; both turned out the other way round.
+
+So: one JSON file per image beside it (`images/<a1>/<b2>/<id>.json`) carrying that image's
+whole record, its tags and its posts, plus one `library.json` at the root for the rules, the
+sites and the note. Every write that changes an image writes its file in the same call. The
+database stays the only thing read from — nothing reads a sidecar except a rebuild — so this
+adds a recovery path, not a second source of truth. **It does not make two writers safe:** one
+machine writes at a time, still, and two machines sharing a synced folder will corrupt it and
+then produce two divergent sidecar sets on top. Sidecars are recovery, not concurrency.
+
 Design notes for the planner: **tags as rows, not a comma string** (today's `tags TEXT`
 column is the browser-era shortcut); keep image blobs out of the DB; rollback-journal mode
-(not WAL) so cloud-sync clients see one file; document "one machine writes at a time".
+(not WAL) so cloud-sync clients see one file; document "one machine writes at a time". The
+journal mode is not what the sidecars replace: no mode protects a file another process is
+rewriting, which is why the answer is a second copy of the data rather than a pragma.
 
 ## 8. Phases
 
@@ -198,13 +222,17 @@ Users who never do this keep working as before, indefinitely.
 - **Two "Save image" menus during migration.** Distinct labels; notice says disable the old.
 - **Logic duplicated across runtimes.** Extraction in the extension, policy in the app (§4).
 - **Cloud-synced library folder.** Files are fine; the DB needs one writer at a time and no
-  WAL. The sidecar option (§7) makes this recoverable.
+  WAL. **This happened** (Synology Drive, 2026-09-12, mid-import): the sync client rewrote
+  `library.sqlite` and its journal underneath a running capture and the database would not
+  reopen. Sidecars are no longer an option but the answer (§7's reversal) — the folder now
+  describes itself well enough to rebuild the index from it, with the damaged file kept, never
+  deleted. One writer at a time is unchanged; nothing here makes a second machine safe.
 - **Gatekeeper / SmartScreen** on unsigned builds. Personal use: right-click → Open. Signing
   is a later decision.
 - **Refactor commits in this repo attract continued work.** HANDOFF.md now says stop; the
   owner drops or leaves the commits (§3).
 
-## 11. Decision log (all closed 2026-09-06)
+## 11. Decision log (closed 2026-09-06; a reversal is dated in its own row)
 
 | Decision | Outcome |
 |---|---|
@@ -212,7 +240,7 @@ Users who never do this keep working as before, indefinitely.
 | Drop unreleased commits here | **No** — kept; the extracted modules and tests are the lift source for the app (§3). |
 | Transport | Localhost HTTP, port 47201, Origin check (§5). |
 | App stack | Tauri v2; Svelte 5 + shadcn-svelte; no React (§6). |
-| Storage | SQLite + FTS5, files on disk, no sidecars yet (§7). |
+| Storage | SQLite + FTS5, files on disk. Sidecars deferred on 2026-09-06, **reversed 2026-09-12** after a synced folder corrupted a library: per-image JSON beside every image plus one `library.json`, the database a rebuildable index (§7). |
 | Browsers | Chrome only; others on request. |
 | Monorepo name | Owner picks from the shortlist below (all verified name-free on GitHub 2026-09-06). |
 
