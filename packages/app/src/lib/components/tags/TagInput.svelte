@@ -7,6 +7,7 @@
   import * as Command from '$lib/components/ui/command'
   import { Input } from '$lib/components/ui/input'
   import * as Popover from '$lib/components/ui/popover'
+  import { Textarea } from '$lib/components/ui/textarea'
   import {
     applySuggestion,
     completeToken,
@@ -50,6 +51,13 @@
      * (`selection-and-bulk` D8), which no query against the library can answer.
      */
     suggest?: (prefix: string, limit: number) => Promise<string[]>
+    /**
+     * A textarea that grows with its text instead of a one-line input. For the
+     * image's tag editor (spec `tag-editing`): an image carries dozens of tags,
+     * and a line that scrolls sideways hides all but a few of them. Enter is
+     * the confirmation here as everywhere, never a line break.
+     */
+    multiline?: boolean
   }
 
   let {
@@ -62,9 +70,10 @@
     onsubmit,
     onescape,
     suggest = libraryTags,
+    multiline = false,
   }: Props = $props()
 
-  let field = $state<HTMLInputElement | null>(null)
+  let field = $state<HTMLInputElement | HTMLTextAreaElement | null>(null)
 
   /**
    * The list is portalled to `<body>` unless the field is inside a native
@@ -179,29 +188,37 @@
         break
     }
   }
+
+  const fieldProps = $derived({
+    id,
+    placeholder,
+    'class': className,
+    'aria-label': label,
+    'role': 'combobox',
+    'aria-expanded': open,
+    'aria-autocomplete': 'list',
+    'autocomplete': 'off',
+    'autocorrect': 'off',
+    'spellcheck': false,
+    'oninput': () => {
+      oninput?.()
+      void refresh()
+    },
+    'onfocus': () => void refresh(),
+    'onblur': close,
+    onkeydown,
+  } as const)
 </script>
 
-<Input
-  bind:ref={field}
-  bind:value
-  {id}
-  {placeholder}
-  class={className}
-  aria-label={label}
-  role="combobox"
-  aria-expanded={open}
-  aria-autocomplete="list"
-  autocomplete="off"
-  autocorrect="off"
-  spellcheck={false}
-  oninput={() => {
-    oninput?.()
-    void refresh()
-  }}
-  onfocus={() => void refresh()}
-  onblur={close}
-  {onkeydown}
-/>
+<!--
+  One attribute set for both elements, spread: the textarea is the same field
+  with room to grow, and two lists drift.
+-->
+{#if multiline}
+  <Textarea bind:ref={field} bind:value {...fieldProps} />
+{:else}
+  <Input bind:ref={field} bind:value {...fieldProps} />
+{/if}
 
 <Popover.Root bind:open>
   <!--

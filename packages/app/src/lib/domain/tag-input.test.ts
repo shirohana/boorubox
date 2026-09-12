@@ -4,6 +4,7 @@ import {
   completeToken,
   confirmAction,
   currentToken,
+  editorText,
   filterSuggestions,
   initialHighlight,
   isTokenIncomplete,
@@ -194,5 +195,15 @@ describe('confirmAction', () => {
     const finished = completeToken(typed.value, typed.caret)
     expect(finished).toEqual({ value: 'brandnew ', caret: 9 })
     expect(confirmAction(finished.value, finished.caret, false)).toBe('submit')
+  })
+})
+
+describe('editorText', () => {
+  it('leaves a space after the last tag, so a click at the end starts a new one', () => {
+    expect(editorText(['cat', 'dog'])).toBe('cat dog ')
+  })
+
+  it('is empty for an image with no tags', () => {
+    expect(editorText([])).toBe('')
   })
 })

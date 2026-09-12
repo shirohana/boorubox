@@ -14,6 +14,7 @@
   import { Button } from '$lib/components/ui/button'
   import * as ContextMenu from '$lib/components/ui/context-menu'
   import { formatBytes, formatTimestamp } from '$lib/domain/format'
+  import { editorText } from '$lib/domain/tag-input'
   import { excludeTagFromQuery, sortTags, tagList, toggleTagInQuery } from '$lib/domain/tag-utils'
   import SelectionThumbs from './SelectionThumbs.svelte'
   import type { TrashActions } from './trash-actions'
@@ -137,7 +138,7 @@
     const key = image ? `${image.id}:${image.updatedAt}` : ''
     if (key === shown) return
     shown = key
-    draft = saved
+    draft = editorText(tags)
     error = null
   })
 
@@ -273,17 +274,25 @@
         Tags {#if tags.length > 0}({tags.length}){/if}
       </h3>
 
-      <div class="flex items-center gap-2">
+      <!--
+        A textarea, capped so a heavily tagged image does not push the rest of
+        the panel off screen; past the cap it scrolls. Save sits under it, not
+        beside: beside a field that grows it would hang in the margin.
+      -->
+      <div class="flex flex-col gap-2">
         <TagInput
           bind:this={tagInput}
           bind:value={draft}
+          multiline
           label="Tags of this image"
           placeholder="Tags, separated by spaces"
-          class="h-8 min-w-0 flex-1"
+          class="max-h-64 min-h-16 min-w-0"
           onsubmit={submitFromEditor}
         />
         {#if dirty}
-          <Button size="xs" disabled={saving} onclick={save}>Save</Button>
+          <div class="flex justify-end">
+            <Button size="xs" disabled={saving} onclick={save}>Save</Button>
+          </div>
         {/if}
       </div>
 
