@@ -4,6 +4,7 @@
   import { page } from '$app/state'
   import { appUpdate, library, onCaptureStored, pendingCaptures, settings } from '$lib/api'
   import AppSidebar from '$lib/components/frame/Sidebar.svelte'
+  import LibrarySwitchDialog from '$lib/components/frame/LibrarySwitchDialog.svelte'
   import TopBar from '$lib/components/frame/TopBar.svelte'
   import * as Sidebar from '$lib/components/ui/sidebar'
   import UpdateDialog from '$lib/components/update/UpdateDialog.svelte'
@@ -101,6 +102,7 @@
   it has none.
 -->
 <UpdateDialog />
+<LibrarySwitchDialog />
 
 {#if failure}
   <main class="p-6">

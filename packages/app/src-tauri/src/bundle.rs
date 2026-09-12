@@ -68,8 +68,8 @@ pub fn import_bundle(
 ) -> Result<ImportReport> {
     import::refuse_if_closed(library)?;
 
-    let plans: Vec<PartPlan> = sorted_parts(files).into_iter().map(open_part).collect();
-    let total: u32 = plans.iter().map(PartPlan::work).sum();
+    let plans = plan_parts(files);
+    let total = total_work(&plans);
 
     let mut report = ImportReport::default();
     on_progress(import::progress(&report, total));
@@ -122,6 +122,44 @@ pub fn import_bundle(
         }
     }
     Ok(report)
+}
+
+/// Open every part of `files`, in run order, without reading a row (design
+/// D5): what `import_bundle` runs before its first row, and what the
+/// `bundle_plan` command runs to answer the confirm screen — the one place
+/// either asks "how much work is this" (design D3).
+fn plan_parts(files: &[PathBuf]) -> Vec<PartPlan> {
+    sorted_parts(files).into_iter().map(open_part).collect()
+}
+
+/// The run's `total` — the same number `import:progress` carries — summed
+/// over every part's [`PartPlan::work`] (design D5).
+fn total_work(plans: &[PartPlan]) -> u32 {
+    plans.iter().map(PartPlan::work).sum()
+}
+
+/// The confirm screen's answer (design D2, D3): one summary per part, in run
+/// order, with the connections `plan_parts` opened dropped immediately —
+/// nothing here is parked for the run to adopt.
+pub fn plan(files: &[PathBuf]) -> crate::model::BundlePlan {
+    let plans = plan_parts(files);
+    let total = total_work(&plans);
+    let parts = plans
+        .into_iter()
+        .map(|plan| match plan {
+            PartPlan::Failed(path, reason) => crate::model::BundlePartPlan {
+                path: path.display().to_string(),
+                rows: None,
+                error: Some(reason),
+            },
+            PartPlan::Open(path, _conn, count) => crate::model::BundlePartPlan {
+                path: path.display().to_string(),
+                rows: Some(count),
+                error: None,
+            },
+        })
+        .collect();
+    crate::model::BundlePlan { parts, total }
 }
 
 /// `files` in the order the run processes them: by `part<N>` first, then by
@@ -309,7 +347,9 @@ fn failed_file(path: &Path, reason: impl Into<String>) -> ImportOutcome {
 mod tests {
     use super::*;
     use crate::library::Library;
-    use crate::model::{ImportStatus, ParsedTagSearch, SearchRequest, SearchView, Sort};
+    use crate::model::{
+        BundlePartPlan, ImportStatus, ParsedTagSearch, SearchRequest, SearchView, Sort,
+    };
 
     const FIXTURE: &str = concat!(
         env!("CARGO_MANIFEST_DIR"),
@@ -785,5 +825,93 @@ mod tests {
             !report.cancelled,
             "a cancel landing after the last row must not mark a finished run cancelled"
         );
+    }
+
+    /// `import-confirm` task 1.2: the confirm screen's number is the fixture's
+    /// real row count — the same 4 rows `import_bundle` counts as 3 imported
+    /// plus the 1 it fails to decode.
+    #[test]
+    fn plan_reports_the_fixtures_real_row_count() {
+        let plan = plan(&[PathBuf::from(FIXTURE)]);
+
+        assert_eq!(
+            plan.parts,
+            vec![BundlePartPlan {
+                path: FIXTURE.to_string(),
+                rows: Some(4),
+                error: None,
+            }]
+        );
+        assert_eq!(plan.total, 4);
+    }
+
+    /// `import-confirm` task 1.2: a part that will not open reports the exact
+    /// reason `import_bundle` gives that same file's failed item — one answer
+    /// to "why", not two.
+    #[test]
+    fn an_unopenable_part_reports_the_same_reason_the_run_would_fail_it_with() {
+        let bogus = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(bogus.path(), b"not a sqlite database at all").unwrap();
+
+        let plan = plan(&[bogus.path().to_path_buf()]);
+
+        let (_dir, library) = library();
+        let report = run(&library, &[bogus.path().to_path_buf()]);
+        let run_reason = report
+            .items
+            .iter()
+            .find(|item| item.path == bogus.path().display().to_string())
+            .and_then(|item| item.reason.clone())
+            .expect("the run must fail the bogus file with a reason");
+
+        assert_eq!(plan.parts.len(), 1);
+        assert_eq!(plan.parts[0].rows, None);
+        assert_eq!(plan.parts[0].error.as_deref(), Some(run_reason.as_str()));
+    }
+
+    #[test]
+    fn a_file_listed_twice_appears_once_in_the_plan() {
+        let plan = plan(&[PathBuf::from(FIXTURE), PathBuf::from(FIXTURE)]);
+
+        assert_eq!(plan.parts.len(), 1);
+    }
+
+    #[test]
+    fn plan_orders_parts_by_part_number_whatever_order_they_were_passed_in() {
+        let files = [
+            PathBuf::from("/bundle/database-part10of18.db"),
+            PathBuf::from("/bundle/database-part2of18.db"),
+            PathBuf::from("/bundle/database-part1of18.db"),
+        ];
+
+        let plan = plan(&files);
+
+        assert_eq!(
+            plan.parts.iter().map(|part| &part.path).collect::<Vec<_>>(),
+            vec![
+                "/bundle/database-part1of18.db",
+                "/bundle/database-part2of18.db",
+                "/bundle/database-part10of18.db",
+            ]
+        );
+    }
+
+    /// `import-confirm` design D2: the confirm screen's total must be the
+    /// number the run itself reports, not a sum recomputed a second way.
+    #[test]
+    fn plan_total_matches_the_total_a_real_run_reports() {
+        let files = [PathBuf::from(FIXTURE)];
+
+        let plan = plan(&files);
+
+        let (_dir, library) = library();
+        let control = ImportControl::default();
+        let mut run_total = None;
+        import_bundle(&library, &files, &control, &mut |progress| {
+            run_total.get_or_insert(progress.total);
+        })
+        .unwrap();
+
+        assert_eq!(Some(plan.total), run_total);
     }
 }

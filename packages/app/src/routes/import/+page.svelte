@@ -3,7 +3,7 @@
   // A route of its own, not a dialog off the sidebar: the run outlives it
   // (`Imports` is the singleton queue, design D9 of the local-import change),
   // so leaving and coming back still shows the same progress or report.
-  import { imports, libraryCounts, pickBundleFiles } from '$lib/api'
+  import { bundlePick, imports, libraryCounts, pickBundleFiles } from '$lib/api'
   import {
     type BundleOutcomeGroup,
     BUNDLE_COUNTING_LABEL,
@@ -37,8 +37,15 @@
       : null,
   )
 
+  // Neither of these can be `true` at the same time as `bundleRun`: the pick
+  // UI below is offered only while nothing is running and no report is up
+  // (design D5, D4), and starting a run is the only way `bundleRun` becomes
+  // non-null, which only `bundlePick.confirm()` — reachable from that same
+  // UI — can do.
+  const picking = $derived(!bundleRun && !imports.latestBundleReport)
+
   function pick() {
-    void imports.pickBundle(pickBundleFiles)
+    void bundlePick.pick(pickBundleFiles)
   }
 </script>
 
@@ -76,11 +83,56 @@
       </p>
     </div>
 
-    <div>
-      <Button onclick={pick} disabled={bundleRun !== null}>
-        {bundleRun ? 'Importing…' : 'Choose bundle files…'}
-      </Button>
-    </div>
+    {#if picking}
+      <div>
+        <Button onclick={pick} disabled={bundlePick.planning}>
+          {bundlePick.planning
+            ? 'Reading…'
+            : bundlePick.plan ? 'Choose different files…' : 'Choose bundle files…'}
+        </Button>
+      </div>
+
+      {#if bundlePick.planning}
+        <!-- `bundle_plan` reads every part's row count before this shows
+             anything (`import-confirm` design D2); on a slow network drive
+             that outlasts a click, so the screen says so rather than looking
+             stuck. -->
+        <p class="text-sm text-muted-foreground">Reading the picked files…</p>
+      {:else if bundlePick.plan}
+        <!-- Spec `legacy-bundle-import`, "Picked bundle parts are shown and
+             confirmed before anything is imported": nothing below is written
+             to the library until Import is pressed. -->
+        <div class="flex flex-col gap-4">
+          <h2 class="text-sm font-semibold">Ready to import</h2>
+          <ul class="flex flex-col gap-1 text-sm">
+            {#each bundlePick.plan.parts as part (part.path)}
+              <li class="flex items-center justify-between gap-4">
+                <span class="truncate font-mono text-xs" title={part.path}>{part.path}</span>
+                {#if part.error !== null}
+                  <span class="shrink-0 text-xs text-destructive">{part.error}</span>
+                {:else}
+                  <span class="shrink-0 text-xs text-muted-foreground tabular-nums">
+                    {(part.rows ?? 0).toLocaleString()} rows
+                  </span>
+                {/if}
+              </li>
+            {/each}
+          </ul>
+          <p class="text-sm">
+            Total —
+            <span class="font-medium tabular-nums">{bundlePick.plan.total.toLocaleString()}</span>
+          </p>
+          <div class="flex gap-2">
+            <Button onclick={() => bundlePick.confirm()}>Import</Button>
+            <Button variant="outline" onclick={() => bundlePick.discard()}>Discard</Button>
+          </div>
+        </div>
+      {/if}
+
+      {#if bundlePick.error}
+        <p class="text-sm text-destructive">{bundlePick.error}</p>
+      {/if}
+    {/if}
 
     {#if bundleRun}
       <div class="flex flex-col gap-2 text-sm" role="status">
@@ -150,6 +202,18 @@
           Imported —
           <span class="font-medium tabular-nums">{groups.imported.toLocaleString()}</span>
         </p>
+
+        <!--
+          Spec `legacy-bundle-import`, "A finished bundle report is cleared
+          when the user is done with it": clears only this route's own
+          report (design D5) — the library band's card for this run, if the
+          user has not seen it yet, is untouched.
+        -->
+        <div>
+          <Button size="sm" variant="outline" onclick={() => imports.dismissBundleReport()}>
+            Done
+          </Button>
+        </div>
       </div>
     {/if}
 

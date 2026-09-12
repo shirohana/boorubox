@@ -355,6 +355,28 @@ export interface ImportReport {
   items: ImportOutcome[]
 }
 
+/**
+ * One bundle part as `bundle_plan` found it, before any row is read: either
+ * its row count, or why it would not open. Exactly one of `rows` and `error`
+ * is set.
+ */
+export interface BundlePartPlan {
+  path: string
+  rows: number | null
+  error: string | null
+}
+
+/**
+ * What `bundle_plan` answers with: every picked part, in the order the run
+ * will read them, and `total` — the same number the run's first
+ * `import:progress` carries, computed once so the confirm screen and the run
+ * never disagree about how much work this is.
+ */
+export interface BundlePlan {
+  parts: BundlePartPlan[]
+  total: number
+}
+
 /** Payload of the `import:progress` event emitted while an import runs. */
 export interface ImportProgress {
   done: number

@@ -549,6 +549,33 @@ pub struct ImportReport {
     pub cancelled: bool,
 }
 
+/// One bundle part as `bundle_plan` (`import-confirm` design D2) found it,
+/// before any row is read: either its row count, or why it would not open.
+/// Exactly one of `rows` and `error` is `Some`. Both keys always serialize —
+/// as `null` on the side that is `None` — because the shared contract
+/// (`packages/shared/src/index.ts`) pins them as `number | null` and
+/// `string | null`, not optional: a webview reading a missing key and a
+/// webview reading `null` are the same case, but only one matches the type
+/// the two runtimes agreed on.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BundlePartPlan {
+    pub path: String,
+    pub rows: Option<i64>,
+    pub error: Option<String>,
+}
+
+/// What `bundle_plan` answers with: every part the confirm screen shows, in
+/// the order `import_bundle` will read them, and `total` — the same number
+/// the run's first `import:progress` carries (design D2), computed once here
+/// so the webview never has to know an unopenable part is worth one item.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BundlePlan {
+    pub parts: Vec<BundlePartPlan>,
+    pub total: u32,
+}
+
 /// Payload of the `import:progress` event emitted while an import runs.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

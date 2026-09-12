@@ -17,11 +17,11 @@ use crate::booru::credentials::Credentials;
 use crate::error::{AppError, Result};
 use crate::library::{self, Library, SharedLibrary, with_library, with_library_if_open};
 use crate::model::{
-    AppSettings, BooruConnectionTest, BooruSite, BooruUploadForm, BooruUploadOutcome, DeleteReport,
-    ExportProgress, ExportReport, GRID_TILE_MAX, GRID_TILE_MIN, ImageCounts, ImageRecord,
-    ImportReport, LibraryStatus, ListenerStatus, Note, PostRef, RecentLibrary, Rule, RuleInput,
-    RuleListEntry, RulesImportReport, RulesRunReport, SearchRequest, SearchResult, TagCount,
-    TagCounts, Theme,
+    AppSettings, BooruConnectionTest, BooruSite, BooruUploadForm, BooruUploadOutcome, BundlePlan,
+    DeleteReport, ExportProgress, ExportReport, GRID_TILE_MAX, GRID_TILE_MIN, ImageCounts,
+    ImageRecord, ImportReport, LibraryStatus, ListenerStatus, Note, PostRef, RecentLibrary, Rule,
+    RuleInput, RuleListEntry, RulesImportReport, RulesRunReport, SearchRequest, SearchResult,
+    TagCount, TagCounts, Theme,
 };
 use crate::settings::Settings;
 use crate::{
@@ -812,6 +812,22 @@ pub async fn import_paths<R: Runtime>(
     result
 }
 
+/// Plan a legacy bundle pick without importing anything (`import-confirm`
+/// design D2): the same part-planning step `import_bundle` runs before its
+/// first row, run here with no library open and nothing written. `files` are
+/// absolute paths the webview's multi-select picker chose, per the contract
+/// pinned in the change's `tasks.md` header. Opening each part and counting
+/// its rows is filesystem work — like `booru_upload`'s file read, it goes
+/// straight on a blocking thread rather than through `off_main_thread`, which
+/// exists to take the library this command never touches.
+#[tauri::command]
+pub async fn bundle_plan(files: Vec<String>) -> Result<BundlePlan> {
+    let files: Vec<PathBuf> = files.into_iter().map(PathBuf::from).collect();
+    tauri::async_runtime::spawn_blocking(move || crate::bundle::plan(&files))
+        .await
+        .map_err(from_tauri)
+}
+
 /// Import a legacy bundle's SQLite parts (`legacy-bundle-import` design D5,
 /// D6). `files` are absolute paths the webview's multi-select picker chose;
 /// the contract is pinned in the change's `tasks.md` header, shared with the
@@ -1436,6 +1452,21 @@ mod tests {
             2,
             "one of the three imported rows is deleted and stays out of the library view"
         );
+    }
+
+    /// `import-confirm` task 1.3: the command's own contract — it answers
+    /// with no library open, and its answer is `bundle::plan` for the same
+    /// files, argument name and all.
+    #[test]
+    fn bundle_plan_answers_with_no_library_open_and_matches_bundle_plan() {
+        let fixture = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/fixtures/legacy-bundle/database.db"
+        );
+
+        let plan = now(bundle_plan(vec![fixture.to_string()])).unwrap();
+
+        assert_eq!(plan, crate::bundle::plan(&[PathBuf::from(fixture)]));
     }
 
     /// Long enough that a machine under load does not fail the test, short

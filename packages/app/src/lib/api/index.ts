@@ -1,6 +1,7 @@
 export * from './assets'
 export * from './booru'
 export { booruSites } from './booru.svelte'
+export { bundlePick, BundlePick } from './bundle-pick.svelte'
 export * from './commands'
 export * from './dialog'
 export * from './drag-drop'
@@ -9,6 +10,12 @@ export * from './events'
 export { imports, type ImportReportEntry, type ImportRun } from './imports.svelte'
 export { library } from './library.svelte'
 export { libraryCounts } from './library-counts.svelte'
+export {
+  librarySwitch,
+  LibrarySwitch,
+  type LibrarySwitchAction,
+  type PendingLibrarySwitch,
+} from './library-switch.svelte'
 export { notes, NOTE_DEBOUNCE_MS } from './notes.svelte'
 export * from './opener'
 export { pendingCaptures } from './pending.svelte'

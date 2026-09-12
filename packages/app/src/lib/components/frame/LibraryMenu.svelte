@@ -12,6 +12,8 @@
     closeLibrary,
     errorText,
     library,
+    librarySwitch,
+    type LibrarySwitchAction,
     notes,
     openLibrary,
     pickLibrary,
@@ -56,23 +58,35 @@
 
   async function run(action: () => Promise<void>) {
     try {
-      // Every action here can put a different library — or none — behind the
-      // note panel, and `note_set` writes to whichever is open when it lands.
-      // Flushing first is what makes "typed and switched away" survive (`notes`
-      // design D14).
-      await notes.flush()
       await action()
     } catch (cause) {
       onerror(errorText(cause))
     }
   }
 
+  /**
+   * Every action that swaps the library goes through `librarySwitch.guard`
+   * (spec `library-switching`, design D6). `notes.flush()` stays inside the
+   * guarded action rather than outside it: a different library — or none —
+   * ends up behind the note panel, and `note_set` writes to whichever is
+   * open when it lands, so flushing first is what makes "typed and switched
+   * away" survive (`notes` design D14) — but only for a switch that actually
+   * happens. Run before the guard, a declined question would still flush a
+   * note for a switch that never took place.
+   */
+  function swap(action: LibrarySwitchAction, perform: () => Promise<void>) {
+    return run(() => librarySwitch.guard(action, async () => {
+      await notes.flush()
+      await perform()
+    }))
+  }
+
   // Every one of these answers with the new `LibraryStatus`, so the store takes
   // it straight (no second `library_status` call), and the layout's gate is what
   // sends a close on to /start.
-  const chooseFolder = () => run(async () => library.set(await pickLibrary()))
-  const switchTo = (path: string) => run(async () => library.set(await openLibrary(path)))
-  const close = () => run(async () => library.set(await closeLibrary()))
+  const chooseFolder = () => swap('switch', async () => library.set(await pickLibrary()))
+  const switchTo = (path: string) => swap('switch', async () => library.set(await openLibrary(path)))
+  const close = () => swap('close', async () => library.set(await closeLibrary()))
   const reveal = () => run(revealLibrary)
 </script>
 

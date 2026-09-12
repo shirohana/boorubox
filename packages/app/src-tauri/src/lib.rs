@@ -160,6 +160,7 @@ pub fn run() {
             commands::thumbnail_path,
             commands::import_paths,
             commands::import_bundle,
+            commands::bundle_plan,
             commands::import_pause,
             commands::import_resume,
             commands::import_cancel,

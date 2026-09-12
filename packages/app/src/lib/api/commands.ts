@@ -8,6 +8,7 @@
 
 import type {
   AppSettings,
+  BundlePlan,
   DeleteReport,
   ExportReport,
   ImageCounts,
@@ -128,6 +129,16 @@ export function importPaths(paths: string[]): Promise<ImportReport> {
  */
 export function importBundle(files: string[]): Promise<ImportReport> {
   return invoke('import_bundle', { files })
+}
+
+/**
+ * Reads every picked file's row count, or why it would not open, without
+ * opening a library (`import-confirm` design D2, D3). `total` is the same
+ * number the run's first `import:progress` will carry, computed once here so
+ * the confirm screen and the run never disagree about how much work this is.
+ */
+export function bundlePlan(files: string[]): Promise<BundlePlan> {
+  return invoke('bundle_plan', { files })
 }
 
 /**

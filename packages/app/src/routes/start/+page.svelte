@@ -6,6 +6,7 @@
     errorText,
     forgetRecent,
     library,
+    librarySwitch,
     openLibrary,
     pickLibrary,
     recentLibraries,
@@ -35,9 +36,16 @@
     busy = true
     error = null
     try {
-      const status = await open()
-      library.set(status)
-      if (status.opened) await goto(resolve('/'))
+      // Wired through the same guard every swap path uses (design D6), even
+      // though nothing here ever finds a question to ask: closing a library
+      // already cancels its import before the redirect that lands on this
+      // screen. Leaving this door unwired is how the next one gets built
+      // without one.
+      await librarySwitch.guard('switch', async () => {
+        const status = await open()
+        library.set(status)
+        if (status.opened) await goto(resolve('/'))
+      })
     } catch (cause) {
       error = errorText(cause)
     } finally {

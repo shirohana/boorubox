@@ -3,6 +3,7 @@
 
 import type {
   AppSettings,
+  BundlePlan,
   DeleteReport,
   ExportReport,
   Note,
@@ -21,6 +22,7 @@ import {
   appSettings,
   bulkSetRating,
   bulkUpdateTags,
+  bundlePlan,
   closeLibrary,
   deleteForever,
   emptyTrash,
@@ -224,6 +226,16 @@ it('import_bundle passes the file array', async () => {
   const calls = spyIPC(report)
   await expect(importBundle(['/a.db', '/b.db'])).resolves.toEqual(report)
   expect(calls).toHaveBeenCalledWith('import_bundle', { files: ['/a.db', '/b.db'] })
+})
+
+it('bundle_plan passes the file array and returns the plan', async () => {
+  const plan: BundlePlan = {
+    parts: [{ path: '/a.db', rows: 12, error: null }],
+    total: 12,
+  }
+  const calls = spyIPC(plan)
+  await expect(bundlePlan(['/a.db'])).resolves.toEqual(plan)
+  expect(calls).toHaveBeenCalledWith('bundle_plan', { files: ['/a.db'] })
 })
 
 it('import_pause takes no arguments', async () => {

@@ -224,16 +224,6 @@ it('tracks a bundle run\'s progress on its own queue entry', async () => {
   await vi.waitFor(() => expect(imports.runs).toEqual([]))
 })
 
-it('a cancelled bundle picker queues nothing and is not an error', async () => {
-  stubbedImports()
-  const imports = new Imports()
-
-  await imports.pickBundle(async () => [])
-
-  expect(imports.runs).toEqual([])
-  expect(imports.error).toBeNull()
-})
-
 it('runs a bundle import asked for during a paths import, in order', async () => {
   const stub = stubbedImports()
   const imports = new Imports()
@@ -420,6 +410,64 @@ it('a resolved cancel does not replay a stale request into the next run', async 
   await vi.waitFor(() => expect(imports.runs).toEqual([]))
 })
 
+it('dismissBundleReport clears the route report and leaves the band\'s reports untouched', async () => {
+  const stub = stubbedImports()
+  const imports = new Imports()
+
+  imports.enqueueBundle(['/bundle/database.db'])
+  await stub.started(1)
+  stub.calls[0].settle(finished(1))
+  await vi.waitFor(() => expect(imports.latestBundleReport).not.toBeNull())
+
+  imports.dismissBundleReport()
+
+  expect(imports.latestBundleReport).toBeNull()
+  expect(imports.reports).toHaveLength(1)
+})
+
+it('cancelAndSettle resolves at once with nothing running', async () => {
+  stubbedImports()
+  const imports = new Imports()
+
+  await expect(imports.cancelAndSettle()).resolves.toBeUndefined()
+})
+
+it('cancelAndSettle resolves only once the running run\'s report has landed', async () => {
+  const stub = stubbedImports()
+  const imports = new Imports()
+
+  imports.enqueue(['/first'])
+  await stub.started(1)
+
+  let settled = false
+  const settling = imports.cancelAndSettle().then(() => (settled = true))
+  await vi.waitFor(() => expect(stub.cancelCalls).toHaveBeenCalledTimes(1))
+  // The command round-tripped, but the run's own report has not landed yet.
+  expect(settled).toBe(false)
+  expect(imports.runs).toHaveLength(1)
+
+  stub.calls[0].settle(cancelled(1))
+  await settling
+  expect(settled).toBe(true)
+  expect(imports.runs).toEqual([])
+})
+
+it('cancelAndSettle drops a queued run without ever starting it', async () => {
+  const stub = stubbedImports()
+  const imports = new Imports()
+
+  imports.enqueue(['/first'])
+  imports.enqueue(['/second'])
+  await stub.started(1)
+
+  const settling = imports.cancelAndSettle()
+  stub.calls[0].settle(cancelled(1))
+  await settling
+
+  expect(imports.runs).toEqual([])
+  expect(stub.calls).toHaveLength(1)
+})
+
 it('dequeue removes only the named waiting run, leaving everything else untouched', async () => {
   const stub = stubbedImports()
   const imports = new Imports()
@@ -445,4 +493,17 @@ it('dequeue removes only the named waiting run, leaving everything else untouche
   // Dequeuing a waiting run is not a discard the running run's report should
   // ever hear about.
   expect(imports.reports.every((report) => report.queuedDiscarded === 0)).toBe(true)
+})
+
+it('a finished run has already left the queue when onfinished fires', async () => {
+  const stub = stubbedImports()
+  const imports = new Imports()
+  const queueWhenNotified: number[] = []
+  imports.onfinished(() => queueWhenNotified.push(imports.runs.length))
+
+  imports.enqueue(['/first'])
+  await stub.started(1)
+  stub.calls[0].settle(finished(1))
+
+  await vi.waitFor(() => expect(queueWhenNotified).toEqual([0]))
 })

@@ -123,27 +123,26 @@ export class Imports {
     void this.#pump()
   }
 
-  /** A picker that the user cancelled answers with no paths, not an error. */
+  /**
+   * A picker that the user cancelled answers with no paths, not an error.
+   * Paths only: a bundle pick is planned and confirmed before it is ever
+   * queued (`import-confirm` spec `legacy-bundle-import`, "Choosing bundle
+   * files SHALL NOT start an import"), so `BundlePick` owns that picker and
+   * reaches {@link enqueueBundle} only from its own confirm step.
+   */
   async pick(picker: () => Promise<string[]>): Promise<void> {
-    await this.#pick(picker, (paths) => this.enqueue(paths))
-  }
-
-  /** A bundle-file picker that the user cancelled answers with no files, not an error. */
-  async pickBundle(picker: () => Promise<string[]>): Promise<void> {
-    await this.#pick(picker, (files) => this.enqueueBundle(files))
-  }
-
-  async #pick(picker: () => Promise<string[]>, enqueue: (picked: string[]) => void): Promise<void> {
     try {
-      enqueue(await picker())
+      this.enqueue(await picker())
     } catch (cause) {
       this.error = errorText(cause)
     }
   }
 
   /**
-   * Called once per run that ends, so the screen showing the library can
-   * re-search. Returns its own unsubscribe, for an `$effect` to return.
+   * Called once per run that ends — after it has left {@link runs}, so a
+   * listener sees the queue as it now stands — so the screen showing the
+   * library can re-search. Returns its own unsubscribe, for an `$effect` to
+   * return.
    */
   onfinished(listener: () => void): () => void {
     this.#finished.add(listener)
@@ -157,6 +156,16 @@ export class Imports {
   /** For a library switch: the reports describe runs into the folder that closed. */
   dismissAll(): void {
     this.reports = []
+    this.latestBundleReport = null
+  }
+
+  /**
+   * Done on the `/import` route's report (`import-confirm` design D5):
+   * clears the route's one report, leaving the library band's `reports`
+   * list untouched — the band is a different audience and may not have
+   * shown this one yet.
+   */
+  dismissBundleReport(): void {
     this.latestBundleReport = null
   }
 
@@ -219,6 +228,29 @@ export class Imports {
     this.runs = this.runs.filter((run) => !(run.id === id && run.status === 'queued'))
   }
 
+  /**
+   * Cancels the running import and resolves once the queue it left behind is
+   * empty (`import-confirm` design D6) — unlike {@link cancel}, which
+   * resolves as soon as Rust has taken the signal, one item before the
+   * cancelled run's own report actually lands. A library swap needs that
+   * later point: swapping before the report lands would add it to the band
+   * after the new library is already open (design D6). Resolves at once
+   * with nothing running. Built on {@link onfinished}, which `#pump` fires
+   * with the finished run already off `runs`: {@link cancel} drops everything
+   * queued behind the running one synchronously, so the very next run to
+   * finish is the one this cancelled and `runs` is empty when this resolves.
+   */
+  async cancelAndSettle(): Promise<void> {
+    if (this.runs.length === 0) return
+    await new Promise<void>((resolve) => {
+      const unsubscribe = this.onfinished(() => {
+        unsubscribe()
+        resolve()
+      })
+      void this.cancel()
+    })
+  }
+
   async #pump(): Promise<void> {
     if (this.#pumping) return
     this.#pumping = true
@@ -227,6 +259,11 @@ export class Imports {
         run.status = 'running'
         await this.#execute(run)
         this.runs = this.runs.slice(1)
+        // After the run is off the queue, never inside `#execute`: a listener
+        // that reads `runs` — {@link cancelAndSettle} does, and a library swap
+        // hangs off its answer — must not be woken while the run it is
+        // waiting out is still sitting in front.
+        this.#finished.forEach((listener) => listener())
       }
     } finally {
       this.#pumping = false
@@ -276,7 +313,6 @@ export class Imports {
       this.#cancelRequested = false
       this.#pauseRequested = false
       await unlisten()
-      this.#finished.forEach((listener) => listener())
     }
   }
 }
