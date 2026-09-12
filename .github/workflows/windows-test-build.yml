@@ -1,4 +1,5 @@
-# A Windows installer from any branch, as a run artifact and never a release.
+# A Windows installer and the bridge extension from any branch, as run
+# artifacts and never a release.
 #
 # Exists because the owner's Windows machine has no toolchain: a Windows-only
 # defect (the title-bar drag focus loop of 2026-09-12 was the first) can only
@@ -24,6 +25,23 @@ on:
     branches: ['test-build/**']
 
 jobs:
+  # The bridge extension rides along, as it does on a release: a capture fix is
+  # tested through the extension, and the owner has no build of it elsewhere.
+  # Ubuntu, where a `run: pnpm …` step works (see the Windows job below).
+  extension:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: ./.github/actions/toolchain
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter @boorubox/extension build
+      - uses: actions/upload-artifact@v6.0.0
+        with:
+          name: boorubox-extension-${{ github.sha }}
+          path: packages/extension/dist
+          if-no-files-found: error
+          retention-days: 14
+
   build:
     runs-on: windows-latest
     steps:
