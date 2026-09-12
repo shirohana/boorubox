@@ -128,6 +128,19 @@ export function completeToken(value: string, caret: number): TagInputText {
   return { value: `${value.slice(0, caret)} ${value.slice(caret)}`, caret: caret + 1 }
 }
 
+/**
+ * The text an image's tag editor opens with: the tags joined, and a space after
+ * the last one so the caret a click puts at the end is already on a new token.
+ * Without it the first thing typed glued itself to the last tag and the owner
+ * had to type the space by hand on every edit — and a click into the editor
+ * means a tag is about to be added. A save trims, so the space never counts
+ * as a change. Nothing for an image with no tags: the caret is on a new token
+ * already.
+ */
+export function editorText(tags: string[]): string {
+  return tags.length === 0 ? '' : `${tags.join(' ')} `
+}
+
 /** What one press of the confirm key means, in the order of design D13. */
 export type Confirmation = 'accept' | 'complete' | 'submit'
 

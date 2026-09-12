@@ -15,6 +15,16 @@ that moment. An empty editor SHALL be a valid save that leaves the image with no
 new tags SHALL be visible in the grid, the inspector and the tag list of the current results
 without reopening the library.
 
+The editor SHALL be a field that grows with its text, not a single line: an image carries
+dozens of tags and a line that scrolls sideways shows a few of them. It SHALL open with a
+space after the last tag, so a click that lands at the end is already on a new token — a
+click into the editor means a tag is about to be added, and the owner had been typing that
+space by hand on every edit (2026-09-12). The space is not a change: a save trims.
+
+#### Scenario: Opening the editor to add a tag
+- **WHEN** the user clicks at the end of the editor of an image that already has tags
+- **THEN** the caret sits after a space and the next keystroke begins a new tag, and nothing is marked as changed until one is typed
+
 #### Scenario: Adding tags
 - **WHEN** the user types two tags into the editor of an image that has none and saves
 - **THEN** the image carries both tags, they are shown in the same order in the inspector and everywhere else the image's tags appear, and its last-changed time is now
