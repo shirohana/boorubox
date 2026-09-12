@@ -1,12 +1,9 @@
 // X (Twitter). Selectors verified 2026-09-06 against three saved photo-viewer
-// pages; `__fixtures__/x-post.html` is a trimmed copy of one of them, and its
-// header carries the date. When a field stops coming through, that date is what
+// pages; the `__fixtures__/x-post*.html` files are trimmed copies of them, and
+// their headers carry the date. When a field stops coming through, that date is what
 // says how old the markup we last knew is (design D10).
 
 import type { AdapterFields, ExtractContext, SiteAdapter } from './types.js'
-
-/** Past this the title stops naming the post and starts being the post. */
-const TITLE_TEXT_LIMIT = 100
 
 export const x: SiteAdapter = {
   site: 'x',
@@ -38,7 +35,7 @@ export const x: SiteAdapter = {
       return undefined
     }
     const said = text(fields.postText)
-    return said ? `${author} on X: ${firstLine(said)}` : `${author} on X`
+    return said ? `${author} on X: ${oneLine(said)}` : `${author} on X`
   },
 }
 
@@ -55,12 +52,19 @@ function readAuthor(displayName?: string, handle?: string): string | undefined {
 }
 
 /**
- * One line, short enough to read in a grid cell. The post's whole text is in
- * `postText`, so nothing is lost by cutting it here.
+ * The whole post on one line, its line breaks read as spaces.
+ *
+ * Whole, not the first line cut at a hundred characters as it was until
+ * 2026-09-12: that shape assumed nothing reads the title, but free-text search
+ * indexes the title and not the record's fields, so a post whose hashtags sit
+ * on its second line (the shape X users favour) was unsearchable by them, and
+ * the owner found their new captures missing what the old extension's tab
+ * title had carried. A grid cell clips a long title on its own; a search
+ * cannot find what was never stored. Cutting the title again means moving the
+ * fields into the search index first.
  */
-function firstLine(said: string): string {
-  const line = said.split('\n')[0]!.trim()
-  return line.length > TITLE_TEXT_LIMIT ? `${line.slice(0, TITLE_TEXT_LIMIT).trimEnd()}…` : line
+function oneLine(said: string): string {
+  return said.replace(/\s*\n\s*/g, ' ').trim()
 }
 
 /**
