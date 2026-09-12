@@ -34,6 +34,9 @@ gated on the legacy repo shipping Phase 0.
 - Window drag regions are macOS-only: bind `data-tauri-drag-region={windowDragRegion}` from
   `$lib/platform`, never the bare attribute. Windows has its native title bar, and there a
   drag region only triggers the focus-toggle bug (tauri-apps/tauri#10767).
+- Never re-take focus on a window `blur` outside macOS (`isMacos` from `$lib/platform`). On
+  Windows a title-bar drag blurs the webview with the window still focused, so a handler that
+  pulls focus back loops with the drag until the user switches windows. Same upstream bug.
 - An `$effect` that reads a field off a store object reassigned wholesale (the shape of
   `library.status?.libraryPath`) re-runs on every status refresh. Derive the field with
   `$derived` and depend on that. Three reviews in a row flagged the effect form.
