@@ -31,16 +31,23 @@ jobs:
       - uses: ./.github/actions/toolchain
         with:
           rust: 'true'
-      - run: pnpm install --frozen-lockfile
 
-      # The signing key is needed even here: with `plugins.updater.pubkey`
-      # committed, the bundler refuses to build without the private half
-      # (CLAUDE.md, Releases). The `.sig` it produces is not uploaded — nothing
-      # reads it outside a release.
-      - run: pnpm --filter @boorubox/app tauri build
+      # The release's own build step, minus the release: tauri-action with no
+      # `releaseId` builds and uploads nothing. Not a bare `pnpm tauri build`
+      # step — on windows-latest a `run: pnpm …` line under PowerShell exits 0
+      # in a second having done nothing (the release workflow's `pnpm install`
+      # step does the same there; pnpm installs the workspace itself the first
+      # time tauri-action runs a script through it). The signing key is needed
+      # even here: with `plugins.updater.pubkey` committed, the bundler refuses
+      # to build without the private half (CLAUDE.md, Releases). The `.sig` it
+      # produces is not uploaded — nothing reads it outside a release.
+      - uses: tauri-apps/tauri-action@v1.0.0
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          projectPath: packages/app
+          tauriScript: pnpm tauri
 
       - uses: actions/upload-artifact@v6.0.0
         with:
