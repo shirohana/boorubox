@@ -18,6 +18,7 @@
   import { getCurrentWebview } from '@tauri-apps/api/webview'
   import { getCurrentWindow } from '@tauri-apps/api/window'
   import { KEY_ZOOM_OUT, KEY_ZOOM_RESET, KEYS_ZOOM_IN } from '$lib/keyboard'
+  import { isMacos } from '$lib/platform'
   import { applyTheme } from '$lib/theme.svelte'
   import { zoomBy } from '$lib/zoom'
   import '../app.css'
@@ -104,6 +105,14 @@
    * the focus, the loss happened inside it, so the webview asks for the keys
    * back (`core:webview:allow-set-webview-focus`). A blur from switching apps
    * leaves `isFocused` false and is left alone.
+   *
+   * macOS only, and not because Windows has no fullscreen to leave: on Windows
+   * a drag by the native title bar blurs the webview while the window stays
+   * focused (tauri-apps/tauri#10767, the native frame included), so this
+   * handler pulled the focus back mid-drag, the drag blurred it again, and the
+   * app looped focus/blur — slow and deaf to clicks — until a switch to another
+   * window turned `isFocused` false. Bound as `undefined` there, not guarded
+   * inside, so the listener is never even installed.
    */
   async function reclaimKeys() {
     if (!(await getCurrentWindow().isFocused())) return
@@ -111,7 +120,7 @@
   }
 </script>
 
-<svelte:window onkeydown={zoomKeys} onblur={reclaimKeys} />
+<svelte:window onkeydown={zoomKeys} onblur={isMacos ? reclaimKeys : undefined} />
 
 <!--
   Mounted unconditionally, not only once the library is open: a launch check
