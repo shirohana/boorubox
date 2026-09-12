@@ -4,9 +4,14 @@
 # defect (the title-bar drag focus loop of 2026-09-12 was the first) can only
 # be checked on a real Windows build, and a release is the wrong vehicle for
 # an unproven fix — a published version is never reused (CLAUDE.md, Releases),
-# so every wrong guess would burn one. Run it from the Actions tab or
-# `gh workflow run windows-test-build.yml --ref <branch>`, download the
+# so every wrong guess would burn one. Push the work as a branch under
+# `test-build/` (or, once this file is on `main`, run it from the Actions tab
+# or `gh workflow run windows-test-build.yml --ref <branch>`), download the
 # artifact, install over the current build, check by hand.
+#
+# The branch trigger is what makes the first use work: GitHub dispatches only
+# a workflow that already exists on the default branch, and the fix a test
+# build is for is by definition not there yet.
 #
 # The same version as the branch's Cargo.toml, on purpose: the NSIS installer
 # reinstalls over an equal version, and the app's updater compares against
@@ -15,6 +20,8 @@ name: Windows test build
 
 on:
   workflow_dispatch:
+  push:
+    branches: ['test-build/**']
 
 jobs:
   build:
