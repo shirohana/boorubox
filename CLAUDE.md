@@ -72,6 +72,29 @@ bundles, the bridge extension as a zip, `latest.json` and its signatures, drafte
 published once every platform has uploaded. The release job fails if the tag and the
 Cargo.toml version disagree.
 
+Releases are **regular** GitHub releases, not pre-releases (`app-update` design D2):
+`/releases/latest/download/…` is what the in-app updater reads, and GitHub's `/releases/latest/`
+skips pre-releases — with that flag set the manifest URL resolves to nothing. The "this is
+early software" signal that the flag used to carry moves to the release *name* instead, e.g.
+`BooruBox 2026-09-12 alpha`: nothing parses a release name, a person reads it on the page.
+
+The version is not part of this change's normal flow — it is set as part of tagging, by hand:
+bump `packages/app/src-tauri/Cargo.toml`'s `version` to
+`<year - 2000>.<month>.<day * 100 + sequence>` for the day the release is cut (e.g. `26.9.1201`
+for the first release on 2026-09-12, `26.9.1202` for a same-day fix), commit, then tag
+`v<that version>`.
+
+- **Computed, never string-concatenated.** Semver forbids leading zeros in a numeric
+  identifier, so pasting `01` next to `01` is invalid where `1 * 100 + 1 = 101` is fine.
+- **The sequence exists because the date already fills all three slots.** Without it there is
+  no way to ship a same-day fix, which is exactly what a bad release needs.
+- **`year - 2000` keeps MSI reachable.** WiX caps an MSI's first version field at 255, so a
+  literal `2026` would put MSI permanently out of reach. NSIS-only is a choice today, by
+  design (below); `26` keeps it a choice rather than a wall.
+- **A published version is never reused** — not by deleting and re-tagging either: an install
+  that has already seen `26.9.1201` will not take another release under that number, so a
+  re-tag reaches some installs and not others while looking, from GitHub, like one release.
+
 Bundles are signed for the *updater* (minisign, `plugins.updater.pubkey` in
 `tauri.conf.json`, private half in the repo's Actions secrets) but not for the OS: no Apple
 Developer ID, no Authenticode, so first launch shows an unidentified-developer warning on

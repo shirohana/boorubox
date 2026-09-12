@@ -2,10 +2,11 @@
   import { goto } from '$app/navigation'
   import { resolve } from '$app/paths'
   import { page } from '$app/state'
-  import { library, onCaptureStored, pendingCaptures, settings } from '$lib/api'
+  import { appUpdate, library, onCaptureStored, pendingCaptures, settings } from '$lib/api'
   import AppSidebar from '$lib/components/frame/Sidebar.svelte'
   import TopBar from '$lib/components/frame/TopBar.svelte'
   import * as Sidebar from '$lib/components/ui/sidebar'
+  import UpdateDialog from '$lib/components/update/UpdateDialog.svelte'
   import { getCurrentWebview } from '@tauri-apps/api/webview'
   import { getCurrentWindow } from '@tauri-apps/api/window'
   import { KEY_ZOOM_OUT, KEY_ZOOM_RESET, KEYS_ZOOM_IN } from '$lib/keyboard'
@@ -23,6 +24,9 @@
 
   void library.load()
   void settings.load()
+  // Design D4: fire-and-forget, silent on failure — nothing here may delay
+  // the window above from appearing.
+  void appUpdate.checkOnLaunch()
 
   // Design D12: the theme is painted from the setting, and the layout renders
   // nothing until the setting has arrived, so there is no frame of the light
@@ -89,6 +93,14 @@
 </script>
 
 <svelte:window onkeydown={zoomKeys} onblur={reclaimKeys} />
+
+<!--
+  Mounted unconditionally, not only once the library is open: a launch check
+  can find an update before `library.load()` even answers, and the dialog
+  gates itself on `appUpdate.promptOpen`, so there is nothing to render while
+  it has none.
+-->
+<UpdateDialog />
 
 {#if failure}
   <main class="p-6">

@@ -63,6 +63,13 @@ reqwest = { version = "0.12", features = ["multipart", "json", "default-tls"] }
 # rather than refused (`booru-upload` design D12).
 md-5 = "0.10"
 
+# `tauri-plugin-updater` and `tauri-plugin-process` are unavailable on mobile
+# (`app-update` design D1); guarded per the plugins' own install docs so a
+# mobile build never tries to resolve either crate.
+[target."cfg(not(any(target_os = \"android\", target_os = \"ios\")))".dependencies]
+tauri-plugin-updater = "2"
+tauri-plugin-process = "2"
+
 [dev-dependencies]
 http-body-util = "0.1"
 # The mock runtime the command tests drive: a headless `AppHandle` is the only

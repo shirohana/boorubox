@@ -128,6 +128,11 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_store::Builder::new().build())
+        // `app-update` design D1: the plugin does check/download/verify/install
+        // and the restart; we add no Rust commands of our own, the confirmation
+        // lives in the webview which calls the guest bindings directly.
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_process::init())
         .manage(AppState::default())
         .setup(|app| {
             open_remembered_library_and_listen(app);

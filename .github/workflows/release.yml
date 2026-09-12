@@ -44,6 +44,50 @@ jobs:
       - name: Zip the bridge extension
         run: cd packages/extension/dist && zip -r "$GITHUB_WORKSPACE/boorubox-extension-$GITHUB_REF_NAME.zip" .
 
+      # A regular release, not a pre-release (design D2): GitHub's
+      # `/releases/latest/download/…` — what the updater reads — skips
+      # pre-releases entirely, so the manifest would resolve to nothing while
+      # that flag is set. The "early software" signal that the flag used to
+      # carry moves to the release name instead: nothing parses it, a person
+      # reads it on the release page.
+      #
+      # The date comes from the tag, never the runner's clock: the version is
+      # computed by hand from the owner's local date (UTC+8), and a runner
+      # still on the previous UTC day would otherwise name the release a day
+      # behind the version it is attached to. `v0.1.0` does not fit this
+      # shape and is not special-cased — this workflow only runs on tags cut
+      # from here on, and a tag that does not decode should fail loudly
+      # rather than be silently tolerated.
+      - name: The release name carries the tag's date and stage
+        id: name
+        run: |
+          tag="$GITHUB_REF_NAME"
+          version="${tag#v}"
+          major="${version%%.*}"
+          rest="${version#*.}"
+          minor="${rest%%.*}"
+          patch="${rest#*.}"
+          if ! [[ "$major" =~ ^[0-9]+$ && "$minor" =~ ^[0-9]+$ && "$patch" =~ ^[0-9]+$ ]]; then
+            echo "tag $tag is not shaped like v<year-2000>.<month>.<day*100+sequence>" >&2
+            exit 1
+          fi
+          year=$((major + 2000))
+          day=$((patch / 100))
+          sequence=$((patch % 100))
+          if [ "$minor" -lt 1 ] || [ "$minor" -gt 12 ]; then
+            echo "tag $tag does not decode to a valid month (got $minor)" >&2
+            exit 1
+          fi
+          if [ "$day" -lt 1 ] || [ "$day" -gt 31 ] || [ "$sequence" -lt 1 ]; then
+            echo "tag $tag does not decode to a valid day*100+sequence patch (got day=$day, sequence=$sequence)" >&2
+            exit 1
+          fi
+          name=$(printf 'BooruBox %04d-%02d-%02d alpha' "$year" "$minor" "$day")
+          if [ "$sequence" -gt 1 ]; then
+            name="$name #$sequence"
+          fi
+          echo "value=$name" >> "$GITHUB_OUTPUT"
+
       - uses: actions/github-script@v9.0.0
         id: create
         with:
@@ -53,10 +97,10 @@ jobs:
               owner: context.repo.owner,
               repo: context.repo.repo,
               tag_name: tag,
-              name: `BooruBox ${tag}`,
-              body: 'Pre-release. Unsigned: macOS shows an unidentified-developer warning, Windows shows SmartScreen.',
+              name: '${{ steps.name.outputs.value }}',
+              body: 'Alpha. Unsigned: macOS shows an unidentified-developer warning, Windows shows SmartScreen. `boorubox.exe` is a portable copy of the Windows build; taking an update from it runs the NSIS installer and turns it into an installed copy.',
               draft: true,
-              prerelease: true,
+              prerelease: false,
             })
             return data.id
 
@@ -104,6 +148,15 @@ jobs:
           # Windows builds NSIS only (see `bundle.targets`), so the updater's
           # Windows entry has to point at the setup.exe.
           updaterJsonPreferNsis: true
+          # A portable `boorubox.exe` beside the installer (design D7). It
+          # carries the same updater client as an installed copy, so taking an
+          # update from it runs the NSIS installer in place — surprising
+          # enough that the release body says so plainly rather than trying to
+          # engineer around it. Windows only: tauri-action uploads the plain
+          # binary for whichever platform it runs on, and a bare macOS
+          # mach-o (no .app, no Info.plist, no resources) will not run and
+          # is not what the release body describes.
+          uploadPlainBinary: ${{ matrix.platform == 'windows-latest' }}
 
   publish:
     # `draft` too, not just `build`: the release id this job flips comes from it.
@@ -118,5 +171,5 @@ jobs:
               repo: context.repo.repo,
               release_id: ${{ needs.draft.outputs.release_id }},
               draft: false,
-              prerelease: true,
+              prerelease: false,
             })

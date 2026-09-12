@@ -8,7 +8,15 @@ Requirements and every closed decision: [docs/requirements.md](docs/requirements
 
 Releases live at <https://github.com/shirohana/boorubox/releases>: the `.dmg` for macOS, the
 `-setup.exe` for Windows, and `boorubox-extension-<version>.zip` for the bridge extension
-(unzip, then load it unpacked in `chrome://extensions`).
+(unzip, then load it unpacked in `chrome://extensions`). A plain `boorubox.exe` is published
+beside the Windows installer too; it is a portable copy, but it carries the same updater as
+an installed one, so taking an update from it runs the installer in place.
+
+Every release is a regular (not "pre-release") GitHub release — the app's own update check
+reads `/releases/latest/`, which skips pre-releases — with the project's stage in the name
+(`BooruBox 2026-09-12 alpha`) and the version dated: `<year - 2000>.<month>.<day * 100 +
+sequence>`, e.g. `26.9.1201`, `26.9.1202` for a same-day fix. Once installed, the app checks
+for a newer version at launch and on demand from Settings, and asks before installing one.
 
 Builds are **not signed for the OS** -- no Apple Developer ID, no Authenticode -- so both
 systems refuse them on first launch. Nothing is wrong with the download.
