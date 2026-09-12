@@ -12,6 +12,7 @@
   } from '$lib/api'
   import { Badge } from '$lib/components/ui/badge'
   import { Button } from '$lib/components/ui/button'
+  import { windowDragRegion } from '$lib/platform'
 
   // The stored path stays stored until another folder is picked (spec
   // `library-folder`), so this screen offers no way to forget it.
@@ -56,7 +57,7 @@
 
 <!-- No frame here, so the window's background is the drag region (D13). -->
 <main
-  data-tauri-drag-region
+  data-tauri-drag-region={windowDragRegion}
   class="mx-auto flex min-h-svh max-w-lg flex-col justify-center gap-6 p-8"
 >
   <div>

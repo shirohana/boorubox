@@ -11,6 +11,7 @@
   // that a frame-drawn bar would be empty on /settings. With the toggle in it
   // the bar is never empty, so that argument no longer holds.
   import * as Sidebar from '$lib/components/ui/sidebar'
+  import { windowDragRegion } from '$lib/platform'
   import { frame } from './frame.svelte'
 </script>
 
@@ -20,7 +21,7 @@
   itself drags; the controls in it keep working.
 -->
 <header
-  data-tauri-drag-region
+  data-tauri-drag-region={windowDragRegion}
   class="
     flex h-14 shrink-0 items-center gap-3 border-b border-border px-3
     in-data-[platform=macos]:ps-20

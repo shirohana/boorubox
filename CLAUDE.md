@@ -31,6 +31,9 @@ gated on the legacy repo shipping Phase 0.
 - Frontend: Svelte 5, no React. shadcn-svelte components under
   `src/lib/components/ui` are copy-in upstream code, managed by
   `pnpm dlx shadcn-svelte add <name>`; they are excluded from lint and format.
+- Window drag regions are macOS-only: bind `data-tauri-drag-region={windowDragRegion}` from
+  `$lib/platform`, never the bare attribute. Windows has its native title bar, and there a
+  drag region only triggers the focus-toggle bug (tauri-apps/tauri#10767).
 - An `$effect` that reads a field off a store object reassigned wholesale (the shape of
   `library.status?.libraryPath`) re-runs on every status refresh. Derive the field with
   `$derived` and depend on that. Three reviews in a row flagged the effect form.

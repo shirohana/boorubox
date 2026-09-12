@@ -19,6 +19,7 @@
   import { Kbd } from '$lib/components/ui/kbd'
   import { Slider } from '$lib/components/ui/slider'
   import { KEYBOARD_MAP } from '$lib/keyboard'
+  import { windowDragRegion } from '$lib/platform'
 
   // Design D16: no requirement says "settings contains X, Y, Z". Each section
   // here is the screen half of a fact another capability owns — the listener
@@ -109,7 +110,7 @@
 </script>
 
 <!-- No toolbar band on this screen, so its background is the drag region (D13). -->
-<div data-tauri-drag-region class="min-h-0 flex-1 overflow-y-auto">
+<div data-tauri-drag-region={windowDragRegion} class="min-h-0 flex-1 overflow-y-auto">
   <div class="mx-auto flex max-w-2xl flex-col gap-10 p-8">
     <h1 class="text-xl font-semibold">Settings</h1>
 

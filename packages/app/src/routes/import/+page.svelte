@@ -13,6 +13,7 @@
   } from '$lib/components/import/bundle-report'
   import { queuedDiscardedNotice, rerunNotice } from '$lib/components/import/cancelled-import'
   import { Button } from '$lib/components/ui/button'
+  import { windowDragRegion } from '$lib/platform'
   import { Progress } from '$lib/components/ui/progress'
 
   /** Rows shown per status before folding the rest behind "and N more". */
@@ -61,7 +62,7 @@
   {/if}
 {/snippet}
 
-<div data-tauri-drag-region class="min-h-0 flex-1 overflow-y-auto">
+<div data-tauri-drag-region={windowDragRegion} class="min-h-0 flex-1 overflow-y-auto">
   <div class="mx-auto flex max-w-2xl flex-col gap-8 p-8">
     <div>
       <h1 class="text-xl font-semibold">Import a legacy bundle</h1>
