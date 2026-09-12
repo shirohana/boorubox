@@ -143,7 +143,20 @@ it('falls back through the author block to the handle, then to the tab title', (
   expect(pageOf(withoutPost).pageTitle).toBe('首頁 / X')
 })
 
-it('takes the first line of a long post and marks the cut', () => {
+// The second line is where X users put their hashtags, and the title is what
+// free-text search indexes — so a title that stopped at the first line hid
+// every one of them from the search box.
+it('keeps every line of the post in the title, joined by spaces', () => {
+  const document = fixture('x-post-multiline.html')
+  const imageUrl = 'https://pbs.twimg.com/media/HRWl_ynbcAAbEJo?format=jpg&name=4096x4096'
+
+  const page = pageOf(document, imageUrl)
+
+  expect(page.record?.fields.postText).toBe('ケイ\n#ブルアカ #ブルーアーカイブ')
+  expect(page.pageTitle).toBe('まんなく (@mannack0016) on X: ケイ #ブルアカ #ブルーアーカイブ')
+})
+
+it('does not cut a long post short', () => {
   const said = `${'あ'.repeat(140)}\nand a second line`
   const document = new DOMParser().parseFromString(`
     <article data-testid="tweet">
@@ -157,5 +170,5 @@ it('takes the first line of a long post and marks the cut', () => {
   const title = pageOf(document, 'https://pbs.twimg.com/media/ABC123?format=jpg&name=small')
     .pageTitle
 
-  expect(title).toBe(`Alice (@alice) on X: ${'あ'.repeat(100)}…`)
+  expect(title).toBe(`Alice (@alice) on X: ${'あ'.repeat(140)} and a second line`)
 })

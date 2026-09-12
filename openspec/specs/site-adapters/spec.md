@@ -30,7 +30,10 @@ where it cannot, the page's own title as read at capture time SHALL be used. A p
 adapter and no content script in it SHALL fall back to the tab's title rather than none.
 
 The stored title is a display name. Nothing SHALL read meaning out of it; a field an uploader
-or a rule needs SHALL come from the adapter record instead.
+or a rule needs SHALL come from the adapter record instead. It is, however, what free-text
+search indexes (the record's fields are not), so an adapter that names the page SHALL put
+the page's whole text in the name rather than an excerpt: what the title leaves out cannot
+be searched for.
 
 #### Scenario: Site left its title on the previous screen
 - **WHEN** a capture is made on a page whose title still names the screen the user came from
@@ -44,7 +47,14 @@ or a rule needs SHALL come from the adapter record instead.
 On an X/Twitter status page the adapter SHALL extract the author's handle without its
 leading marker, the author's display name, the canonical URL of the post, the post's text,
 and the original-size URL of the captured media. It SHALL name the page after the post's
-author and, where the post has one, its text.
+author and, where the post has one, its whole text on one line, line breaks read as spaces.
+
+Whole, not the first line cut at a hundred characters as the 2026-09-07 bridge-extension
+design (D17) had it. That cut was right while the title was taken to be a label nothing
+reads; it stopped being right once the owner's captures were searched by the hashtags X
+users put on a post's second line — free-text search reads the title and nothing else, so
+the cut made those posts unfindable. A grid cell clips a long title on its own. Cutting
+again is only open once the record's fields are in the search index too.
 
 #### Scenario: Capture from a post
 - **WHEN** the user captures an image inside a post by an author
@@ -53,6 +63,10 @@ author and, where the post has one, its text.
 #### Scenario: Post with no text
 - **WHEN** the post carries only media and no text
 - **THEN** the text field is absent, the other fields are still present, and the page is named after its author alone
+
+#### Scenario: Post with several lines
+- **WHEN** the post's text spans lines, hashtags on the second
+- **THEN** the text field keeps the line breaks and the page's name carries every line, joined by spaces
 
 ### Requirement: Pixiv context
 On a Pixiv artwork page the adapter SHALL extract the artist, the work id, the work title
