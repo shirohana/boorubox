@@ -51,7 +51,7 @@ jobs:
 
       - uses: actions/upload-artifact@v6.0.0
         with:
-          name: boorubox-windows-${{ github.ref_name }}-${{ github.sha }}
+          name: boorubox-windows-${{ github.sha }}
           path: |
             packages/app/src-tauri/target/release/bundle/nsis/*-setup.exe
             packages/app/src-tauri/target/release/boorubox.exe
