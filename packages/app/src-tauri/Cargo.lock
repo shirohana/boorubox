@@ -462,7 +462,7 @@ dependencies = [
 
 [[package]]
 name = "boorubox"
-version = "26.9.1201"
+version = "26.9.1202"
 dependencies = [
  "axum",
  "http-body-util",
