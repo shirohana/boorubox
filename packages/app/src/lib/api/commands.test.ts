@@ -28,7 +28,10 @@ import {
   forgetRecent,
   imageCounts,
   importBundle,
+  importCancel,
   importPaths,
+  importPause,
+  importResume,
   libraryStatus,
   noteGet,
   noteSet,
@@ -210,17 +213,35 @@ it('thumbnail_path passes the id and returns the absolute path', async () => {
 })
 
 it('import_paths passes the path array', async () => {
-  const report = { imported: 1, skipped: 0, failed: 0, items: [] }
+  const report = { imported: 1, skipped: 0, failed: 0, cancelled: false, items: [] }
   const calls = spyIPC(report)
   await expect(importPaths(['/a', '/b'])).resolves.toEqual(report)
   expect(calls).toHaveBeenCalledWith('import_paths', { paths: ['/a', '/b'] })
 })
 
 it('import_bundle passes the file array', async () => {
-  const report = { imported: 1, skipped: 0, failed: 0, items: [] }
+  const report = { imported: 1, skipped: 0, failed: 0, cancelled: false, items: [] }
   const calls = spyIPC(report)
   await expect(importBundle(['/a.db', '/b.db'])).resolves.toEqual(report)
   expect(calls).toHaveBeenCalledWith('import_bundle', { files: ['/a.db', '/b.db'] })
+})
+
+it('import_pause takes no arguments', async () => {
+  const calls = spyIPC(null)
+  await importPause()
+  expect(calls).toHaveBeenCalledWith('import_pause', {})
+})
+
+it('import_resume takes no arguments', async () => {
+  const calls = spyIPC(null)
+  await importResume()
+  expect(calls).toHaveBeenCalledWith('import_resume', {})
+})
+
+it('import_cancel takes no arguments', async () => {
+  const calls = spyIPC(null)
+  await importCancel()
+  expect(calls).toHaveBeenCalledWith('import_cancel', {})
 })
 
 it('update_tags passes the id and the whole tag set, and returns the row', async () => {

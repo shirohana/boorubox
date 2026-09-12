@@ -542,6 +542,11 @@ pub struct ImportReport {
     pub skipped: u32,
     pub failed: u32,
     pub items: Vec<ImportOutcome>,
+    /// Set when the run stopped on a Cancel rather than running to the end
+    /// (`import-pause-cancel` design D3). The counts above are honest either
+    /// way: everything counted here is really in the library.
+    #[serde(default)]
+    pub cancelled: bool,
 }
 
 /// Payload of the `import:progress` event emitted while an import runs.

@@ -40,6 +40,14 @@ pub struct AppState {
     /// The running listener's off switch, so the port can be changed without a
     /// relaunch (design D6). `None` whenever nothing is listening.
     pub listener_shutdown: Mutex<Option<http::ListenerHandle>>,
+    /// The running import's pause/resume/cancel handle (`import-pause-cancel`
+    /// design D4), one slot for the one run Rust knows about at a time.
+    /// `import_paths`/`import_bundle` install a fresh handle before the run
+    /// and clear the slot when it returns, early or not, so a control signal
+    /// pressed after a run has finished cancels nothing rather than the next
+    /// run, and `import_pause`/`import_resume`/`import_cancel` are a no-op
+    /// with nothing running.
+    pub import_control: Mutex<Option<Arc<import::ImportControl>>>,
     /// The OS credential store behind `booru::credentials::Credentials`
     /// (`booru-upload` design D7). Built once here rather than per call:
     /// `KeyringCredentials` itself has no state, but a trait object is what
@@ -57,6 +65,7 @@ impl Default for AppState {
             settings: Mutex::new(Settings::default()),
             listener: Mutex::new(ListenerStatus::default()),
             listener_shutdown: Mutex::new(None),
+            import_control: Mutex::new(None),
             credentials: Arc::new(booru::credentials::KeyringCredentials),
         }
     }
@@ -146,6 +155,9 @@ pub fn run() {
             commands::thumbnail_path,
             commands::import_paths,
             commands::import_bundle,
+            commands::import_pause,
+            commands::import_resume,
+            commands::import_cancel,
             commands::bulk_update_tags,
             commands::bulk_set_rating,
             commands::selection_tag_counts,

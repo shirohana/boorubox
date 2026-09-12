@@ -3,6 +3,7 @@
 
 use std::fs::Metadata;
 use std::path::{Path, PathBuf};
+use std::sync::{Condvar, Mutex};
 
 use crate::db;
 use crate::error::AppError;
@@ -10,6 +11,99 @@ use crate::ingest::{self, IngestInput};
 use crate::library::{SharedLibrary, with_library};
 use crate::model::{ImageSource, ImportOutcome, ImportProgress, ImportReport, ImportStatus};
 use crate::thumbs;
+
+/// `Running`, `Paused` or `Cancelled` (`import-pause-cancel` design D1). Never
+/// goes back from `Cancelled` — a run stops once, and `pause`/`resume` after
+/// that would just be racing a thread that is already on its way out.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ControlState {
+    Running,
+    Paused,
+    Cancelled,
+}
+
+/// One run's pause/resume/cancel handle (`import-pause-cancel` design D1).
+///
+/// A condvar rather than a polled flag: `checkpoint` must cost nothing while
+/// parked and must wake the instant `resume` or `cancel` is called, not at the
+/// end of some poll interval. Safe to park on precisely because of where
+/// `checkpoint` is called — between items, with the library lock released —
+/// so a paused run blocks nothing else (design D1).
+pub struct ImportControl {
+    state: Mutex<ControlState>,
+    woken: Condvar,
+}
+
+impl Default for ImportControl {
+    fn default() -> Self {
+        ImportControl {
+            state: Mutex::new(ControlState::Running),
+            woken: Condvar::new(),
+        }
+    }
+}
+
+impl ImportControl {
+    fn set(&self, state: ControlState) {
+        *self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = state;
+    }
+
+    /// Holds a running run at the next `checkpoint`. A no-op once the run has
+    /// already been cancelled — pausing a run that is on its way out must not
+    /// resurrect it as paused.
+    pub fn pause(&self) {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if *state == ControlState::Running {
+            *state = ControlState::Paused;
+        }
+    }
+
+    /// Wakes a run parked at `checkpoint`. A no-op with nothing paused.
+    pub fn resume(&self) {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if *state == ControlState::Paused {
+            *state = ControlState::Running;
+            self.woken.notify_all();
+        }
+    }
+
+    /// Ends the run at its next `checkpoint`, waking it first if it is parked
+    /// there paused.
+    pub fn cancel(&self) {
+        self.set(ControlState::Cancelled);
+        self.woken.notify_all();
+    }
+
+    /// Called between two items (design D2): blocks while the run is paused,
+    /// and answers whether the run should carry on to the next item.
+    pub fn checkpoint(&self) -> bool {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        loop {
+            match *state {
+                ControlState::Running => return true,
+                ControlState::Cancelled => return false,
+                ControlState::Paused => {
+                    state = self
+                        .woken
+                        .wait(state)
+                        .unwrap_or_else(|poisoned| poisoned.into_inner());
+                }
+            }
+        }
+    }
+}
 
 /// Import every decodable image under `paths`, recursing into folders, calling
 /// `on_progress` as it goes so the UI can show a running count.
@@ -29,6 +123,7 @@ use crate::thumbs;
 pub fn import_paths(
     library: &SharedLibrary,
     paths: &[PathBuf],
+    control: &ImportControl,
     on_progress: &mut dyn FnMut(ImportProgress),
 ) -> crate::error::Result<ImportReport> {
     refuse_if_closed(library)?;
@@ -49,6 +144,16 @@ pub fn import_paths(
         };
         count(&mut report, outcome);
         on_progress(progress(&report, total));
+        if is_last_item(&report, total) {
+            break;
+        }
+        // Between items, with the library released (design D13): the one
+        // point a paused or cancelled run may stop without freezing anything
+        // else behind the library lock (`import-pause-cancel` design D2).
+        if !control.checkpoint() {
+            report.cancelled = true;
+            break;
+        }
     }
     Ok(report)
 }
@@ -235,9 +340,19 @@ pub(crate) fn progress(report: &ImportReport, total: u32) -> ImportProgress {
     }
 }
 
+/// Whether every item `total` promised has now been counted — the point past
+/// which there is no next item for a checkpoint to guard. Shared by
+/// `import_paths` and `bundle::import_bundle`, the same one place both call
+/// their checkpoint (design D2): a pause or cancel landing after the last
+/// item must not park, or mark `cancelled`, a run that actually finished —
+/// `report.cancelled` is read by the UI as "there is more to resume."
+pub(crate) fn is_last_item(report: &ImportReport, total: u32) -> bool {
+    report.items.len() as u32 == total
+}
+
 #[cfg(test)]
 mod tests {
-    use std::sync::mpsc;
+    use std::sync::{Arc, mpsc};
     use std::time::Duration;
 
     use super::*;
@@ -299,8 +414,12 @@ mod tests {
     }
 
     fn run(library: &SharedLibrary, paths: &[PathBuf]) -> (ImportReport, Vec<ImportProgress>) {
+        let control = ImportControl::default();
         let mut seen = Vec::new();
-        let report = import_paths(library, paths, &mut |progress| seen.push(progress)).unwrap();
+        let report = import_paths(library, paths, &control, &mut |progress| {
+            seen.push(progress)
+        })
+        .unwrap();
         (report, seen)
     }
 
@@ -523,8 +642,9 @@ mod tests {
         let (release, go_on) = mpsc::channel();
         let running = library.clone();
         let paths = vec![source.path().to_path_buf()];
+        let control = ImportControl::default();
         let run = std::thread::spawn(move || {
-            import_paths(&running, &paths, &mut |progress| {
+            import_paths(&running, &paths, &control, &mut |progress| {
                 if progress.done == 1 {
                     parked.send(()).unwrap();
                     go_on.recv().unwrap();
@@ -553,9 +673,15 @@ mod tests {
         write_png(&source.path().join("a.png"), 8, 8);
         let closed = SharedLibrary::default();
 
+        let control = ImportControl::default();
         let mut ticks = 0;
-        let error =
-            import_paths(&closed, &[source.path().to_path_buf()], &mut |_| ticks += 1).unwrap_err();
+        let error = import_paths(
+            &closed,
+            &[source.path().to_path_buf()],
+            &control,
+            &mut |_| ticks += 1,
+        )
+        .unwrap_err();
 
         assert!(matches!(error, AppError::NoLibrary), "{error:?}");
         assert_eq!(ticks, 0, "nothing is counted for a run that cannot store");
@@ -623,5 +749,126 @@ mod tests {
         let (report, _) = run(&library, &[link]);
 
         assert_eq!(report.imported, 1);
+    }
+
+    /// `import-pause-cancel` task 1.1.
+    #[test]
+    fn a_cancelled_control_stops_the_very_next_checkpoint() {
+        let control = ImportControl::default();
+        control.cancel();
+
+        assert!(
+            !control.checkpoint(),
+            "a control cancelled before the first check must not carry on"
+        );
+    }
+
+    /// `import-pause-cancel` task 1.1: `resume` must wake a thread genuinely
+    /// parked in `checkpoint`, not merely return quickly because the state
+    /// happened to change first — proven with a channel a `sleep` cannot
+    /// stand in for.
+    #[test]
+    fn resume_wakes_a_thread_parked_at_the_checkpoint() {
+        let control = Arc::new(ImportControl::default());
+        // Paused before the thread exists: the thread's own `checkpoint` call
+        // is guaranteed to observe `Paused`, never a race against `pause`.
+        control.pause();
+
+        let parked = control.clone();
+        let (done, carried_on) = mpsc::channel();
+        std::thread::spawn(move || {
+            done.send(parked.checkpoint()).unwrap();
+        });
+
+        control.resume();
+
+        assert!(
+            carried_on.recv_timeout(A_LOCK_IS_NOT_COMING).unwrap(),
+            "resume must wake the parked checkpoint and tell it to carry on"
+        );
+    }
+
+    /// `import-pause-cancel` task 1.1: a cancel delivered to a parked thread
+    /// wakes it too, and tells it to stop rather than carry on.
+    #[test]
+    fn a_cancel_delivered_while_parked_wakes_it_and_stops_it() {
+        let control = Arc::new(ImportControl::default());
+        control.pause();
+
+        let parked = control.clone();
+        let (done, carried_on) = mpsc::channel();
+        std::thread::spawn(move || {
+            done.send(parked.checkpoint()).unwrap();
+        });
+
+        control.cancel();
+
+        assert!(
+            !carried_on.recv_timeout(A_LOCK_IS_NOT_COMING).unwrap(),
+            "a parked checkpoint woken by cancel must say to stop"
+        );
+    }
+
+    /// `import-pause-cancel` task 1.2: the item in flight when Cancel is
+    /// pressed finishes and is counted; nothing after it is.
+    #[test]
+    fn a_run_cancelled_after_the_first_item_reports_and_keeps_exactly_one() {
+        let source = tempfile::tempdir().unwrap();
+        for name in ["a.png", "b.png", "c.png"] {
+            write_png(&source.path().join(name), 8, 8);
+        }
+        let (_dir, library) = library();
+        let control = ImportControl::default();
+
+        let report = import_paths(
+            &library,
+            &[source.path().to_path_buf()],
+            &control,
+            &mut |progress| {
+                if progress.done == 1 {
+                    control.cancel();
+                }
+            },
+        )
+        .unwrap();
+
+        assert_eq!(report.items.len(), 1, "{:?}", report.items);
+        assert_eq!(report.imported, 1);
+        assert!(report.cancelled);
+        assert_eq!(
+            image_count(&library),
+            1,
+            "the files after the stop are neither imported nor reported"
+        );
+    }
+
+    /// `import-pause-cancel` should-fix: the checkpoint only runs when there
+    /// is a next item to check before. A cancel landing the instant the last
+    /// item finishes must not mark a run that actually completed as
+    /// `cancelled` — the UI reads that field as "there is more to resume."
+    #[test]
+    fn cancelling_exactly_when_the_last_item_finishes_does_not_mark_the_run_cancelled() {
+        let source = tempfile::tempdir().unwrap();
+        write_png(&source.path().join("a.png"), 8, 8);
+        let (_dir, library) = library();
+        let control = ImportControl::default();
+
+        let report = import_paths(
+            &library,
+            &[source.path().to_path_buf()],
+            &control,
+            &mut |progress| {
+                if progress.done == progress.total {
+                    control.cancel();
+                }
+            },
+        )
+        .unwrap();
+
+        assert_eq!(report.imported, 1);
+        assert!(
+            !report.cancelled,
+            "a cancel landing after the last item must not mark a finished run cancelled"
+        );
     }
 }

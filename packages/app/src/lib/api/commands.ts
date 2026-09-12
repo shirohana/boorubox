@@ -131,6 +131,29 @@ export function importBundle(files: string[]): Promise<ImportReport> {
 }
 
 /**
+ * Pauses the running import between items (`import-pause-cancel` design D1,
+ * D2); a silent no-op with nothing running. Rust emits no event for it — the
+ * webview knows the run is paused because it pressed Pause.
+ */
+export function importPause(): Promise<void> {
+  return invoke('import_pause')
+}
+
+/** Resumes a paused import; a silent no-op with nothing running or paused. */
+export function importResume(): Promise<void> {
+  return invoke('import_resume')
+}
+
+/**
+ * Cancels the running import between items; a silent no-op with nothing
+ * running. Never waits on the library (design D5), so it answers even while
+ * an import holds it mid-run.
+ */
+export function importCancel(): Promise<void> {
+  return invoke('import_cancel')
+}
+
+/**
  * Replaces the image's whole tag set (design D2) and returns the row as it now
  * stands, so the caller can redraw the tile and the inspector without re-running
  * the search (design D10). A `rating:g|s|q|e` among the tags sets the rating

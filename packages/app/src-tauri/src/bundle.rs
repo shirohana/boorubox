@@ -12,7 +12,7 @@ use rusqlite::{Connection, OpenFlags, Row};
 
 use crate::db;
 use crate::error::Result;
-use crate::import;
+use crate::import::{self, ImportControl};
 use crate::ingest::{self, IngestInput, Ingested};
 use crate::library::{SharedLibrary, with_library};
 use crate::model::{ImageSource, ImportOutcome, ImportProgress, ImportReport};
@@ -63,6 +63,7 @@ impl PartPlan {
 pub fn import_bundle(
     library: &SharedLibrary,
     files: &[PathBuf],
+    control: &ImportControl,
     on_progress: &mut dyn FnMut(ImportProgress),
 ) -> Result<ImportReport> {
     import::refuse_if_closed(library)?;
@@ -72,11 +73,21 @@ pub fn import_bundle(
 
     let mut report = ImportReport::default();
     on_progress(import::progress(&report, total));
-    for plan in plans {
+    // Labelled so the checkpoint below can stop the row loop and the part
+    // loop in one break: the same one checkpoint, the same one place, that
+    // `import::import_paths` uses (`import-pause-cancel` design D2).
+    'parts: for plan in plans {
         match plan {
             PartPlan::Failed(path, reason) => {
                 import::count(&mut report, failed_file(&path, reason));
                 on_progress(import::progress(&report, total));
+                if import::is_last_item(&report, total) {
+                    break 'parts;
+                }
+                if !control.checkpoint() {
+                    report.cancelled = true;
+                    break 'parts;
+                }
             }
             PartPlan::Open(path, conn, _) => {
                 let source_ref = source_ref_of(&path);
@@ -99,6 +110,13 @@ pub fn import_bundle(
                     };
                     import::count(&mut report, outcome);
                     on_progress(import::progress(&report, total));
+                    if import::is_last_item(&report, total) {
+                        break 'parts;
+                    }
+                    if !control.checkpoint() {
+                        report.cancelled = true;
+                        break 'parts;
+                    }
                 }
             }
         }
@@ -320,7 +338,8 @@ mod tests {
     }
 
     fn run(library: &SharedLibrary, files: &[PathBuf]) -> ImportReport {
-        import_bundle(library, files, &mut |_| {}).unwrap()
+        let control = ImportControl::default();
+        import_bundle(library, files, &control, &mut |_| {}).unwrap()
     }
 
     fn search(library: &SharedLibrary, view: SearchView, query: ParsedTagSearch) -> Vec<String> {
@@ -667,5 +686,104 @@ mod tests {
             .expect("the relative path must be named in the report");
         assert_eq!(file_failure.status, ImportStatus::Failed);
         assert!(file_failure.id.is_none());
+    }
+
+    /// `import-pause-cancel` task 1.3: the row in flight when Cancel is
+    /// pressed finishes and is counted; the run reports itself cancelled.
+    #[test]
+    fn a_run_cancelled_after_the_first_row_reports_one_and_marks_cancelled() {
+        let (_dir, library) = library();
+        let control = ImportControl::default();
+
+        let report = import_bundle(
+            &library,
+            &[PathBuf::from(FIXTURE)],
+            &control,
+            &mut |progress| {
+                if progress.done == 1 {
+                    control.cancel();
+                }
+            },
+        )
+        .unwrap();
+
+        assert_eq!(report.items.len(), 1, "{:?}", report.items);
+        assert!(report.cancelled);
+    }
+
+    /// `import-pause-cancel` task 1.3, end to end: a bundle row keeps the id
+    /// it had in the export (`legacy-bundle-import`), so selecting the same
+    /// part again after a cancel re-scans every row, cheaply skipping the
+    /// prefix that already landed, and finishes where the cancelled run left
+    /// off rather than duplicating anything.
+    #[test]
+    fn a_cancelled_run_resumes_when_the_same_part_is_selected_again() {
+        let (_dir, library) = library();
+        let control = ImportControl::default();
+
+        let first = import_bundle(
+            &library,
+            &[PathBuf::from(FIXTURE)],
+            &control,
+            &mut |progress| {
+                if progress.done == 1 {
+                    control.cancel();
+                }
+            },
+        )
+        .unwrap();
+
+        assert_eq!(first.items.len(), 1, "{:?}", first.items);
+        assert!(first.cancelled);
+        assert!(
+            total_count(&library) <= 1,
+            "at most the one row in flight can have landed"
+        );
+
+        let second = run(&library, &[PathBuf::from(FIXTURE)]);
+
+        assert!(!second.cancelled);
+        assert_eq!(
+            second.items.len(),
+            4,
+            "a re-run re-scans every row, cheaply skipping what already landed"
+        );
+        assert_eq!(
+            total_count(&library),
+            3,
+            "the run completes to the same end state as one uninterrupted import"
+        );
+        assert_eq!(
+            first.imported + first.failed,
+            1,
+            "the row processed before the cancel is accounted for exactly once by the first run"
+        );
+    }
+
+    /// `import-pause-cancel` should-fix: mirrors `import.rs`'s equivalent —
+    /// a cancel landing exactly when the last row finishes must not mark a
+    /// completed bundle run `cancelled`.
+    #[test]
+    fn cancelling_exactly_when_the_last_row_finishes_does_not_mark_the_run_cancelled() {
+        let (_dir, library) = library();
+        let control = ImportControl::default();
+
+        let report = import_bundle(
+            &library,
+            &[PathBuf::from(FIXTURE)],
+            &control,
+            &mut |progress| {
+                if progress.done == progress.total {
+                    control.cancel();
+                }
+            },
+        )
+        .unwrap();
+
+        assert_eq!((report.imported, report.skipped, report.failed), (3, 0, 1));
+        assert!(
+            !report.cancelled,
+            "a cancel landing after the last row must not mark a finished run cancelled"
+        );
     }
 }

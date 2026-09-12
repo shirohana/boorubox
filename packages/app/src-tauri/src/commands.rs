@@ -7,6 +7,7 @@
 //! real one.
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use tauri::{AppHandle, Emitter, Manager, Runtime, State};
 use tauri_plugin_dialog::DialogExt;
@@ -130,11 +131,31 @@ pub async fn close_library<R: Runtime>(
     app: AppHandle<R>,
     state: State<'_, AppState>,
 ) -> Result<LibraryStatus> {
+    // A paused run cannot be allowed to hold the app open (`import-pause-
+    // cancel` design D7): cancel it first, waking a thread parked at the
+    // checkpoint, before the library it was importing into disappears out
+    // from under it.
+    cancel_running_import(&state);
     // Dropping the `Library` closes its connection. Nothing may hold a second
     // one on that database (§7).
     *lock(&state.library) = None;
     write_settings(&app, &state, |settings| settings.library_path = None)?;
     status(&state).await
+}
+
+/// Cancel whatever import is running, waking a thread parked at the
+/// checkpoint (`import-pause-cancel` design D7). Every place that tears down
+/// or replaces `state.library` calls this first — `close_library` as much as
+/// `open_into_state`. A library *switch* is exactly as much a teardown of the
+/// old library as a close is: the run holds no lock at its checkpoint (design
+/// D13), so nothing about swapping `state.library` out from under it stops it
+/// on its own — left uncancelled, it would carry on writing whatever is left
+/// of its 25,000 rows into whichever library happens to be open when its next
+/// item lands.
+fn cancel_running_import(state: &AppState) {
+    if let Some(control) = lock(&state.import_control).clone() {
+        control.cancel();
+    }
 }
 
 /// The start screen's list. Availability is read here rather than at startup:
@@ -762,7 +783,11 @@ pub async fn thumbnail_path(id: String, state: State<'_, AppState>) -> Result<St
     .await
 }
 
-/// Emits `import:progress` while it runs.
+/// Emits `import:progress` while it runs. Installs a fresh
+/// `ImportControl` in `AppState.import_control` before the run and clears the
+/// slot once it returns, however it returns, so `import_pause`/
+/// `import_resume`/`import_cancel` never reach a stale handle
+/// (`import-pause-cancel` design D4).
 #[tauri::command]
 pub async fn import_paths<R: Runtime>(
     paths: Vec<String>,
@@ -770,17 +795,21 @@ pub async fn import_paths<R: Runtime>(
     state: State<'_, AppState>,
 ) -> Result<ImportReport> {
     let paths: Vec<PathBuf> = paths.into_iter().map(PathBuf::from).collect();
-    off_main_thread(&state.library, move |library| {
+    let control = install_import_control(&state);
+    let installed = control.clone();
+    let result = off_main_thread(&state.library, move |library| {
         // The whole run is one blocking call, but it takes the library one file
         // at a time (design D13), so a search or a thumbnail asked for while it
         // goes is answered between two files rather than after the last.
-        import::import_paths(library, &paths, &mut |progress| {
+        import::import_paths(library, &paths, &control, &mut |progress| {
             // A dropped tick is a progress bar that skips a number; the import
             // itself is unaffected, so it is not worth failing over.
             let _ = app.emit(IMPORT_PROGRESS_EVENT, progress);
         })
     })
-    .await
+    .await;
+    clear_import_control(&state, &installed);
+    result
 }
 
 /// Import a legacy bundle's SQLite parts (`legacy-bundle-import` design D5,
@@ -788,7 +817,9 @@ pub async fn import_paths<R: Runtime>(
 /// the contract is pinned in the change's `tasks.md` header, shared with the
 /// webview wrapper that calls this with `{ files }`. Emits the same
 /// `import:progress` event as `import_paths` — one queue, one progress band,
-/// one report shape (design D6).
+/// one report shape (design D6). Installs and clears the same
+/// `ImportControl` slot `import_paths` does (`import-pause-cancel` design
+/// D4).
 #[tauri::command]
 pub async fn import_bundle<R: Runtime>(
     files: Vec<String>,
@@ -796,12 +827,90 @@ pub async fn import_bundle<R: Runtime>(
     state: State<'_, AppState>,
 ) -> Result<ImportReport> {
     let files: Vec<PathBuf> = files.into_iter().map(PathBuf::from).collect();
-    off_main_thread(&state.library, move |library| {
-        crate::bundle::import_bundle(library, &files, &mut |progress| {
+    let control = install_import_control(&state);
+    let installed = control.clone();
+    let result = off_main_thread(&state.library, move |library| {
+        crate::bundle::import_bundle(library, &files, &control, &mut |progress| {
             let _ = app.emit(IMPORT_PROGRESS_EVENT, progress);
         })
     })
-    .await
+    .await;
+    clear_import_control(&state, &installed);
+    result
+}
+
+/// A fresh handle for the run about to start, installed in `AppState` so
+/// `import_pause`/`import_resume`/`import_cancel` can reach it (design D4).
+/// A handle per run, never reused, is what makes a control signal pressed
+/// after a run has finished cancel nothing rather than the next run.
+///
+/// Nothing in Rust serialises two calls into `import_paths`/`import_bundle`;
+/// "one run at a time" is an invariant the webview singleton (`Imports`) owns,
+/// not one enforced here. The assert pins that assumption where it is made,
+/// so a future second caller overwriting a live handle fails loudly in a debug
+/// build rather than silently making the run it clobbered uncancellable.
+fn install_import_control(state: &AppState) -> Arc<import::ImportControl> {
+    let control = Arc::new(import::ImportControl::default());
+    let mut slot = lock(&state.import_control);
+    debug_assert!(
+        slot.is_none(),
+        "an import command started while another's control handle was still \
+         installed — the 'one run at a time' invariant the webview is meant \
+         to keep was broken"
+    );
+    *slot = Some(control.clone());
+    control
+}
+
+/// Empty the slot `install_import_control` filled, but only if it still holds
+/// *this* run's handle. Called once the run's future has resolved — success,
+/// per-item failure, refusal, or the closed-library `Err` — never left for a
+/// later run to find. Comparing identity rather than clearing unconditionally
+/// means a run that (in violation of the invariant above) got its handle
+/// overwritten by a second one clears nothing here, instead of reaching in
+/// and clobbering the second run's own live handle.
+fn clear_import_control(state: &AppState, control: &Arc<import::ImportControl>) {
+    let mut slot = lock(&state.import_control);
+    if slot
+        .as_ref()
+        .is_some_and(|current| Arc::ptr_eq(current, control))
+    {
+        *slot = None;
+    }
+}
+
+/// A silent no-op when nothing is running (design D4): the slot is only
+/// `Some` while `import_paths` or `import_bundle` is on its blocking thread.
+/// Locks only `import_control`, never the library (design D5) — the library
+/// mutex is held, per item, by the very run this is meant to stop, so a
+/// command that waited for it would wait for the run it is trying to signal.
+#[tauri::command]
+pub fn import_pause(state: State<'_, AppState>) -> Result<()> {
+    let control = lock(&state.import_control).clone();
+    if let Some(control) = control {
+        control.pause();
+    }
+    Ok(())
+}
+
+/// See `import_pause`.
+#[tauri::command]
+pub fn import_resume(state: State<'_, AppState>) -> Result<()> {
+    let control = lock(&state.import_control).clone();
+    if let Some(control) = control {
+        control.resume();
+    }
+    Ok(())
+}
+
+/// See `import_pause`.
+#[tauri::command]
+pub fn import_cancel(state: State<'_, AppState>) -> Result<()> {
+    let control = lock(&state.import_control).clone();
+    if let Some(control) = control {
+        control.cancel();
+    }
+    Ok(())
 }
 
 /// Open `path`, remember it, and let the webview read images out of it.
@@ -848,6 +957,10 @@ pub fn open_into_state<R: Runtime>(
         OpenMode::ExistingOnly => Library::open_existing(path)?,
     };
     grant_asset_scope(app, &library)?;
+    // Only once the new library has actually opened: a switch that fails here
+    // must leave whatever is running against the old library alone (design
+    // D7's "tears a library down" — a failed open never does).
+    cancel_running_import(state);
     *lock(&state.library) = Some(library);
     Ok(())
 }
@@ -924,8 +1037,8 @@ async fn pick_folder<R: Runtime>(app: &AppHandle<R>) -> Option<PathBuf> {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::mpsc;
     use std::time::Duration;
 
     use tauri::Listener;
@@ -1322,6 +1435,159 @@ mod tests {
                 .count(),
             2,
             "one of the three imported rows is deleted and stays out of the library view"
+        );
+    }
+
+    /// Long enough that a machine under load does not fail the test, short
+    /// enough that a command that really is stuck ends the suite instead of
+    /// hanging it (mirrors `import.rs`'s `A_LOCK_IS_NOT_COMING`).
+    const A_LOCK_IS_NOT_COMING: Duration = Duration::from_secs(5);
+
+    /// `import-pause-cancel` task 1.6: with nothing running, the slot is
+    /// `None`, so all three commands are a silent no-op rather than an error.
+    #[test]
+    fn the_control_commands_are_no_ops_with_nothing_running() {
+        let (_dir, app) = app_with_library();
+
+        import_pause(app.state()).unwrap();
+        import_resume(app.state()).unwrap();
+        import_cancel(app.state()).unwrap();
+    }
+
+    /// `import-pause-cancel` design D5: the control commands lock only
+    /// `import_control`, never the library — proven here by holding the
+    /// library's own mutex on another thread and confirming `import_cancel`
+    /// still returns promptly rather than queuing up behind it.
+    #[test]
+    fn import_cancel_returns_without_waiting_for_the_library() {
+        let (_dir, app) = app_with_library();
+        *lock(&app.state::<AppState>().import_control) =
+            Some(Arc::new(import::ImportControl::default()));
+
+        let library = app.state::<AppState>().library.clone();
+        let (locked, confirm_locked) = mpsc::channel();
+        let (release, wait_for_release) = mpsc::channel();
+        let holder = std::thread::spawn(move || {
+            let _guard = library
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            locked.send(()).unwrap();
+            let _ = wait_for_release.recv();
+        });
+        confirm_locked.recv_timeout(A_LOCK_IS_NOT_COMING).unwrap();
+
+        let handle = app.handle().clone();
+        let (done, answer) = mpsc::channel();
+        std::thread::spawn(move || {
+            done.send(import_cancel(handle.state())).unwrap();
+        });
+        answer
+            .recv_timeout(A_LOCK_IS_NOT_COMING)
+            .expect("import_cancel must not wait for the library lock")
+            .unwrap();
+
+        release.send(()).unwrap();
+        holder.join().unwrap();
+    }
+
+    /// `import-pause-cancel` task 1.7 (design D7): closing the library cancels
+    /// a run parked at the checkpoint, so a paused import cannot hold the app
+    /// open. The item in flight when Pause was pressed is still counted.
+    #[test]
+    fn closing_the_library_wakes_a_paused_import_and_ends_it() {
+        let (_dir, app) = app_with_library();
+        let images = folder_of_images(3);
+        let control = Arc::new(import::ImportControl::default());
+        // Paused before the run starts: the run's own first checkpoint call
+        // is guaranteed to observe `Paused`, never a race against `pause`.
+        control.pause();
+        *lock(&app.state::<AppState>().import_control) = Some(control.clone());
+
+        let library = app.state::<AppState>().library.clone();
+        let paths = vec![images.path().to_path_buf()];
+        let run_control = control.clone();
+        let (first_item_done, confirm_first_item) = mpsc::channel();
+        let run = std::thread::spawn(move || {
+            import::import_paths(&library, &paths, &run_control, &mut |progress| {
+                if progress.done == 1 {
+                    let _ = first_item_done.send(());
+                }
+            })
+        });
+        confirm_first_item
+            .recv_timeout(A_LOCK_IS_NOT_COMING)
+            .unwrap();
+
+        now(close_library(app.handle().clone(), app.state())).unwrap();
+
+        let (finished, report) = mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = finished.send(run.join().unwrap());
+        });
+        let report = report
+            .recv_timeout(A_LOCK_IS_NOT_COMING)
+            .expect("closing the library must wake the paused run rather than hang it")
+            .expect("a cancelled run still answers with a report, not an error");
+
+        assert_eq!(
+            report.imported, 1,
+            "the item in flight when the library closed is still counted"
+        );
+        assert!(report.cancelled);
+    }
+
+    /// `import-pause-cancel` design D7, the blocker found in review: a
+    /// library *switch* — `open_library`/`pick_library`'s path, through
+    /// `open_into_state` — tears the old library down exactly as much as
+    /// `close_library` does. The run holds no lock at its checkpoint (design
+    /// D13), so without a cancel here it would carry on writing whatever was
+    /// left of the old run straight into the library it got switched to.
+    #[test]
+    fn switching_the_library_wakes_a_paused_import_and_ends_it() {
+        let (_first_dir, app) = app_with_library();
+        let images = folder_of_images(3);
+        let control = Arc::new(import::ImportControl::default());
+        control.pause();
+        *lock(&app.state::<AppState>().import_control) = Some(control.clone());
+
+        let old_library = app.state::<AppState>().library.clone();
+        let paths = vec![images.path().to_path_buf()];
+        let run_control = control.clone();
+        let (first_item_done, confirm_first_item) = mpsc::channel();
+        let run = std::thread::spawn(move || {
+            import::import_paths(&old_library, &paths, &run_control, &mut |progress| {
+                if progress.done == 1 {
+                    let _ = first_item_done.send(());
+                }
+            })
+        });
+        confirm_first_item
+            .recv_timeout(A_LOCK_IS_NOT_COMING)
+            .unwrap();
+
+        let second_dir = tempfile::tempdir().unwrap();
+        open(&app, second_dir.path()).unwrap();
+
+        let (finished, report) = mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = finished.send(run.join().unwrap());
+        });
+        let report = report
+            .recv_timeout(A_LOCK_IS_NOT_COMING)
+            .expect("switching the library must wake the paused run rather than hang it")
+            .expect("a cancelled run still answers with a report, not an error");
+
+        assert_eq!(
+            report.imported, 1,
+            "the item in flight when the library switched is still counted"
+        );
+        assert!(report.cancelled);
+
+        let new_library = app.state::<AppState>().library.clone();
+        assert_eq!(
+            with_library(&new_library, |library| library.image_count()).unwrap(),
+            0,
+            "the run must have stopped rather than going on to write into the library it was switched to"
         );
     }
 

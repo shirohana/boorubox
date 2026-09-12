@@ -6,6 +6,7 @@ const report: ImportReport = {
   imported: 2,
   skipped: 1,
   failed: 1,
+  cancelled: false,
   items: [
     { path: 'https://example/1', status: 'imported', id: 'a' },
     { path: 'https://example/2', status: 'imported', id: 'b' },
@@ -33,7 +34,7 @@ it('splits a report into the three groups the route renders', () => {
 })
 
 it('names nothing for a clean import', () => {
-  const clean: ImportReport = { imported: 3, skipped: 0, failed: 0, items: [] }
+  const clean: ImportReport = { imported: 3, skipped: 0, failed: 0, cancelled: false, items: [] }
   expect(groupBundleReport(clean)).toEqual({
     imported: 3,
     skipped: { count: 0, items: [] },
@@ -49,6 +50,7 @@ it('takes counts from the report summary, not from a (possibly trimmed) items li
     imported: 1,
     skipped: 500,
     failed: 0,
+    cancelled: false,
     items: [{ path: 'https://example/1', status: 'skipped', id: 'a', reason: 'already in the library' }],
   }
   expect(groupBundleReport(trimmed).skipped.count).toBe(500)

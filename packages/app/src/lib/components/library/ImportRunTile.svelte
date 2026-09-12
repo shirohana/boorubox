@@ -1,6 +1,8 @@
 <script lang="ts">
   import type { ImportRun } from '$lib/api'
+  import { imports } from '$lib/api'
   import { BUNDLE_COUNTING_LABEL } from '$lib/components/import/bundle-report'
+  import { Button } from '$lib/components/ui/button'
   import { Progress } from '$lib/components/ui/progress'
 
   let { run }: { run: ImportRun } = $props()
@@ -11,6 +13,14 @@
   const count = $derived(run.kind === 'paths' ? run.paths.length : run.files.length)
   const noun = $derived(run.kind === 'paths' ? 'item' : 'file')
   const items = $derived(`${count.toLocaleString()} ${noun}${count === 1 ? '' : 's'}`)
+  const countingLabel = $derived(
+    run.kind === 'bundle' ? BUNDLE_COUNTING_LABEL : 'Looking through what you dropped…',
+  )
+  // `imports.paused` is a single flag for the one run that can ever be
+  // parked (`import-pause-cancel` design D1) — only the running tile reads
+  // it as its own state, so a queued tile that outlives a pause never shows
+  // as paused.
+  const paused = $derived(run.status === 'running' && imports.paused)
 </script>
 
 <div
@@ -23,6 +33,14 @@
   {#if run.status === 'queued'}
     <p class="font-medium">Waiting</p>
     <p class="text-muted-foreground tabular-nums">{items}</p>
+  {:else if paused}
+    <!-- Says it is paused rather than looking stalled (`pending-work` spec). -->
+    <p class="font-medium">Paused</p>
+    {#if run.progress}
+      <p class="text-muted-foreground tabular-nums">
+        {run.progress.done.toLocaleString()} of {run.progress.total.toLocaleString()}
+      </p>
+    {/if}
   {:else if run.progress}
     <p class="font-medium tabular-nums">
       {run.progress.done.toLocaleString()} of {run.progress.total.toLocaleString()}
@@ -31,9 +49,28 @@
     <p class="text-muted-foreground tabular-nums">
       {run.progress.imported.toLocaleString()} imported
     </p>
-  {:else if run.kind === 'bundle'}
-    <p class="text-muted-foreground">{BUNDLE_COUNTING_LABEL}</p>
   {:else}
-    <p class="text-muted-foreground">Looking through what you dropped…</p>
+    <p class="text-muted-foreground">{countingLabel}</p>
   {/if}
+
+  <div class="mt-auto flex gap-1">
+    {#if run.status === 'running' && !paused}
+      <Button size="xs" variant="ghost" onclick={() => imports.pause()}>Pause</Button>
+    {:else if paused}
+      <Button size="xs" variant="ghost" onclick={() => imports.resume()}>Resume</Button>
+    {/if}
+    <!--
+      Every tile offers Cancel (`pending-work` spec "A waiting import SHALL
+      offer Cancel"), but they mean different things: the running tile's
+      Cancel stops the run and drops the whole queue behind it (design D6); a
+      waiting tile's only ever removes itself.
+    -->
+    <Button
+      size="xs"
+      variant="ghost"
+      onclick={() => (run.status === 'queued' ? imports.dequeue(run.id) : imports.cancel())}
+    >
+      Cancel
+    </Button>
+  </div>
 </div>

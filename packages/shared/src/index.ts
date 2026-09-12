@@ -346,6 +346,12 @@ export interface ImportReport {
   imported: number
   skipped: number
   failed: number
+  /**
+   * Stopped by Cancel rather than finishing on its own
+   * (`import-pause-cancel` design D3). The counts above are real either way
+   * — cancelling never rolls back what already landed.
+   */
+  cancelled: boolean
   items: ImportOutcome[]
 }
 
