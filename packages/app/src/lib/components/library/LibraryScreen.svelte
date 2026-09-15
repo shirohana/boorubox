@@ -11,6 +11,7 @@
   import {
     booruSites,
     buildSearchRequest,
+    bulkSetRating,
     deleteForever,
     emptyTrash,
     errorText,
@@ -42,9 +43,10 @@
   import Lightbox from './Lightbox.svelte'
   import PendingBand from './PendingBand.svelte'
   import SearchBar from './SearchBar.svelte'
+  import type { ConfirmPrompt, PendingWrite } from './pending-write'
+  import { confirmPrompt, needsConfirmation } from './pending-write'
   import SelectionToolbar from './SelectionToolbar.svelte'
-  import type { ConfirmPrompt, PendingWrite, TrashActions } from './trash-actions'
-  import { confirmPrompt, needsTrashConfirmation } from './trash-actions'
+  import type { TrashActions } from './trash-actions'
   import ViewControls from './ViewControls.svelte'
   import { Button } from '$lib/components/ui/button'
   import { Slider } from '$lib/components/ui/slider'
@@ -263,16 +265,38 @@
     // left alone until the answer comes back, so dismissing the dialog leaves
     // the user exactly what they had picked.
     trash: (ids) => {
-      if (needsTrashConfirmation(ids.length)) pendingWrite = { kind: 'trash', ids }
+      if (needsConfirmation(ids.length)) pendingWrite = { kind: 'trash', ids }
       else void write(() => trashImages(ids), ids)
     },
     restore: (ids) => void write(() => restoreImages(ids), ids),
     deleteForever: (ids) => (pendingWrite = { kind: 'delete', ids }),
   }
 
+  /**
+   * Slot Toolbar · rate (`bulk-confirm` design D2): the same "one or many"
+   * rule as trash, over a write with no restore. One image writes at once;
+   * two or more ask first, naming the rating (or the clear) and the count.
+   * Named apart from the tile menu's own `rate` above — that one rates the
+   * image the menu is on, this one a selection of any size.
+   */
+  function rateSelection(ids: string[], rating: Rating | null) {
+    if (needsConfirmation(ids.length)) pendingWrite = { kind: 'rate', ids, rating }
+    else void writeRating(ids, rating)
+  }
+
+  async function writeRating(ids: string[], rating: Rating | null) {
+    try {
+      await bulkSetRating(ids, rating)
+      await results.refresh()
+    } catch (error) {
+      actionError = errorText(error)
+    }
+  }
+
   /** The confirmed half of every question the dialog asks. */
   function commit(pending: PendingWrite) {
     if (pending.kind === 'trash') void write(() => trashImages(pending.ids), pending.ids)
+    else if (pending.kind === 'rate') void writeRating(pending.ids, pending.rating)
     else void destroy(pending)
   }
 
@@ -485,6 +509,7 @@
       {selection}
       {results}
       {actions}
+      rate={rateSelection}
       onerror={(message) => (actionError = message)}
       onexported={(report) => (exportReport = report)}
     />

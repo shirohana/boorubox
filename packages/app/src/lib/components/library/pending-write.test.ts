@@ -1,14 +1,14 @@
 import { describe, expect, it } from 'vitest'
-import { confirmedCount, confirmPrompt, needsTrashConfirmation } from './trash-actions'
+import { confirmedCount, confirmPrompt, needsConfirmation } from './pending-write'
 
-describe('needsTrashConfirmation', () => {
+describe('needsConfirmation', () => {
   it('lets one image go without a dialog', () => {
-    expect(needsTrashConfirmation(1)).toBe(false)
+    expect(needsConfirmation(1)).toBe(false)
   })
 
   it('asks from two upwards', () => {
-    expect(needsTrashConfirmation(2)).toBe(true)
-    expect(needsTrashConfirmation(5000)).toBe(true)
+    expect(needsConfirmation(2)).toBe(true)
+    expect(needsConfirmation(5000)).toBe(true)
   })
 })
 
@@ -16,6 +16,7 @@ describe('confirmedCount', () => {
   it('counts the ids a pending write names', () => {
     expect(confirmedCount({ kind: 'trash', ids: ['a', 'b'] }, 0)).toBe(2)
     expect(confirmedCount({ kind: 'delete', ids: ['a'] }, 0)).toBe(1)
+    expect(confirmedCount({ kind: 'rate', ids: ['a', 'b', 'c'], rating: 'g' }, 0)).toBe(3)
   })
 
   it('reads the trash count for an empty, which names no ids', () => {
@@ -42,5 +43,20 @@ describe('confirmPrompt', () => {
   it('asks about the whole trash when emptying it', () => {
     expect(confirmPrompt({ kind: 'empty' }, 1200).title)
       .toBe(`Permanently delete ${(1200).toLocaleString()} images?`)
+  })
+
+  it('names the count and the rating, capitalized, for a rating write', () => {
+    const prompt = confirmPrompt({ kind: 'rate', ids: ['a', 'b'], rating: 's' }, 0)
+    expect(prompt.title).toBe('Set 2 images to Sensitive?')
+    expect(prompt.confirmLabel).toBe('Set rating')
+    expect(prompt.destructive).toBe(true)
+    expect(prompt.description).toContain('no undo')
+  })
+
+  it('names clearing the rating when the write sets no rating', () => {
+    const prompt = confirmPrompt({ kind: 'rate', ids: ['a', 'b'], rating: null }, 0)
+    expect(prompt.title).toBe('Clear the rating of 2 images?')
+    expect(prompt.confirmLabel).toBe('Clear rating')
+    expect(prompt.destructive).toBe(true)
   })
 })

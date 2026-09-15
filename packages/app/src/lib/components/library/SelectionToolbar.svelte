@@ -18,7 +18,7 @@
   import Trash2Icon from '@lucide/svelte/icons/trash-2'
   import XIcon from '@lucide/svelte/icons/x'
   import type { SearchResults, Selection } from '$lib/api'
-  import { bulkSetRating, errorText, exportZip, onExportProgress, pickExportZipPath } from '$lib/api'
+  import { errorText, exportZip, onExportProgress, pickExportZipPath } from '$lib/api'
   import RatingControl from '$lib/components/tags/RatingControl.svelte'
   import { Button } from '$lib/components/ui/button'
   import { Progress } from '$lib/components/ui/progress'
@@ -34,13 +34,20 @@
      * what a write refreshes, so this row only resolves the ids and calls it.
      */
     actions: TrashActions
+    /**
+     * Slot Toolbar · rate (`bulk-confirm` design D2): the screen decides
+     * whether the write asks first or runs now, and what it refreshes
+     * afterwards. This row only resolves the selection to ids, as `apply`
+     * already does for trash.
+     */
+    rate: (ids: string[], rating: Rating | null) => void
     /** Reported by the page, beside its other action failures. */
     onerror: (message: string) => void
     /** The report outlives this row, so the page holds it (design D11). */
     onexported: (report: ExportReport) => void
   }
 
-  let { selection, results, actions, onerror, onexported }: Props = $props()
+  let { selection, results, actions, rate, onerror, onexported }: Props = $props()
 
   let tagsOpen = $state(false)
   let exporting = $state(false)
@@ -57,13 +64,13 @@
   })
 
   /**
-   * One write over the whole selection (design D10), then the same search
-   * again: the rows are edited, and by now the selection is ids, so it survives
-   * the refresh (design D4). A failure is shown by the control itself.
+   * A range selection spans rows the app has never loaded, so the ids come
+   * from Rust before the screen can ask about them — same as `apply` does for
+   * trash. The write itself, and whether it asks first, is the screen's
+   * (design D2).
    */
-  async function rate(rating: Rating | null) {
-    await bulkSetRating(await selection.ids(), rating)
-    await results.refresh()
+  async function applyRating(rating: Rating | null) {
+    rate(await selection.ids(), rating)
   }
 
   /**
@@ -120,7 +127,7 @@
   {@render action(TagsIcon, 'Tags…', 'outline', false, () => (tagsOpen = true))}
 
   <!-- No single current rating to show: this sets one, it does not report one. -->
-  <RatingControl value={undefined} onchoose={rate} />
+  <RatingControl value={undefined} onchoose={applyRating} />
 
   {@render action(FileArchiveIcon, 'Export…', 'outline', exporting, exportSelected)}
 

@@ -1,0 +1,91 @@
+// The write waiting on the one confirmation the library screen owns: the two
+// irreversible trash acts, the multi-image trash move, and the multi-image
+// rating write (`bulk-confirm` design D1). One shape here — instead of one
+// per caller — is what lets every caller ask through the same `ConfirmDialog`
+// rather than each keeping its own copy of the question and the count rule.
+
+import type { Rating } from '@boorubox/shared'
+import { ratingLabel } from '$lib/domain/format'
+
+/**
+ * What a confirmed write will do; `null` on the screen while nothing is asked.
+ * The two irreversible acts have always been here (design D7); `trash` joined
+ * them for the multi-image case only (design D12, amended), and `rate` for
+ * the same reason (`bulk-confirm` design D1): a bulk rating write replaces
+ * ratings that cannot be recovered afterwards.
+ */
+export type PendingWrite
+  = | { kind: 'trash', ids: string[] }
+    | { kind: 'delete', ids: string[] }
+    | { kind: 'empty' }
+    | { kind: 'rate', ids: string[], rating: Rating | null }
+
+/**
+ * Design D12, amended: trashing is reversible, so one image goes without a
+ * word — but `Cmd A` then `Backspace` is one keystroke away from the whole
+ * library, and the count is the fact the user is missing at that moment. The
+ * rating write reads the same rule (`bulk-confirm` design D1): one function
+ * for "how many is many", whichever kind of write is asking.
+ */
+export function needsConfirmation(count: number): boolean {
+  return count > 1
+}
+
+/** The trash's own count answers for `empty`, which names no ids. */
+export function confirmedCount(pending: PendingWrite, trashCount: number): number {
+  return pending.kind === 'empty' ? trashCount : pending.ids.length
+}
+
+export interface ConfirmPrompt {
+  title: string
+  description: string
+  confirmLabel: string
+  /** Whether confirming destroys something — the red button is for those only. */
+  destructive: boolean
+}
+
+function images(count: number): string {
+  return `${count.toLocaleString()} ${count === 1 ? 'image' : 'images'}`
+}
+
+function capitalized(word: string): string {
+  return word[0].toUpperCase() + word.slice(1)
+}
+
+/**
+ * The question the one `ConfirmDialog` asks, per pending write. Here rather
+ * than in the markup because the reversible act and the irreversible ones have
+ * to read differently — "cannot be undone" belongs only to the ones that cannot.
+ */
+export function confirmPrompt(pending: PendingWrite, trashCount: number): ConfirmPrompt {
+  const count = confirmedCount(pending, trashCount)
+  if (pending.kind === 'trash') {
+    return {
+      title: `Move ${images(count)} to the trash?`,
+      description: 'They leave the library and nothing on disk changes: their files, thumbnails, '
+        + 'tags and ratings stay, and Restore puts them back.',
+      confirmLabel: 'Move to trash',
+      destructive: false,
+    }
+  }
+  if (pending.kind === 'rate') {
+    // Rating names come from the one place that already spells them for the
+    // rating control, capitalized here: a title names the choice, where
+    // `ratingLabel`'s callers so far have all wanted a lowercase tooltip.
+    return {
+      title: pending.rating === null
+        ? `Clear the rating of ${images(count)}?`
+        : `Set ${images(count)} to ${capitalized(ratingLabel(pending.rating))}?`,
+      description: 'Their current ratings are replaced. There is no undo.',
+      confirmLabel: pending.rating === null ? 'Clear rating' : 'Set rating',
+      destructive: true,
+    }
+  }
+  return {
+    title: `Permanently delete ${images(count)}?`,
+    description: 'This cannot be undone. Their records, their thumbnails and their files in the '
+      + 'library folder are removed.',
+    confirmLabel: 'Delete forever',
+    destructive: true,
+  }
+}
