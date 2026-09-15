@@ -9,6 +9,7 @@
 import type {
   AppSettings,
   BundlePlan,
+  Collection,
   DeleteReport,
   ExportReport,
   FactsEdit,
@@ -340,6 +341,52 @@ export function rulesExport(path: string): Promise<void> {
  */
 export function rulesImport(path: string): Promise<RulesImportReport> {
   return invoke('rules_import', { path })
+}
+
+/** Every collection in the library, by name (`collections` design D3). */
+export function collectionList(): Promise<Collection[]> {
+  return invoke('collection_list')
+}
+
+/**
+ * Creates a collection named `name`; refused with the reason for a blank name
+ * or a slug clash, naming the collection that already holds it (design D3).
+ */
+export function collectionCreate(name: string): Promise<Collection> {
+  return invoke('collection_create', { name })
+}
+
+/**
+ * Renames collection `id` to `name`; same refusals as {@link collectionCreate}.
+ * Rewrites the library-level file and no image's sidecar (design D3).
+ */
+export function collectionRename(id: string, name: string): Promise<Collection> {
+  return invoke('collection_rename', { id, name })
+}
+
+/**
+ * Deletes collection `id`: its memberships go with it, and no image otherwise
+ * changes (design D3). Deleting Favorites is allowed.
+ */
+export function collectionDelete(id: string): Promise<void> {
+  return invoke('collection_delete', { id })
+}
+
+/**
+ * Puts every id in `ids` into `collectionId`, idempotent per id (design D3).
+ * Answers with the written rows for the caller to `replace` — no re-run of
+ * the search (design D8).
+ */
+export function collectionAdd(ids: string[], collectionId: string): Promise<ImageRecord[]> {
+  return invoke('collection_add', { ids, collectionId })
+}
+
+/**
+ * Takes every id in `ids` out of `collectionId`, idempotent per id (design
+ * D3). Answers with the written rows, the same as {@link collectionAdd}.
+ */
+export function collectionRemove(ids: string[], collectionId: string): Promise<ImageRecord[]> {
+  return invoke('collection_remove', { ids, collectionId })
 }
 
 /**

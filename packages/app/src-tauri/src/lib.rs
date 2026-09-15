@@ -1,5 +1,6 @@
 pub mod booru;
 pub mod bundle;
+pub mod collections;
 pub mod commands;
 pub mod db;
 pub mod error;
@@ -209,6 +210,12 @@ pub fn run() {
             commands::rules_run,
             commands::rules_export,
             commands::rules_import,
+            commands::collection_list,
+            commands::collection_create,
+            commands::collection_rename,
+            commands::collection_delete,
+            commands::collection_add,
+            commands::collection_remove,
             commands::note_get,
             commands::note_set,
             commands::set_notes_collapsed,

@@ -5,16 +5,18 @@
   // one component (slots Inspector · tags and Inspector · rating, design D17).
   import type { ImageRecord, Rating } from '@boorubox/shared'
   import type { SearchResults, Selection } from '$lib/api'
-  import { errorText } from '$lib/api'
+  import { collectionRemove, collections, errorText } from '$lib/api'
   import PostedLabel from '$lib/components/booru/PostedLabel.svelte'
   import UploadAction from '$lib/components/booru/UploadAction.svelte'
   import PencilIcon from '@lucide/svelte/icons/pencil'
+  import CollectionNameDialog from '$lib/components/common/CollectionNameDialog.svelte'
   import ExternalLink from '$lib/components/common/ExternalLink.svelte'
   import RatingControl from '$lib/components/tags/RatingControl.svelte'
   import TagInput from '$lib/components/tags/TagInput.svelte'
   import { Badge } from '$lib/components/ui/badge'
   import { Button } from '$lib/components/ui/button'
   import * as ContextMenu from '$lib/components/ui/context-menu'
+  import * as DropdownMenu from '$lib/components/ui/dropdown-menu'
   import { Input } from '$lib/components/ui/input'
   import { formatBytes, formatTimestamp } from '$lib/domain/format'
   import { editorText } from '$lib/domain/tag-input'
@@ -24,9 +26,13 @@
     sortTags,
     tagList,
     toggleAccountInQuery,
+    toggleCollectionInQuery,
     toggleTagInQuery,
   } from '$lib/domain/tag-utils'
   import { KEY_ENTER, KEY_ESCAPE } from '$lib/keyboard'
+  import type { CollectionTarget } from './collection-actions'
+  import { addToCreated } from './collection-actions'
+  import CollectionMenuItems from './CollectionMenuItems.svelte'
   import SelectionThumbs from './SelectionThumbs.svelte'
   import type { TrashActions } from './trash-actions'
 
@@ -305,6 +311,45 @@
     await results.saveRating(image.id, rating)
   }
 
+  /** This image's own collections, for the "Add to…" menu's checkmark (design D8). */
+  const ownCollections = $derived(image ? new Set(image.collections) : null)
+  let collectionsError = $state<string | null>(null)
+
+  async function resolveOwnId(): Promise<string[]> {
+    return image ? [image.id] : []
+  }
+
+  /**
+   * A collection write from either the "Add to…" menu or one badge's "Remove
+   * from this collection" (design D8): the written records replace their
+   * rows, the same `replace` a tag or rating save uses, and the keyboard goes
+   * back the way every other panel write hands it back.
+   */
+  function collectionsWritten(records: ImageRecord[]): void {
+    results.replaceMany(records)
+    collectionsError = null
+    onrelease?.()
+  }
+
+  const collectionTarget: CollectionTarget = {
+    resolveIds: resolveOwnId,
+    memberships: () => ownCollections,
+    onwritten: collectionsWritten,
+    onerror: (message) => (collectionsError = message),
+  }
+
+  /** Mounted outside the dropdown: a closed menu's content is unmounted. */
+  let creatingCollection = $state(false)
+
+  async function removeFromCollection(collectionId: string): Promise<void> {
+    if (!image) return
+    try {
+      collectionsWritten(await collectionRemove([image.id], collectionId))
+    } catch (cause) {
+      collectionsError = errorText(cause)
+    }
+  }
+
   /** Design D2: the editor holds the whole set, so the whole set is sent. */
   const save = () => write(tagList(draft))
 
@@ -567,6 +612,96 @@
     </section>
 
     <!--
+      `collections` design D8: absent when the image is in none and there is
+      nothing to add to — impossible while Favorites exists; the guard is for
+      a library whose user deleted every collection.
+    -->
+    {#if image.collections.length > 0 || collections.list.length > 0}
+      <section class="border-t border-border px-4 py-3">
+        <h3 class="mb-2 text-xs font-medium text-muted-foreground">
+          Collections {#if image.collections.length > 0}({image.collections.length}){/if}
+        </h3>
+
+        {#if image.collections.length > 0}
+          <!--
+            Each acts as a search term with the same marking the tag list uses
+            (spec "Shown in the inspector"): `terms` is `activeTerms`'s own
+            reader, shared with the sidebar section.
+          -->
+          <ul class="flex flex-wrap gap-1">
+            {#each image.collections as collectionId (collectionId)}
+              {@const collection = collections.byId(collectionId)}
+              {#if collection}
+                <li>
+                  <ContextMenu.Root>
+                    <ContextMenu.Trigger>
+                      {#snippet child({ props })}
+                        {@const collectionSlug = collection.slug}
+                        <button
+                          type="button"
+                          {...props}
+                          onclick={() => query(toggleCollectionInQuery(tagQuery, collectionSlug))}
+                        >
+                          <Badge
+                            variant="secondary"
+                            class={terms.collections.has(collectionSlug)
+                              ? 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-300'
+                              : terms.excludedCollections.has(collectionSlug)
+                              ? 'bg-destructive/10 text-destructive line-through'
+                              : ''}
+                          >
+                            {collection.name}
+                          </Badge>
+                        </button>
+                      {/snippet}
+                    </ContextMenu.Trigger>
+                    <ContextMenu.Content>
+                      <ContextMenu.Item onSelect={() => void removeFromCollection(collection.id)}>
+                        Remove from this collection
+                      </ContextMenu.Item>
+                    </ContextMenu.Content>
+                  </ContextMenu.Root>
+                </li>
+              {/if}
+            {/each}
+          </ul>
+        {:else}
+          <p class="text-xs text-muted-foreground">In no collections</p>
+        {/if}
+
+        <DropdownMenu.Root>
+          <DropdownMenu.Trigger>
+            {#snippet child({ props })}
+              <Button size="xs" variant="outline" class="mt-2" {...props}>Add to…</Button>
+            {/snippet}
+          </DropdownMenu.Trigger>
+          <DropdownMenu.Content align="start">
+            <CollectionMenuItems
+              target={collectionTarget}
+              onnew={() => (creatingCollection = true)}
+            >
+              {#snippet checkboxItem({ label, checked, onSelect })}
+                <DropdownMenu.CheckboxItem {checked} onCheckedChange={onSelect}>
+                  {label}
+                </DropdownMenu.CheckboxItem>
+              {/snippet}
+              {#snippet item({ label, onSelect })}
+                <DropdownMenu.Item {onSelect}>{label}</DropdownMenu.Item>
+              {/snippet}
+              {#snippet separator()}
+                <DropdownMenu.Separator />
+              {/snippet}
+            </CollectionMenuItems>
+          </DropdownMenu.Content>
+        </DropdownMenu.Root>
+
+        {#if collectionsError}
+          <p class="mt-2 text-xs text-destructive">{collectionsError}</p>
+        {/if}
+      </section>
+    {/if}
+
+    <!--
       `posted-label`: absent, not an empty placeholder, for an image that has
       never been posted. Shown in the trash too — where an image has been is a
       fact about it, not an action on it.
@@ -620,3 +755,17 @@
     </section>
   {/if}
 </div>
+
+<!--
+  Outside the menu above — see `collection-actions.ts` for why a dialog cannot
+  live inside one, and design D8 for why creating here also adds.
+-->
+<CollectionNameDialog
+  collection={null}
+  open={creatingCollection}
+  onclose={() => (creatingCollection = false)}
+  onsaved={(collection) => {
+    creatingCollection = false
+    void addToCreated(collectionTarget, collection)
+  }}
+/>

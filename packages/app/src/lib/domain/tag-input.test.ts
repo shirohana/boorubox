@@ -53,6 +53,7 @@ describe('suggestionPrefix', () => {
     expect(suggestionPrefix('is:un', 5)).toBeNull()
     expect(suggestionPrefix('tagcount:2', 10)).toBeNull()
     expect(suggestionPrefix('account:foo', 11)).toBeNull()
+    expect(suggestionPrefix('collection:favorites', 21)).toBeNull()
   })
 
   it('is null on the or operator and the o it starts as', () => {

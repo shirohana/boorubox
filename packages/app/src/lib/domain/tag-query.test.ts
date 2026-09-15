@@ -7,6 +7,7 @@ import {
   removeTagFromQuery,
   tagList,
   toggleAccountInQuery,
+  toggleCollectionInQuery,
   toggleRatingInQuery,
   toggleTagInQuery,
 } from './tag-utils'
@@ -79,6 +80,13 @@ describe('addTagToQuery', () => {
     const query = addTagToQuery('dog -cat', 'cat')
     expect(parseTagSearch(query).includeTags).toEqual(['dog', 'cat'])
     expect(parseTagSearch(query).excludeTags).toEqual([])
+  })
+
+  it('round-trips a slug the parser must not cut short', () => {
+    const query = toggleCollectionInQuery('cat', 'to-upload')
+    expect(query).toBe('cat collection:to-upload')
+    expect(parseTagSearch(query).collections).toEqual(['to-upload'])
+    expect(toggleCollectionInQuery(query, 'to-upload')).toBe('cat')
   })
 
   it('leaves the rest of the query intact', () => {
@@ -177,13 +185,49 @@ describe('toggleRatingInQuery', () => {
   })
 })
 
+describe('toggleCollectionInQuery', () => {
+  it('adds a collection the query does not name', () => {
+    expect(toggleCollectionInQuery('cat', 'favorites')).toBe('cat collection:favorites')
+  })
+
+  it('removes a collection the query already names', () => {
+    expect(toggleCollectionInQuery('cat collection:favorites', 'favorites')).toBe('cat')
+  })
+
+  it('rewrites the whole metatag when a second collection joins', () => {
+    const query = toggleCollectionInQuery('collection:favorites', 'queue')
+    expect(query).toBe('collection:favorites,queue')
+    expect(parseTagSearch(query).collections).toEqual(['favorites', 'queue'])
+  })
+
+  it('leaves an exclusion untouched and adds beside it', () => {
+    expect(toggleCollectionInQuery('-collection:queue', 'favorites'))
+      .toBe('-collection:queue collection:favorites')
+  })
+
+  it('takes the exclusion out instead of contradicting it', () => {
+    expect(toggleCollectionInQuery('cat -collection:favorites', 'favorites')).toBe('cat')
+  })
+
+  it('leaves the rest of the query intact', () => {
+    const parsed = parseTagSearch(toggleCollectionInQuery('cat rating:s', 'favorites'))
+    expect(parsed.collections).toEqual(['favorites'])
+    expect(parsed.includeTags).toEqual(['cat'])
+    expect(parsed.ratings).toEqual(['s'])
+  })
+})
+
 describe('activeTerms', () => {
-  it('reads included, excluded and or-grouped tags, plus accounts', () => {
-    const terms = activeTerms('cat dog or bird -mouse account:alice -account:eve')
+  it('reads included, excluded and or-grouped tags, plus accounts and collections', () => {
+    const terms = activeTerms(
+      'cat dog or bird -mouse account:alice -account:eve collection:favorites -collection:queue',
+    )
     expect(terms.included).toEqual(new Set(['cat', 'dog', 'bird']))
     expect(terms.excluded).toEqual(new Set(['mouse']))
     expect(terms.accounts).toEqual(new Set(['alice']))
     expect(terms.excludedAccounts).toEqual(new Set(['eve']))
+    expect(terms.collections).toEqual(new Set(['favorites']))
+    expect(terms.excludedCollections).toEqual(new Set(['queue']))
   })
 
   it('answers empty sets for an empty query', () => {
@@ -192,6 +236,8 @@ describe('activeTerms', () => {
     expect(terms.excluded.size).toBe(0)
     expect(terms.accounts.size).toBe(0)
     expect(terms.excludedAccounts.size).toBe(0)
+    expect(terms.collections.size).toBe(0)
+    expect(terms.excludedCollections.size).toBe(0)
   })
 })
 

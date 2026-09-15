@@ -18,8 +18,9 @@ use rusqlite::{Connection, OptionalExtension, params_from_iter};
 use crate::error::Result;
 use crate::ingest;
 use crate::model::{
-    GroupBy, GroupSlice, ParsedTagSearch, RatingCounts, SearchRequest, SearchResult, SearchView,
-    Sort, SortDirection, SortField, TagCount, TagCountOperator, TagCounts,
+    CollectionCount, GroupBy, GroupSlice, ParsedTagSearch, RatingCounts, SearchRequest,
+    SearchResult, SearchView, Sort, SortDirection, SortField, TagCount, TagCountOperator,
+    TagCounts,
 };
 
 /// Register the SQL functions the compiled queries call. `db::open` calls this
@@ -113,6 +114,10 @@ pub fn tag_counts(conn: &Connection, req: &SearchRequest) -> Result<TagCounts> {
         // four zeros. Making the two halves uniform breaks one of the two
         // questions, whichever direction is chosen — the asymmetry is the point.
         ratings: Plan::for_request(req, RatingClause::Dropped).rating_counts(conn)?,
+        // Rating clause included, like `tags` above (design D7): "how many of
+        // what I am looking at is in this collection" is the same narrowing
+        // question, not the pill's sideways one.
+        collections: Plan::for_request(req, RatingClause::Included).collection_counts(conn)?,
     })
 }
 
@@ -276,6 +281,39 @@ impl Plan {
         Ok(counts.collect::<rusqlite::Result<_>>()?)
     }
 
+    /// Every collection in the library, `LEFT JOIN`ed against the matched set
+    /// so an empty collection is listed at zero rather than dropped (design
+    /// D7) — the sidebar's own rule for a tag with no matches applies here
+    /// too. Ordered by name, the same order [`collections::list`] uses for
+    /// the menus, so the sidebar and a create/rename dialog never disagree
+    /// about what order "by name" means.
+    ///
+    /// [`collections::list`]: crate::collections::list
+    fn collection_counts(&self, conn: &Connection) -> Result<Vec<CollectionCount>> {
+        let mut stmt = conn.prepare(&format!(
+            "{} SELECT collections.id, collections.name, collections.slug,
+                    COUNT(matched_members.image_id) AS count
+             FROM collections
+             LEFT JOIN (
+                 SELECT image_collections.collection_id, image_collections.image_id
+                 FROM image_collections
+                 WHERE image_collections.image_id IN (SELECT id FROM {})
+             ) AS matched_members ON matched_members.collection_id = collections.id
+             GROUP BY collections.id
+             ORDER BY collections.name COLLATE NOCASE",
+            self.ctes, self.rows
+        ))?;
+        let counts = stmt.query_map(params_from_iter(&self.params), |row| {
+            Ok(CollectionCount {
+                id: row.get(0)?,
+                name: row.get(1)?,
+                slug: row.get(2)?,
+                count: row.get(3)?,
+            })
+        })?;
+        Ok(counts.collect::<rusqlite::Result<_>>()?)
+    }
+
     fn rating_counts(&self, conn: &Connection) -> Result<RatingCounts> {
         let mut stmt = conn.prepare(&format!(
             "{} SELECT rating, COUNT(*) FROM {} GROUP BY rating",
@@ -392,6 +430,7 @@ fn compile(req: &SearchRequest, rating: RatingClause) -> Filter {
     push_file_types(&mut filter, query);
     push_tag_count(&mut filter, query);
     push_accounts(&mut filter, query);
+    push_collections(&mut filter, query);
     push_tags(&mut filter, query);
     push_text(&mut filter, &req.text);
     filter
@@ -496,6 +535,43 @@ fn push_accounts(filter: &mut Filter, query: &ParsedTagSearch) {
             text_values(&query.exclude_accounts),
         );
     }
+}
+
+/// `collection:<slug>` / `-collection:<slug>` (design D6), compiled against
+/// `collections.slug` — never the id, which the webview never sees. A slug
+/// nothing has matches nothing by the `IN` alone, on both sides: no `NULL`
+/// case to special-case the way `push_accounts` needs one for `x_account`,
+/// since a membership join produces no row rather than a `NULL` one.
+fn push_collections(filter: &mut Filter, query: &ParsedTagSearch) {
+    if !query.collections.is_empty() {
+        filter.add_bound(
+            has_any_collection(query.collections.len()),
+            text_values(&query.collections),
+        );
+    }
+    if !query.exclude_collections.is_empty() {
+        filter.add_bound(
+            format!(
+                "NOT {}",
+                has_any_collection(query.exclude_collections.len())
+            ),
+            text_values(&query.exclude_collections),
+        );
+    }
+}
+
+/// "this image is in at least one collection whose slug is among these" — the
+/// shape both halves of [`push_collections`] share, the same way
+/// [`has_any_tag`] backs both the include and the exclude side of a tag
+/// clause.
+fn has_any_collection(count: usize) -> String {
+    format!(
+        "EXISTS (SELECT 1 FROM image_collections
+                 JOIN collections ON collections.id = image_collections.collection_id
+                 WHERE image_collections.image_id = images.id
+                   AND collections.slug IN ({}))",
+        placeholders(count)
+    )
 }
 
 fn push_tags(filter: &mut Filter, query: &ParsedTagSearch) {
@@ -1198,6 +1274,62 @@ mod tests {
     }
 
     #[test]
+    fn collection_selects_its_members() {
+        let fixture = fixture();
+        crate::collections::add(
+            &fixture.library,
+            &["cat-s".to_string(), "dog-e".to_string()],
+            "favorites",
+        )
+        .unwrap();
+
+        let ids = found(
+            &fixture,
+            &request(ParsedTagSearch {
+                collections: vec!["favorites".to_string()],
+                ..Default::default()
+            }),
+        );
+
+        assert_eq!(ids, vec!["cat-s", "dog-e"]);
+    }
+
+    #[test]
+    fn excluding_a_collection_keeps_every_other_image() {
+        let fixture = fixture();
+        crate::collections::add(&fixture.library, &["cat-s".to_string()], "favorites").unwrap();
+
+        let ids = found(
+            &fixture,
+            &request(ParsedTagSearch {
+                exclude_collections: vec!["favorites".to_string()],
+                ..Default::default()
+            }),
+        );
+
+        assert_eq!(
+            ids,
+            vec!["cat-dog-q", "dog-e", "untagged", "no-account"],
+            "the trashed row is out of the library view either way"
+        );
+    }
+
+    #[test]
+    fn an_unknown_collection_slug_matches_nothing() {
+        let fixture = fixture();
+
+        let ids = found(
+            &fixture,
+            &request(ParsedTagSearch {
+                collections: vec!["no-such-slug".to_string()],
+                ..Default::default()
+            }),
+        );
+
+        assert!(ids.is_empty());
+    }
+
+    #[test]
     fn free_text_matches_a_page_title() {
         let fixture = fixture();
 
@@ -1804,6 +1936,40 @@ mod tests {
                 e: 1,
                 unrated: 1,
             }
+        );
+    }
+
+    /// Design D7: every collection is listed, zero included, and a matched
+    /// image is counted with the rating clause in effect (`s` here narrows
+    /// the matched set the same way it narrows the tag list beside it).
+    #[test]
+    fn collection_counts_list_every_collection_zero_included_over_the_matched_set() {
+        let fixture = rated();
+        let queue = crate::collections::create(&fixture.library, "Queue").unwrap();
+        crate::collections::add(
+            &fixture.library,
+            &["a".to_string(), "b".to_string()],
+            &queue.id,
+        )
+        .unwrap();
+
+        let counts = counts(
+            &fixture,
+            &request(ParsedTagSearch {
+                ratings: vec!["s".to_string()],
+                ..Default::default()
+            }),
+        );
+
+        let pairs: Vec<(String, i64)> = counts
+            .collections
+            .iter()
+            .map(|collection| (collection.name.clone(), collection.count))
+            .collect();
+        assert_eq!(
+            pairs,
+            vec![("Favorites".to_string(), 0), ("Queue".to_string(), 1)],
+            "`a` is rated `s` and in Queue; `b` is rated `e` and filtered out",
         );
     }
 

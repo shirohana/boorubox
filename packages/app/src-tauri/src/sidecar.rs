@@ -12,10 +12,13 @@ use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 
 use crate::booru::sites;
+use crate::collections;
 use crate::error::{AppError, Result};
 use crate::ingest;
 use crate::library::LibraryPaths;
-use crate::model::{BooruSite, ImageRecord, ImageSource, Note, PostRef, Rule, SiteAdapterRecord};
+use crate::model::{
+    BooruSite, Collection, ImageRecord, ImageSource, Note, PostRef, Rule, SiteAdapterRecord,
+};
 use crate::notes;
 use crate::rules;
 
@@ -74,6 +77,12 @@ pub struct Sidecar {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub deleted_at: Option<i64>,
     pub posts: Vec<PostRef>,
+    /// The collections this image is in, by id (`collections` design D4). An
+    /// old sidecar with no such key reads as "in none" — additive, so the
+    /// sidecar format stays 1 — and an old reader ignores the field it does
+    /// not know.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub collections: Vec<String>,
 }
 
 impl From<&ImageRecord> for Sidecar {
@@ -100,12 +109,13 @@ impl From<&ImageRecord> for Sidecar {
             updated_at: record.updated_at,
             deleted_at: record.deleted_at,
             posts: record.posts.clone(),
+            collections: record.collections.clone(),
         }
     }
 }
 
-/// `library.json`: the rules, the booru sites and the note — everything in the
-/// library that is not per image (design D3). Rule and site ids are the
+/// `library.json`: the rules, the booru sites, the note and the collections —
+/// everything in the library that is not per image (design D3). Rule and site ids are the
 /// database's own, written and restored verbatim: `posts.site` holds a site
 /// id and rule ids travel in the export format, so regenerating either on
 /// rebuild would break a reference. No API key, ever: `BooruSite` has no field
@@ -118,6 +128,18 @@ pub struct LibraryFile {
     pub rules: Vec<Rule>,
     pub booru_sites: Vec<BooruSite>,
     pub note: Note,
+    /// The collections, by id and name (`collections` design D4): a
+    /// membership is written into each image's sidecar, but the collection
+    /// itself — the only place its name lives — is library-level, the same
+    /// as a rule or a site. Always written by this build, even empty (an old
+    /// reader ignores a key it does not know, so the format stays 1), and
+    /// `Option` rather than a defaulted `Vec` because a rebuild has to tell
+    /// two files apart: `"collections": []` is "the user has none, the seed
+    /// was deleted", while no key at all is a file written before this build
+    /// existed and says nothing about collections — there the migration's own
+    /// seed is the better answer than an emptied table.
+    #[serde(default)]
+    pub collections: Option<Vec<Collection>>,
 }
 
 /// Where `id`'s sidecar lives: the same bucket as its image, through
@@ -249,6 +271,7 @@ pub fn write_library(paths: &LibraryPaths, conn: &Connection) -> Result<()> {
             .collect(),
         booru_sites: sites::list(conn)?,
         note: notes::get(conn)?,
+        collections: Some(collections::list(conn)?),
     };
     let bytes = serde_json::to_vec_pretty(&file).map_err(|error| {
         AppError::BadRequest(format!("library file cannot be encoded: {error}"))
@@ -353,6 +376,7 @@ mod tests {
                 remote_id: "7412".to_string(),
                 posted_at: 1_757_000_000_456,
             }],
+            collections: vec!["favorites".to_string()],
         }
     }
 
@@ -368,6 +392,24 @@ mod tests {
             read_back, sidecar,
             "including the None fields, file_modified_at and deleted_at"
         );
+    }
+
+    /// `collections` design D4: additive, so a sidecar written before this
+    /// change — no `collections` key at all — reads as "in none" rather than
+    /// failing to parse.
+    #[test]
+    fn a_sidecar_from_before_collections_with_no_such_key_reads_as_in_none() {
+        let (_dir, library) = library();
+        let sidecar = full_sidecar("a");
+        let mut json = serde_json::to_value(&sidecar).unwrap();
+        json.as_object_mut().unwrap().remove("collections");
+        let file = path(&library.paths, "a");
+        fs::create_dir_all(file.parent().unwrap()).unwrap();
+        fs::write(&file, serde_json::to_vec_pretty(&json).unwrap()).unwrap();
+
+        let read_back = read(&file).unwrap();
+
+        assert!(read_back.collections.is_empty());
     }
 
     /// Design D1: `version` exists so a reader never guesses which shape it
@@ -582,6 +624,13 @@ mod tests {
         assert_eq!(file.rules.len(), 2);
         assert_eq!(file.booru_sites.len(), 1);
         assert_eq!(file.note.content, "remember to tag these");
+        let collections = file.collections.expect("the key is always written");
+        assert_eq!(
+            collections.len(),
+            1,
+            "the seeded Favorites collection, by design D4"
+        );
+        assert_eq!(collections[0].name, "Favorites");
     }
 
     #[test]

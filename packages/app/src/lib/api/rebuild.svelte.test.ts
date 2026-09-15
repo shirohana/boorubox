@@ -19,6 +19,7 @@ function report(overrides: Partial<RebuildReport> = {}): RebuildReport {
     keptAs: 'library.sqlite.corrupt-1700000000000',
     rules: 1,
     sites: 0,
+    collections: 0,
     ...overrides,
   }
 }

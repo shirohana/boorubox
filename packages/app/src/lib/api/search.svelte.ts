@@ -164,8 +164,29 @@ export class SearchResults {
    * vanishing from under the hands of whoever is tagging it.
    */
   replace(record: ImageRecord): void {
-    const index = this.#images.findIndex((image) => image?.id === record.id)
-    if (index !== -1) this.#images[index] = record
+    this.replaceMany([record])
+  }
+
+  /**
+   * The same for every row a bulk write answered with, in one pass and one
+   * counts round trip: a collection write over a selection answers with every
+   * record it wrote (`collections` design D8), and `replace` in a loop would
+   * ask Rust for the counts once per image — 25,000 round trips for the one
+   * number they all change.
+   */
+  replaceMany(records: ImageRecord[]): void {
+    if (records.length === 0) return
+    /* eslint-disable-next-line svelte/prefer-svelte-reactivity --
+       A local index over the rows, built and dropped inside this call: nothing
+       reads it again, so there is nothing for a reactive Map to notify. */
+    const rows = new Map<string, number>()
+    this.#images.forEach((image, index) => {
+      if (image) rows.set(image.id, index)
+    })
+    for (const record of records) {
+      const index = rows.get(record.id)
+      if (index !== undefined) this.#images[index] = record
+    }
     void this.#loadCounts(this.generation)
   }
 

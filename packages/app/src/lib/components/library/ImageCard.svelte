@@ -3,7 +3,7 @@
   import ArchiveRestoreIcon from '@lucide/svelte/icons/archive-restore'
   import CloudUploadIcon from '@lucide/svelte/icons/cloud-upload'
   import Trash2Icon from '@lucide/svelte/icons/trash-2'
-  import type { ClickModifiers } from '$lib/api'
+  import type { ClickModifiers, Selection } from '$lib/api'
   import { booruSites } from '$lib/api'
   import { postedNames } from '$lib/components/booru/posted'
   import { RATING_COLOUR, RATINGS } from '$lib/components/tags/ratings'
@@ -11,6 +11,8 @@
   import { Checkbox } from '$lib/components/ui/checkbox'
   import * as ContextMenu from '$lib/components/ui/context-menu'
   import { ratingLabel } from '$lib/domain/format'
+  import type { CollectionTarget } from './collection-actions'
+  import CollectionMenuItems from './CollectionMenuItems.svelte'
   import { cachedThumbnail, thumbnail } from './thumbnail-cache'
   import type { TilePress } from './tile-click'
   import { shouldActivate, travelled } from './tile-click'
@@ -34,6 +36,24 @@
     view: 'library' | 'trash'
     /** They act on THIS image, like the rating entries above them. */
     actions: TrashActions
+    /**
+     * The menu's collection submenu acts on the whole selection when this
+     * tile is part of it, and on this image alone otherwise (design D8) — so
+     * it needs the store itself, not just the boolean `selected` already
+     * carries.
+     */
+    selection: Selection
+    /** A collection write from this menu, for the caller's own `replaceMany` (design D8/D10). */
+    onwritten: (records: ImageRecord[]) => void
+    /**
+     * "New collection…" was chosen on this tile: the grid raises the one
+     * dialog it owns for the whole grid, with what this tile's menu acts on.
+     * Not a dialog of this tile's own — the grid mounts and destroys tiles as
+     * it scrolls, and one `Dialog` per tile is machinery on that path.
+     */
+    onnewcollection: (target: CollectionTarget) => void
+    /** Reported like every other action failure on this screen. */
+    onerror: (message: string) => void
   }
 
   let {
@@ -46,6 +66,10 @@
     onrate,
     view,
     actions,
+    selection,
+    onwritten,
+    onerror,
+    onnewcollection,
   }: Props = $props()
 
   let src = $state<string | null>(null)
@@ -88,6 +112,26 @@
    */
   const previewId = $derived(image && !image.missing ? image.id : null)
 
+  /** This tile's own collections, for the submenu's checkmark (design D8). */
+  const collectionMemberships = $derived(image ? new Set(image.collections) : null)
+
+  /**
+   * Ids: the selection's when the tile is in it, else this image's alone
+   * (design D8) — resolved at write time so a live range is never read from a
+   * stale array kept from before the menu opened.
+   */
+  async function resolveCollectionIds(): Promise<string[]> {
+    if (!image) return []
+    return selected ? selection.ids() : [image.id]
+  }
+
+  const collectionTarget: CollectionTarget = {
+    resolveIds: resolveCollectionIds,
+    memberships: () => collectionMemberships,
+    onwritten: (records) => onwritten(records),
+    onerror: (message) => onerror(message),
+  }
+
   $effect(() => {
     const id = previewId
     previewFailed = false
@@ -115,7 +159,15 @@
   for it (`data-card-focus`). `onfocusin` rather than `onfocus` on the tile,
   because on a missing-file card the tab stop is its own button.
 -->
-<ContextMenu.Root>
+<ContextMenu.Root
+  onOpenChange={(open) => {
+    // A right-click on a tile outside the selection makes it current, as a
+    // left click would (design D8) — the menu's ids follow from `selected`
+    // either way, but the tile the user opened the menu on is the one the
+    // rest of the screen should agree is current.
+    if (open && image && !selected) onselect({})
+  }}
+>
   <ContextMenu.Trigger class="group/tile relative aspect-square">
     {#snippet child({ props })}
       <!-- A class written here is replaced: {...props} carries the trigger's merged class. -->
@@ -347,6 +399,30 @@
     <ContextMenu.Item disabled={!image} onSelect={() => onrate(null)}>
       none · unrated
     </ContextMenu.Item>
+
+    <!-- The collection submenu (`collections` design D8). -->
+    <ContextMenu.Separator />
+    <ContextMenu.Sub>
+      <ContextMenu.SubTrigger disabled={!image}>Collections</ContextMenu.SubTrigger>
+      <ContextMenu.SubContent>
+        <CollectionMenuItems
+          target={collectionTarget}
+          onnew={() => onnewcollection(collectionTarget)}
+        >
+          {#snippet checkboxItem({ label, checked, onSelect })}
+            <ContextMenu.CheckboxItem {checked} onCheckedChange={onSelect}>
+              {label}
+            </ContextMenu.CheckboxItem>
+          {/snippet}
+          {#snippet item({ label, onSelect })}
+            <ContextMenu.Item {onSelect}>{label}</ContextMenu.Item>
+          {/snippet}
+          {#snippet separator()}
+            <ContextMenu.Separator />
+          {/snippet}
+        </CollectionMenuItems>
+      </ContextMenu.SubContent>
+    </ContextMenu.Sub>
 
     <!--
       Slot Grid · tile (`trash` design D13), added to the menu that is already

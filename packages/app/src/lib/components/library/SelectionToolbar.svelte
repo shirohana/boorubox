@@ -13,16 +13,22 @@
   import type { Component } from 'svelte'
   import ArchiveRestoreIcon from '@lucide/svelte/icons/archive-restore'
   import FileArchiveIcon from '@lucide/svelte/icons/file-archive'
+  import FolderIcon from '@lucide/svelte/icons/folder'
   import ListChecksIcon from '@lucide/svelte/icons/list-checks'
   import TagsIcon from '@lucide/svelte/icons/tags'
   import Trash2Icon from '@lucide/svelte/icons/trash-2'
   import XIcon from '@lucide/svelte/icons/x'
   import type { SearchResults, Selection } from '$lib/api'
   import { errorText, exportZip, onExportProgress, pickExportZipPath } from '$lib/api'
+  import CollectionNameDialog from '$lib/components/common/CollectionNameDialog.svelte'
   import RatingControl from '$lib/components/tags/RatingControl.svelte'
   import { Button } from '$lib/components/ui/button'
+  import * as DropdownMenu from '$lib/components/ui/dropdown-menu'
   import { Progress } from '$lib/components/ui/progress'
   import BulkTagDialog from './BulkTagDialog.svelte'
+  import type { CollectionTarget } from './collection-actions'
+  import { addToCreated } from './collection-actions'
+  import CollectionMenuItems from './CollectionMenuItems.svelte'
   import type { TrashActions } from './trash-actions'
 
   interface Props {
@@ -50,6 +56,23 @@
   let { selection, results, actions, rate, onerror, onexported }: Props = $props()
 
   let tagsOpen = $state(false)
+
+  /**
+   * `collections` design D8: the toolbar knows no memberships of its own — a
+   * range selection can span rows the app never loaded, so `CollectionMenuItems`
+   * offers each collection as an Add/Remove submenu rather than a checkbox.
+   * The ids resolve at write time, so a live range is never read from an array
+   * kept from before the menu opened.
+   */
+  const collectionTarget: CollectionTarget = {
+    resolveIds: () => selection.ids(),
+    memberships: () => null,
+    onwritten: (records) => results.replaceMany(records),
+    onerror: (message) => onerror(message),
+  }
+
+  /** Mounted outside the dropdown: a closed menu's content is unmounted. */
+  let creatingCollection = $state(false)
   let exporting = $state(false)
   let progress = $state<ExportProgress | null>(null)
 
@@ -126,6 +149,51 @@
   {@render action(XIcon, 'Clear', 'ghost', false, () => selection.clear())}
   {@render action(TagsIcon, 'Tags…', 'outline', false, () => (tagsOpen = true))}
 
+  <!-- Slot Toolbar · actions, the collection menu (`collections` design D8). -->
+  <DropdownMenu.Root>
+    <DropdownMenu.Trigger>
+      {#snippet child({ props })}
+        <Button
+          size="sm"
+          variant="outline"
+          class="shrink-0"
+          aria-label="Collection"
+          title="Collection"
+          {...props}
+        >
+          <FolderIcon />
+          <span class="hidden 2xl:inline">Collection</span>
+        </Button>
+      {/snippet}
+    </DropdownMenu.Trigger>
+    <DropdownMenu.Content align="start">
+      <CollectionMenuItems
+        target={collectionTarget}
+        onnew={() => (creatingCollection = true)}
+      >
+        {#snippet checkboxItem({ label, checked, onSelect })}
+          <DropdownMenu.CheckboxItem {checked} onCheckedChange={onSelect}>
+            {label}
+          </DropdownMenu.CheckboxItem>
+        {/snippet}
+        {#snippet item({ label, onSelect })}
+          <DropdownMenu.Item {onSelect}>{label}</DropdownMenu.Item>
+        {/snippet}
+        {#snippet separator()}
+          <DropdownMenu.Separator />
+        {/snippet}
+        {#snippet sub({ label, children })}
+          <DropdownMenu.Sub>
+            <DropdownMenu.SubTrigger>{label}</DropdownMenu.SubTrigger>
+            <DropdownMenu.SubContent>
+              {@render children()}
+            </DropdownMenu.SubContent>
+          </DropdownMenu.Sub>
+        {/snippet}
+      </CollectionMenuItems>
+    </DropdownMenu.Content>
+  </DropdownMenu.Root>
+
   <!-- No single current rating to show: this sets one, it does not report one. -->
   <RatingControl value={undefined} onchoose={applyRating} />
 
@@ -174,3 +242,17 @@
 {/snippet}
 
 <BulkTagDialog {selection} {results} bind:open={tagsOpen} />
+
+<!--
+  Outside the menu above — see `collection-actions.ts` for why a dialog cannot
+  live inside one, and design D8 for why creating here also adds.
+-->
+<CollectionNameDialog
+  collection={null}
+  open={creatingCollection}
+  onclose={() => (creatingCollection = false)}
+  onsaved={(collection) => {
+    creatingCollection = false
+    void addToCreated(collectionTarget, collection)
+  }}
+/>

@@ -205,6 +205,38 @@ pub struct ImageRecord {
     /// Where this image has been posted, one entry per site (`booru-upload`
     /// design D5). Empty for an image never posted anywhere.
     pub posts: Vec<PostRef>,
+    /// The collections this image is in, by id, sorted (`collections` design
+    /// D4). Never a tag: not sent to a booru, not matched by a tag term.
+    pub collections: Vec<String>,
+}
+
+/// A named, unordered set of images the user keeps for themselves
+/// (`collections` design D1–D3): favourites, a project, a batch to upload.
+/// Referenced everywhere else by `id`, which never changes; `name` is the only
+/// field a rename touches.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Collection {
+    pub id: String,
+    pub name: String,
+    /// `name`, lower-cased with runs of whitespace as `_` (design D2),
+    /// computed once in Rust so the webview never recomputes it and the query
+    /// language and the sidebar always agree on what a collection is called.
+    pub slug: String,
+    /// Epoch milliseconds.
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+
+/// One collection's row in the sidebar and the inspector's menus: the
+/// collection plus how many of the matched result are in it (design D7).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CollectionCount {
+    pub id: String,
+    pub name: String,
+    pub slug: String,
+    pub count: i64,
 }
 
 /// What `update_facts` takes (`editable-info` design D1): `None` and an empty
@@ -270,6 +302,10 @@ pub struct ParsedTagSearch {
     pub include_unrated: bool,
     pub accounts: Vec<String>,
     pub exclude_accounts: Vec<String>,
+    /// Slugs (design D6): `collection:my_favorites` compiles against
+    /// `collections.slug`, never the id — the webview never sees one.
+    pub collections: Vec<String>,
+    pub exclude_collections: Vec<String>,
 }
 
 /// What the four sorts compare. An enum rather than the legacy's `field-direction`
@@ -413,6 +449,7 @@ pub struct RebuildReport {
     pub kept_as: String,
     pub rules: i64,
     pub sites: i64,
+    pub collections: i64,
 }
 
 /// Payload of the `library:rebuild` event, shown where no library is open
@@ -468,6 +505,11 @@ pub struct RatingCounts {
 pub struct TagCounts {
     pub tags: Vec<TagCount>,
     pub ratings: RatingCounts,
+    /// Every collection in the library, counted over the matched set with the
+    /// rating clause included (design D7) — the sidebar's Collections section
+    /// and the inspector's badges read this rather than keeping a count of
+    /// their own.
+    pub collections: Vec<CollectionCount>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -913,6 +955,7 @@ mod tests {
             deleted_at: None,
             missing: false,
             posts: Vec::new(),
+            collections: Vec::new(),
         }
     }
 
@@ -1048,6 +1091,7 @@ mod tests {
             kept_as: "library.sqlite.corrupt-1757000000000".to_string(),
             rules: 3,
             sites: 1,
+            collections: 4,
         };
 
         assert_eq!(
@@ -1062,6 +1106,7 @@ mod tests {
                 "keptAs": "library.sqlite.corrupt-1757000000000",
                 "rules": 3,
                 "sites": 1,
+                "collections": 4,
             }),
         );
         assert_eq!(
@@ -1185,6 +1230,12 @@ mod tests {
                 e: 4,
                 unrated: 5,
             },
+            collections: vec![CollectionCount {
+                id: "favorites".to_string(),
+                name: "Favorites".to_string(),
+                slug: "favorites".to_string(),
+                count: 2,
+            }],
         };
 
         assert_eq!(
@@ -1192,6 +1243,12 @@ mod tests {
             serde_json::json!({
                 "tags": [{ "name": "cat", "count": 12 }],
                 "ratings": { "g": 1, "s": 2, "q": 3, "e": 4, "unrated": 5 },
+                "collections": [{
+                    "id": "favorites",
+                    "name": "Favorites",
+                    "slug": "favorites",
+                    "count": 2,
+                }],
             }),
         );
     }

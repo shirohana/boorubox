@@ -7,7 +7,7 @@
   import Trash2Icon from '@lucide/svelte/icons/trash-2'
   import { resolve } from '$app/paths'
   import { page } from '$app/state'
-  import { imports, library, libraryCounts, sidecarsBackfill, trash } from '$lib/api'
+  import { collections, imports, library, libraryCounts, sidecarsBackfill, trash } from '$lib/api'
   import LibraryMenu from '$lib/components/frame/LibraryMenu.svelte'
   import { libraryName } from '$lib/components/frame/library-name'
   import NotesPanel from '$lib/components/notes/NotesPanel.svelte'
@@ -61,6 +61,10 @@
     imports.dismissAll()
     sidecarsBackfill.reset()
     void libraryCounts.refresh()
+    // `collections` design D7: the menus and the sidebar section need the
+    // list itself following a library switch, the same round trip the trash
+    // and per-source counts already make here.
+    void collections.refresh()
   })
 
   // The per-source counts also follow every import, library switch or not,

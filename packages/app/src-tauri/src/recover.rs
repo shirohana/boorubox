@@ -3,15 +3,17 @@
 //! module owns what happens once damage — or a deliberate manual rebuild — is
 //! met.
 
+use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 
 use rusqlite::{Connection, params};
 
+use crate::collections;
 use crate::db;
 use crate::error::{AppError, Result};
 use crate::library::LibraryPaths;
-use crate::model::{BooruSite, Note, RebuildFailure, RebuildReport, Rule};
+use crate::model::{BooruSite, Collection, Note, RebuildFailure, RebuildReport, Rule};
 use crate::sidecar;
 use crate::tags;
 
@@ -75,10 +77,10 @@ fn building_path(paths: &LibraryPaths) -> PathBuf {
 /// Build a working `library.sqlite` from the sidecars alone (design D11):
 /// walk `images/**/*.json`, insert each row with its stored facts and
 /// `missing` computed from whether the image file is still beside it, link
-/// its tags and posts, then restore `library.json`'s rules, sites and note
-/// verbatim. Never opens, decodes or rewrites an image or a thumbnail — an
-/// image's dimensions come from its sidecar — and never removes a file under
-/// the folder.
+/// its tags and posts, then restore `library.json`'s rules, sites, note and
+/// collections verbatim, and every membership the sidecars name. Never opens,
+/// decodes or rewrites an image or a thumbnail — an image's dimensions come
+/// from its sidecar — and never removes a file under the folder.
 ///
 /// A stale `library.sqlite.rebuilding` left by an interrupted attempt is
 /// overwritten, not adopted: an in-progress rebuild that never reached the
@@ -94,7 +96,7 @@ pub fn rebuild(
     let conn = db::open(&building)?;
 
     let sidecar_paths = walk_sidecars(&paths.images_dir())?;
-    let (images, mut failures) = insert_sidecars(&conn, &sidecar_paths, on_progress)?;
+    let (images, mut failures, parsed) = insert_sidecars(&conn, &sidecar_paths, on_progress)?;
 
     let library_file = sidecar::library_path(paths);
     let (rules, sites) = match sidecar::read_library(&library_file) {
@@ -103,6 +105,17 @@ pub fn rebuild(
             let rules = insert_rules(&tx, &file.rules)?;
             let sites = insert_sites(&tx, &file.booru_sites)?;
             insert_note(&tx, &file.note)?;
+            // The file wins (design D5): the migration's own seed is one row
+            // this build put there before a single sidecar was read, and a
+            // library-level file that came back from disk is the truer answer
+            // to "what collections exist" than a seed guessed before it was
+            // read. A file with no `collections` key at all is not that
+            // answer — it was written before this build existed — so the seed
+            // stands there, exactly as it does when the file is missing.
+            if let Some(from_file) = &file.collections {
+                tx.execute("DELETE FROM collections", [])?;
+                insert_collections(&tx, from_file)?;
+            }
             tx.commit()?;
             (rules, sites)
         }
@@ -112,6 +125,12 @@ pub fn rebuild(
         // rules, the sites and the note are gone with it, and a report showing
         // a silent zero would let the user find that out the next time a rule
         // does not fire instead of now.
+        //
+        // Either way the migration's own seed (`db.rs` `SCHEMA_V6`) is left
+        // standing rather than deleted: only a file that lists collections
+        // replaces it (above), so a library rebuilt with no readable
+        // library-level file gets exactly the one collection a freshly opened
+        // library would.
         Err(AppError::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => (0, 0),
         Err(error) => {
             failures.push(RebuildFailure {
@@ -121,6 +140,22 @@ pub fn rebuild(
             (0, 0)
         }
     };
+
+    // Placeholders, then memberships (design D5): a membership row references
+    // a collection id, and `image_collections.collection_id` is a foreign key
+    // — every id a sidecar names has to exist in `collections` before
+    // `insert_memberships` can link to it.
+    let tx = conn.unchecked_transaction()?;
+    insert_placeholder_collections(&tx, &parsed)?;
+    insert_memberships(&tx, &parsed)?;
+    tx.commit()?;
+
+    // Computed, never carried through the match arms above (CLAUDE.md: single
+    // source of truth) — the seed, the file's own rows and every placeholder
+    // all land in one table, and this is the one place that has to agree with
+    // what a query against the rebuilt library would find.
+    let collections: i64 =
+        conn.query_row("SELECT COUNT(*) FROM collections", [], |row| row.get(0))?;
 
     drop(conn);
     let kept = move_aside(paths)?;
@@ -135,7 +170,82 @@ pub fn rebuild(
             .unwrap_or_default(),
         rules,
         sites,
+        collections,
     })
+}
+
+/// The file's own collections, restored verbatim (design D5) — id and times as
+/// `library.json` names them, the same rule [`insert_rules`] and
+/// [`insert_sites`] already follow for their own ids. `slug` is recomputed
+/// through [`collections::slug`] rather than trusted from the file: it is
+/// derived from `name`, and design D2 keeps that derivation in the one place
+/// that owns it, not duplicated into every writer that ever produces a
+/// `Collection`.
+fn insert_collections(conn: &Connection, collections: &[Collection]) -> Result<()> {
+    for collection in collections {
+        conn.execute(
+            "INSERT INTO collections (id, name, slug, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![
+                collection.id,
+                collection.name,
+                collections::slug(&collection.name),
+                collection.created_at,
+                collection.updated_at,
+            ],
+        )?;
+    }
+    Ok(())
+}
+
+/// A placeholder, named by its own id, for every membership id the sidecars
+/// name that is not already a collection (design D5) — a membership whose
+/// collection the library-level file does not list comes back rather than
+/// being lost, under a name the user can rename away. `INSERT OR IGNORE`: an
+/// id already present (the seed, or one of the file's own rows) is left
+/// exactly as it stands, never overwritten by a placeholder guess.
+fn insert_placeholder_collections(conn: &Connection, parsed: &[sidecar::Sidecar]) -> Result<()> {
+    let now = db::now_ms();
+    let mut seen = HashSet::new();
+    for sidecar in parsed {
+        for id in &sidecar.collections {
+            if !seen.insert(id.as_str()) {
+                continue;
+            }
+            conn.execute(
+                "INSERT OR IGNORE INTO collections (id, name, slug, created_at, updated_at)
+                 VALUES (?1, ?1, ?2, ?3, ?3)",
+                params![id, collections::slug(id), now],
+            )?;
+        }
+    }
+    Ok(())
+}
+
+/// One `image_collections` row per id a sidecar names (design D5), from the
+/// `Sidecar`s [`insert_sidecars`] already parsed rather than a second read of
+/// every file. `added_at` has no sidecar field of its own to restore — a
+/// membership carries only the id — so this uses the sidecar's own
+/// `updated_at` as the closest fact on hand; nothing in the app reads the
+/// column back today (design D3's `add`/`remove` write it, nothing queries
+/// it), so a rebuild is free to approximate it.
+///
+/// `ON CONFLICT DO NOTHING`, the rule [`tags::link_tag`] already follows for a
+/// repeated tag: this pass runs outside the per-sidecar savepoint, so an id
+/// listed twice in one hand-edited `collections` array would otherwise end the
+/// whole rebuild — and end it again on every retry.
+fn insert_memberships(conn: &Connection, parsed: &[sidecar::Sidecar]) -> Result<()> {
+    for sidecar in parsed {
+        for collection_id in &sidecar.collections {
+            conn.execute(
+                "INSERT INTO image_collections (image_id, collection_id, added_at)
+                 VALUES (?1, ?2, ?3)
+                 ON CONFLICT DO NOTHING",
+                params![sidecar.id, collection_id, sidecar.updated_at],
+            )?;
+        }
+    }
+    Ok(())
 }
 
 /// Every `*.json` under `dir`, depth-first and in a stable order so two
@@ -188,19 +298,35 @@ fn insert_sidecars(
     conn: &Connection,
     sidecar_paths: &[PathBuf],
     on_progress: &mut dyn FnMut(i64, i64),
-) -> Result<(i64, Vec<RebuildFailure>)> {
+) -> Result<(i64, Vec<RebuildFailure>, Vec<sidecar::Sidecar>)> {
     let total = sidecar_paths.len() as i64;
     let mut images = 0i64;
     let mut failures = Vec::new();
+    // Kept for the membership pass (design D5) rather than re-read from disk
+    // — but only the sidecars that name a collection, which is the whole set
+    // `insert_memberships` and `insert_placeholder_collections` read: a
+    // library that uses no collections holds nothing here, and one that does
+    // never holds an adapter record it has already inserted for the sake of a
+    // list of ids.
+    let mut parsed = Vec::new();
     on_progress(0, total);
 
     for chunk in sidecar_paths.chunks(CHUNK) {
         let tx = conn.unchecked_transaction()?;
         for sidecar_path in chunk {
-            match sidecar::read(sidecar_path)
-                .and_then(|sidecar| insert_within_savepoint(&tx, sidecar_path, &sidecar))
-            {
-                Ok(()) => images += 1,
+            match sidecar::read(sidecar_path) {
+                Ok(sidecar) => match insert_within_savepoint(&tx, sidecar_path, &sidecar) {
+                    Ok(()) => {
+                        images += 1;
+                        if !sidecar.collections.is_empty() {
+                            parsed.push(sidecar);
+                        }
+                    }
+                    Err(error) => failures.push(RebuildFailure {
+                        file: sidecar_path.display().to_string(),
+                        reason: error.to_string(),
+                    }),
+                },
                 Err(error) => failures.push(RebuildFailure {
                     file: sidecar_path.display().to_string(),
                     reason: error.to_string(),
@@ -210,7 +336,7 @@ fn insert_sidecars(
         }
         tx.commit()?;
     }
-    Ok((images, failures))
+    Ok((images, failures, parsed))
 }
 
 /// One sidecar's insert, inside a savepoint, so a row the database will not
@@ -501,6 +627,9 @@ mod tests {
         )
         .unwrap();
         crate::notes::set(&library, "remember to tag these").unwrap();
+        collections::add(&library, &["a".to_string()], "favorites").unwrap();
+        let queue = collections::create(&library, "Queue").unwrap();
+        collections::add(&library, &["b".to_string()], &queue.id).unwrap();
 
         let before_library = ids_of(&library.conn, &everything(SearchView::Library));
         let before_trash = ids_of(&library.conn, &everything(SearchView::Trash));
@@ -519,6 +648,10 @@ mod tests {
         assert!(report.failures.is_empty());
         assert_eq!(report.rules, 2);
         assert_eq!(report.sites, 1);
+        assert_eq!(
+            report.collections, 2,
+            "Favorites and Queue, by id and name (`collections` design D5)"
+        );
         assert!(
             Path::new(&report.kept_as).is_file(),
             "the old database is kept, named in the report"
@@ -553,6 +686,24 @@ mod tests {
             "danbooru-donmai-us"
         );
         assert_eq!(crate::notes::get(&rebuilt.conn).unwrap(), before_note);
+        assert_eq!(
+            crate::ingest::require_record(&rebuilt.conn, "a")
+                .unwrap()
+                .collections,
+            vec!["favorites".to_string()],
+        );
+        assert_eq!(
+            crate::ingest::require_record(&rebuilt.conn, "b")
+                .unwrap()
+                .collections,
+            vec![queue.id],
+        );
+        let names: Vec<String> = collections::list(&rebuilt.conn)
+            .unwrap()
+            .into_iter()
+            .map(|collection| collection.name)
+            .collect();
+        assert_eq!(names, vec!["Favorites".to_string(), "Queue".to_string()]);
     }
 
     /// Task 2.5: a truncated sidecar is counted and named, is left on disk,
@@ -676,11 +827,161 @@ mod tests {
 
         assert_eq!(report.images, 1, "every image still comes back");
         assert_eq!(report.rules, 0);
+        assert_eq!(
+            report.collections, 1,
+            "the migration's own seed stands (design D5) when the file cannot be read"
+        );
         assert_eq!(report.failed, 1);
         assert!(
             report.failures[0].file.ends_with("library.json"),
             "the library file must be named: {:?}",
             report.failures
+        );
+    }
+
+    /// Task 1.4 / design D5: a membership naming a collection the
+    /// library-level file does not list — because it is missing entirely —
+    /// comes back under a placeholder named by that id, rather than the
+    /// membership being lost.
+    #[test]
+    fn a_rebuild_with_no_library_json_gives_a_placeholder_named_by_the_id() {
+        let (_dir, library) = library();
+        store(&library, "a", &[], None);
+        let queue = collections::create(&library, "Queue").unwrap();
+        collections::add(&library, &["a".to_string()], &queue.id).unwrap();
+        let paths = library.paths.clone();
+        std::fs::remove_file(sidecar::library_path(&paths)).unwrap();
+        drop(library);
+
+        let report = rebuild(&paths, &mut |_, _| {}).unwrap();
+
+        assert_eq!(
+            report.collections, 2,
+            "the seed, standing, plus the placeholder for the lost collection"
+        );
+        let rebuilt = Library::open_existing(paths.root.as_path()).unwrap();
+        let placeholder = collections::list(&rebuilt.conn)
+            .unwrap()
+            .into_iter()
+            .find(|collection| collection.id == queue.id)
+            .expect("the membership's collection id comes back as a placeholder");
+        assert_eq!(
+            placeholder.name, queue.id,
+            "named by its id, so it can be renamed rather than lost"
+        );
+        assert_eq!(
+            crate::ingest::require_record(&rebuilt.conn, "a")
+                .unwrap()
+                .collections,
+            vec![queue.id],
+        );
+    }
+
+    /// Task 1.4 / design D5: the library-level file is the truer answer —
+    /// renaming `Favorites` before a rebuild keeps that name; the migration's
+    /// own seed yields to it rather than the rebuilt library showing both.
+    #[test]
+    fn a_rebuild_whose_file_renamed_favorites_keeps_the_rename() {
+        let (_dir, library) = library();
+        store(&library, "a", &[], None);
+        collections::rename(&library, "favorites", "Starred").unwrap();
+        let paths = library.paths.clone();
+        drop(library);
+
+        let report = rebuild(&paths, &mut |_, _| {}).unwrap();
+
+        assert_eq!(report.collections, 1);
+        let rebuilt = Library::open_existing(paths.root.as_path()).unwrap();
+        let names: Vec<String> = collections::list(&rebuilt.conn)
+            .unwrap()
+            .into_iter()
+            .map(|collection| collection.name)
+            .collect();
+        assert_eq!(
+            names,
+            vec!["Starred".to_string()],
+            "the seed's own name must not reappear beside the rename"
+        );
+    }
+
+    /// Design D5, the third case: a `library.json` written before this change
+    /// has no `collections` key at all and says nothing about them, so the
+    /// migration's own seed stands — only a file that *lists* collections
+    /// (`"collections": []` included, the user having deleted every one) is
+    /// the answer that replaces it. Without the distinction an upgraded
+    /// library that nothing has rewritten the file for loses `Favorites` to
+    /// its own rebuild.
+    #[test]
+    fn a_library_json_from_before_collections_leaves_the_seed_standing() {
+        let (_dir, library) = library();
+        store(&library, "a", &[], None);
+        crate::notes::set(&library, "written by the older build").unwrap();
+        let paths = library.paths.clone();
+        let file = sidecar::library_path(&paths);
+        let mut json: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&file).unwrap()).unwrap();
+        json.as_object_mut().unwrap().remove("collections");
+        std::fs::write(&file, serde_json::to_vec_pretty(&json).unwrap()).unwrap();
+        drop(library);
+
+        let report = rebuild(&paths, &mut |_, _| {}).unwrap();
+
+        assert_eq!(report.collections, 1);
+        assert!(report.failures.is_empty(), "{:?}", report.failures);
+        let rebuilt = Library::open_existing(paths.root.as_path()).unwrap();
+        let favorites = collections::list(&rebuilt.conn).unwrap();
+        assert_eq!(favorites[0].id, "favorites");
+        assert_eq!(favorites[0].name, "Favorites");
+    }
+
+    /// Spec `collections`, "Deleted stays deleted", through a rebuild: the
+    /// file lists no collection because the user deleted every one, and an
+    /// empty list is an answer — the seed the new database was born with
+    /// yields to it.
+    #[test]
+    fn a_library_json_listing_no_collections_removes_the_seed() {
+        let (_dir, library) = library();
+        store(&library, "a", &[], None);
+        collections::delete(&library, "favorites").unwrap();
+        let paths = library.paths.clone();
+        drop(library);
+
+        let report = rebuild(&paths, &mut |_, _| {}).unwrap();
+
+        assert_eq!(report.collections, 0);
+        let rebuilt = Library::open_existing(paths.root.as_path()).unwrap();
+        assert!(collections::list(&rebuilt.conn).unwrap().is_empty());
+    }
+
+    /// A hand-edited sidecar naming one collection twice must not end the
+    /// rebuild: the membership pass runs outside the per-sidecar savepoint,
+    /// so a `PRIMARY KEY` failure there would take every image with it.
+    #[test]
+    fn a_sidecar_naming_one_collection_twice_still_rebuilds() {
+        let (_dir, library) = library();
+        store(&library, "a", &[], None);
+        collections::add(&library, &["a".to_string()], "favorites").unwrap();
+        let paths = library.paths.clone();
+        let file = sidecar::path(&paths, "a");
+        let mut json: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&file).unwrap()).unwrap();
+        json.as_object_mut().unwrap().insert(
+            "collections".to_string(),
+            serde_json::json!(["favorites", "favorites"]),
+        );
+        std::fs::write(&file, serde_json::to_vec_pretty(&json).unwrap()).unwrap();
+        drop(library);
+
+        let report = rebuild(&paths, &mut |_, _| {}).unwrap();
+
+        assert_eq!(report.images, 1);
+        assert!(report.failures.is_empty(), "{:?}", report.failures);
+        let rebuilt = Library::open_existing(paths.root.as_path()).unwrap();
+        assert_eq!(
+            crate::ingest::require_record(&rebuilt.conn, "a")
+                .unwrap()
+                .collections,
+            vec!["favorites".to_string()],
         );
     }
 

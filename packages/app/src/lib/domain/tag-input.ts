@@ -22,7 +22,7 @@ const EXCLUSION = '-'
  * The metatags of the query language (`tag-utils`'s parser). A token that has
  * begun one is not a tag being typed, so the list stays shut.
  */
-const METATAG = /^(rating|is|tagcount|account):/i
+const METATAG = /^(rating|is|tagcount|account|collection):/i
 
 /** Value and caret after a rule rewrote the input. */
 export interface TagInputText {

@@ -14,8 +14,8 @@ place across every screen reached from the navigation. The sidebar SHALL name th
 and offer the actions that change which library is open.
 
 On a screen with a result set the sidebar SHALL hold, from the top: the search fields, the
-rating controls, the tag list, the order and grouping controls, then the library's note, the
-navigation and the library footer. The tag list SHALL take whatever height the others leave and
+rating controls, the collections, the tag list, the order and grouping controls, then the
+library's note, the navigation and the library footer. The tag list SHALL take whatever height the others leave and
 SHALL scroll on its own; no other part of the sidebar SHALL scroll out of view. The search
 fields SHALL use the sidebar's text size. The toolbar SHALL hold the sidebar toggle, the
 thumbnail size, the inspector toggle and the row that changes with the screen: the selection's
@@ -54,7 +54,7 @@ window draws its own full-screen control the toolbar SHALL NOT draw a second.
 
 #### Scenario: The order of the sidebar
 - **WHEN** the library screen is shown at a window height that fits everything
-- **THEN** the sidebar reads, top to bottom: search, rating, tags, order and grouping, note, navigation, library
+- **THEN** the sidebar reads, top to bottom: search, rating, collections, tags, order and grouping, note, navigation, library
 
 #### Scenario: A long tag list
 - **WHEN** the current result carries more tags than the sidebar has room for

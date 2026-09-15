@@ -28,6 +28,7 @@ export function img(overrides: Partial<ImageRecord> = {}): ImageRecord {
     deletedAt: null,
     missing: false,
     posts: [],
+    collections: [],
     ...overrides,
   }
   // `file` is opaque to the webview (design D2: Rust composes it, `imageUrl`

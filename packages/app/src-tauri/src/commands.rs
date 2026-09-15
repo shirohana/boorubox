@@ -18,16 +18,16 @@ use crate::error::{AppError, Result};
 use crate::library::{self, Library, SharedLibrary, with_library, with_library_if_open};
 use crate::model::{
     AppSettings, BooruConnectionTest, BooruSite, BooruUploadForm, BooruUploadOutcome, BundlePlan,
-    DeleteReport, ExportProgress, ExportReport, FactsEdit, GRID_TILE_MAX, GRID_TILE_MIN,
-    ImageCounts, ImageRecord, ImportReport, LibraryStatus, ListenerStatus, Note, PostRef,
-    RebuildProgress, RebuildReport, RecentLibrary, Rule, RuleInput, RuleListEntry,
+    Collection, DeleteReport, ExportProgress, ExportReport, FactsEdit, GRID_TILE_MAX,
+    GRID_TILE_MIN, ImageCounts, ImageRecord, ImportReport, LibraryStatus, ListenerStatus, Note,
+    PostRef, RebuildProgress, RebuildReport, RecentLibrary, Rule, RuleInput, RuleListEntry,
     RulesImportReport, RulesRunReport, SearchRequest, SearchResult, SidecarsProgress, TagCount,
     TagCounts, Theme,
 };
 use crate::settings::Settings;
 use crate::{
-    AppState, OpenFailureKind, VERSION, booru, db, export, facts, from_tauri, http, import, ingest,
-    lock, maintenance, notes, query, recover, rules, settings, tags, thumbs, trash,
+    AppState, OpenFailureKind, VERSION, booru, collections, db, export, facts, from_tauri, http,
+    import, ingest, lock, maintenance, notes, query, recover, rules, settings, tags, thumbs, trash,
 };
 
 /// Progress while `import_paths` runs. The webview subscribes under this name;
@@ -651,6 +651,79 @@ pub async fn rules_import(path: String, state: State<'_, AppState>) -> Result<Ru
     with_library_off_main_thread(&state.library, move |library| {
         let text = std::fs::read_to_string(&path).map_err(AppError::Io)?;
         rules::import_json(library, &text)
+    })
+    .await
+}
+
+/// Every collection in the library, by name (`collections` design D3).
+#[tauri::command]
+pub async fn collection_list(state: State<'_, AppState>) -> Result<Vec<Collection>> {
+    with_library_off_main_thread(&state.library, |library| collections::list(&library.conn)).await
+}
+
+/// Create a collection named `name`; refused with the reason for a blank name
+/// or a slug clash, naming the collection that already holds it (design D3).
+#[tauri::command]
+pub async fn collection_create(name: String, state: State<'_, AppState>) -> Result<Collection> {
+    with_library_off_main_thread(&state.library, move |library| {
+        collections::create(library, &name)
+    })
+    .await
+}
+
+/// Rename collection `id` to `name`; same refusals as [`collection_create`].
+/// Rewrites `library.json` and no image's sidecar (design D3).
+#[tauri::command]
+pub async fn collection_rename(
+    id: String,
+    name: String,
+    state: State<'_, AppState>,
+) -> Result<Collection> {
+    with_library_off_main_thread(&state.library, move |library| {
+        collections::rename(library, &id, &name)
+    })
+    .await
+}
+
+/// Delete collection `id`: its memberships go with it, and no image otherwise
+/// changes (design D3). Deleting Favorites is allowed.
+#[tauri::command]
+pub async fn collection_delete(id: String, state: State<'_, AppState>) -> Result<()> {
+    with_library_off_main_thread(&state.library, move |library| {
+        collections::delete(library, &id)
+    })
+    .await
+}
+
+/// Put every id in `ids` into `collection_id`, idempotent per id (design D3).
+/// Answers with the written rows, so the caller can `replace` them without a
+/// second search (design D8). Design D9: a selection spanning a whole large
+/// library pays the `library-sidecars` cost here unreduced — one sidecar
+/// rewritten per id, holding the library for the whole call; the per-item-lock
+/// shape from `library::backfill_sidecars` is not built, `FIXME`d at the write
+/// itself in `collections::add`.
+#[tauri::command]
+pub async fn collection_add(
+    ids: Vec<String>,
+    collection_id: String,
+    state: State<'_, AppState>,
+) -> Result<Vec<ImageRecord>> {
+    with_library_off_main_thread(&state.library, move |library| {
+        collections::add(library, &ids, &collection_id)
+    })
+    .await
+}
+
+/// Take every id in `ids` out of `collection_id`, idempotent per id (design
+/// D3). Answers with the written rows, the same as [`collection_add`].
+#[tauri::command]
+pub async fn collection_remove(
+    ids: Vec<String>,
+    collection_id: String,
+    state: State<'_, AppState>,
+) -> Result<Vec<ImageRecord>> {
+    with_library_off_main_thread(&state.library, move |library| {
+        collections::remove(library, &ids, &collection_id)
     })
     .await
 }
@@ -2496,6 +2569,88 @@ mod tests {
 
         assert!(matches!(error, AppError::Io(_)), "{error:?}");
         assert_eq!(now(rules_list(app.state())).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn collection_list_starts_with_favorites_through_the_command() {
+        let (_library, app) = app_with_library();
+
+        let listed = now(collection_list(app.state())).unwrap();
+
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].id, "favorites");
+        assert_eq!(listed[0].name, "Favorites");
+    }
+
+    #[test]
+    fn collection_create_rename_and_delete_reach_the_open_library_through_the_commands() {
+        let (_library, app) = app_with_library();
+
+        let created = now(collection_create("To upload".to_string(), app.state())).unwrap();
+        assert_eq!(created.slug, "to_upload");
+        assert_eq!(now(collection_list(app.state())).unwrap().len(), 2);
+
+        let renamed = now(collection_rename(
+            created.id.clone(),
+            "Queue".to_string(),
+            app.state(),
+        ))
+        .unwrap();
+        assert_eq!(renamed.id, created.id);
+        assert_eq!(renamed.name, "Queue");
+
+        now(collection_delete(created.id, app.state())).unwrap();
+        assert_eq!(now(collection_list(app.state())).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn collection_add_and_remove_reach_every_selected_image_through_the_commands() {
+        let (_library, app) = app_with_library();
+        import(&app, &folder_of_images(2));
+        let ids = ids_in_library(&app);
+
+        let added = now(collection_add(
+            ids.clone(),
+            "favorites".to_string(),
+            app.state(),
+        ))
+        .unwrap();
+
+        assert_eq!(added.len(), 2);
+        assert!(
+            added
+                .iter()
+                .all(|record| record.collections == vec!["favorites".to_string()]),
+            "{added:?}",
+        );
+
+        let removed = now(collection_remove(ids, "favorites".to_string(), app.state())).unwrap();
+
+        assert!(
+            removed.iter().all(|record| record.collections.is_empty()),
+            "{removed:?}",
+        );
+    }
+
+    #[test]
+    fn the_collections_commands_need_a_library_before_they_answer() {
+        let app = mock_app();
+
+        for error in [
+            now(collection_list(app.state())).unwrap_err(),
+            now(collection_create("Queue".to_string(), app.state())).unwrap_err(),
+            now(collection_rename(
+                "id".to_string(),
+                "Queue".to_string(),
+                app.state(),
+            ))
+            .unwrap_err(),
+            now(collection_delete("id".to_string(), app.state())).unwrap_err(),
+            now(collection_add(vec![], "id".to_string(), app.state())).unwrap_err(),
+            now(collection_remove(vec![], "id".to_string(), app.state())).unwrap_err(),
+        ] {
+            assert!(matches!(error, AppError::NoLibrary), "{error:?}");
+        }
     }
 
     #[test]

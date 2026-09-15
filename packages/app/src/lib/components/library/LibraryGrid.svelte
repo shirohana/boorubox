@@ -6,6 +6,7 @@
   // in are fetched.
   import type { ImageRecord, Rating } from '@boorubox/shared'
   import type { SearchResults, Selection } from '$lib/api'
+  import CollectionNameDialog from '$lib/components/common/CollectionNameDialog.svelte'
   import {
     isTrashKey,
     isTypingTarget,
@@ -13,6 +14,8 @@
     KEY_INSPECT,
     KEY_SPACE,
   } from '$lib/keyboard'
+  import type { CollectionTarget } from './collection-actions'
+  import { addToCreated } from './collection-actions'
   import { moveFocus } from './grid-focus'
   import { EDGE, GAP, gridWindow, imageTop } from './grid-window'
   import { groupLabel } from './group-label'
@@ -39,6 +42,8 @@
     onactivate: (index: number) => void
     onrate: (image: ImageRecord, rating: Rating | null) => void
     ontoggleinspector: () => void
+    /** Reported like every other action failure on this screen (`collections` design D8). */
+    onerror: (message: string) => void
   }
 
   let {
@@ -51,7 +56,27 @@
     onactivate,
     onrate,
     ontoggleinspector,
+    onerror,
   }: Props = $props()
+
+  /**
+   * A tile's collection write answers with the records it changed, the same
+   * `replace` a tag or rating save uses (design D8/D10) — `results` is
+   * already in scope here, so no tile needs it as a prop of its own. In one
+   * pass: the write may have named the whole selection.
+   */
+  function onCollectionsWritten(records: ImageRecord[]): void {
+    results.replaceMany(records)
+  }
+
+  /**
+   * The tile that chose "New collection…", or `null` while no tile has. One
+   * dialog for the whole grid, mounted outside every tile's context menu:
+   * bits-ui unmounts a closed menu's content, and a `Dialog` per tile would
+   * be machinery on the path the grid mounts and destroys tiles on as it
+   * scrolls. `$state.raw` because a target is four closures, not data to proxy.
+   */
+  let creatingCollectionFor = $state.raw<CollectionTarget | null>(null)
 
   let viewport = $state<HTMLDivElement | null>(null)
   let scrollTop = $state(0)
@@ -288,6 +313,10 @@
               }}
               view={results.view}
               {actions}
+              {selection}
+              onwritten={onCollectionsWritten}
+              {onerror}
+              onnewcollection={(target) => (creatingCollectionFor = target)}
             />
           {/each}
         </div>
@@ -295,3 +324,19 @@
     {/each}
   </div>
 </div>
+
+<!--
+  One dialog for the grid, outside every tile's menu, raised with the target of
+  whichever tile asked for it — see `collection-actions.ts` for why it cannot
+  live in the menu, and design D8 for why creating here also adds.
+-->
+<CollectionNameDialog
+  collection={null}
+  open={creatingCollectionFor !== null}
+  onclose={() => (creatingCollectionFor = null)}
+  onsaved={(collection) => {
+    const target = creatingCollectionFor
+    creatingCollectionFor = null
+    if (target) void addToCreated(target, collection)
+  }}
+/>

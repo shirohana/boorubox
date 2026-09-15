@@ -42,7 +42,8 @@ function addUnique(values: string[], value: string): void {
 }
 
 // Parse Danbooru-style tag search
-// Supports: tags (AND), tag1 or tag2 (OR), -tag (exclude), rating:, is:, tagcount:, account:
+// Supports: tags (AND), tag1 or tag2 (OR), -tag (exclude), rating:, is:, tagcount:, account:,
+// collection:
 export function parseTagSearch(query: string): ParsedTagSearch {
   const result: ParsedTagSearch = {
     includeTags: [],
@@ -54,6 +55,8 @@ export function parseTagSearch(query: string): ParsedTagSearch {
     includeUnrated: false,
     accounts: [],
     excludeAccounts: [],
+    collections: [],
+    excludeCollections: [],
   }
 
   if (!query.trim()) {
@@ -169,7 +172,34 @@ export function parseTagSearch(query: string): ParsedTagSearch {
     remainingQuery = remainingQuery.replace(accountRegex, '').trim()
   }
 
-  // 5. Parse tag terms (handle OR, exclusion, regular tags)
+  // 5. Extract collection: metatags (design D6 — same shape as account:, a
+  // comma list on either side; the slug is lower-cased so `collection:Favorites`
+  // finds `favorites`, the slug Rust computed).
+  //
+  // Anything but a space or a comma is part of a slug: `collections::slug`
+  // only trims, lower-cases and turns whitespace into `_`, so a collection
+  // named `To-upload` has the slug `to-upload` and the narrower `[a-z0-9_]`
+  // this shipped as read the term the sidebar itself wrote as `collection:to`
+  // — a filter that matched nothing and a row that never showed as active. A
+  // space separates terms and a comma separates the list, so those two are
+  // the only characters this may not take.
+  const collectionRegex = /-?collection:([^\s,]+(?:,[^\s,]+)*)/gi
+  const collectionMatches = remainingQuery.match(collectionRegex)
+  if (collectionMatches) {
+    collectionMatches.forEach((match) => {
+      const isExclusion = match.startsWith('-')
+      const value = match.substring(isExclusion ? 12 : 11) // Remove "-collection:" or "collection:"
+      value.split(',').forEach((slug) => {
+        const trimmed = slug.trim().toLowerCase()
+        if (trimmed) {
+          addUnique(isExclusion ? result.excludeCollections : result.collections, trimmed)
+        }
+      })
+    })
+    remainingQuery = remainingQuery.replace(collectionRegex, '').trim()
+  }
+
+  // 6. Parse tag terms (handle OR, exclusion, regular tags)
   // Split by spaces but respect "or" as operator
   const tokens = remainingQuery.split(/\s+/).filter((t) => t.length > 0)
 
@@ -322,13 +352,14 @@ export function toggleRatingInQuery(query: string, rating: Rating | 'unrated'): 
 }
 
 /**
- * Rewrites one of the two account lists — `account:` or `-account:` — from
- * `kept`, the same way `toggleRatingInQuery` rewrites `rating:` (design D4):
- * the metatag holds every handle in one comma list, so there is nothing to
- * edit in place. `marker` is matched lowercase against whole tokens, so
- * rewriting one list leaves the other standing.
+ * Rewrites one side of a comma-list metatag — `account:`/`-account:` or
+ * `collection:`/`-collection:` — from `kept`, the same way
+ * `toggleRatingInQuery` rewrites `rating:` (design D4, D6): the metatag holds
+ * every value in one comma list, so there is nothing to edit in place.
+ * `marker` is matched lowercase against whole tokens, so rewriting one list
+ * leaves the other, and the other metatag, standing.
  */
-function rewriteAccounts(query: string, marker: 'account:' | '-account:', kept: string[]): string {
+function rewriteMetatagList(query: string, marker: string, kept: string[]): string {
   const base = tidy(
     query
       .split(/\s+/)
@@ -352,24 +383,49 @@ export function toggleAccountInQuery(query: string, handle: string): string {
   // panel promises when it is clicked.
   if (parsed.excludeAccounts.includes(handle)) {
     const kept = parsed.excludeAccounts.filter((value) => value !== handle)
-    return rewriteAccounts(query, '-account:', kept)
+    return rewriteMetatagList(query, '-account:', kept)
   }
   const kept = parsed.accounts.includes(handle)
     ? parsed.accounts.filter((value) => value !== handle)
     : [...parsed.accounts, handle]
-  return rewriteAccounts(query, 'account:', kept)
+  return rewriteMetatagList(query, 'account:', kept)
 }
 
 /**
- * Which tags and accounts a query is currently asking for or ruling out
- * (design D3): one reader, shared by the tag sidebar and the inspector panel,
- * so "is this term active" is answered the same way everywhere it is asked.
+ * Adds or removes `slug` from the collection list, leaving the rest of the
+ * query — `toggleAccountInQuery`'s rule for `account:` (design D4), applied
+ * to `collection:` (design D6): a collection the query excludes stops being
+ * excluded rather than being asked for and ruled out in the same breath.
+ * `slug` is what `CollectionsSection` and the inspector pass — the id Rust
+ * computed, never recomputed here (design D2) — so it is used as given, with
+ * no lower-casing of its own: the parser already normalises what a typed
+ * query names.
+ */
+export function toggleCollectionInQuery(query: string, slug: string): string {
+  const parsed = parseTagSearch(query)
+  if (parsed.excludeCollections.includes(slug)) {
+    const kept = parsed.excludeCollections.filter((value) => value !== slug)
+    return rewriteMetatagList(query, '-collection:', kept)
+  }
+  const kept = parsed.collections.includes(slug)
+    ? parsed.collections.filter((value) => value !== slug)
+    : [...parsed.collections, slug]
+  return rewriteMetatagList(query, 'collection:', kept)
+}
+
+/**
+ * Which tags, accounts and collections a query is currently asking for or
+ * ruling out (design D3): one reader, shared by the tag sidebar, the
+ * collections section and the inspector panel, so "is this term active" is
+ * answered the same way everywhere it is asked.
  */
 export interface ActiveTerms {
   included: Set<string>
   excluded: Set<string>
   accounts: Set<string>
   excludedAccounts: Set<string>
+  collections: Set<string>
+  excludedCollections: Set<string>
 }
 
 export function activeTerms(query: string): ActiveTerms {
@@ -379,5 +435,7 @@ export function activeTerms(query: string): ActiveTerms {
     excluded: new Set(parsed.excludeTags),
     accounts: new Set(parsed.accounts),
     excludedAccounts: new Set(parsed.excludeAccounts),
+    collections: new Set(parsed.collections),
+    excludedCollections: new Set(parsed.excludeCollections),
   }
 }

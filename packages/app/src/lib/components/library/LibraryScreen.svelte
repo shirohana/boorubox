@@ -31,6 +31,7 @@
   import { Selection } from '$lib/api'
   import ConfirmDialog from '$lib/components/common/ConfirmDialog.svelte'
   import { frame } from '$lib/components/frame/frame.svelte'
+  import CollectionsSection from '$lib/components/tags/CollectionsSection.svelte'
   import RatingPills from '$lib/components/tags/RatingPills.svelte'
   import TagSidebar from '$lib/components/tags/TagSidebar.svelte'
   import DeleteReportCard from './DeleteReportCard.svelte'
@@ -544,6 +545,12 @@
     {tagQuery}
     onquery={(next) => void searchKeeping(next, focused?.id)}
   />
+  <CollectionsSection
+    counts={results.counts?.collections ?? null}
+    {tagQuery}
+    onquery={(next) => void searchKeeping(next, focused?.id)}
+    onchanged={() => void results.refresh()}
+  />
   <TagSidebar
     tags={results.counts?.tags ?? null}
     {tagQuery}
@@ -617,6 +624,7 @@
           onactivate={openViewer}
           onrate={rate}
           ontoggleinspector={() => (inspectorOpen = !inspectorOpen)}
+          onerror={(message) => (actionError = message)}
         />
       {/if}
     </div>

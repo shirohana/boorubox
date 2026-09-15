@@ -11,8 +11,9 @@ index rather than every tag they ever typed.
 The app SHALL keep, for every image it holds, a plain-text file beside that image's own file
 describing everything the app knows about it that is not in the image itself: its identity,
 its file's type and dimensions and size, where it came from, its tags, its rating, whether it
-is in the trash, the times recorded against it, and every booru post recorded for it. A
-trashed image SHALL keep its file; permanently deleting an image SHALL remove it.
+is in the trash, the times recorded against it, every booru post recorded for it, and the
+collections it is in, by their ids. A trashed image SHALL keep its file; permanently deleting
+an image SHALL remove it.
 
 The file SHALL be written so that a reader never sees a half-written one, and SHALL be
 written the same way for the same content, so that rewriting an image whose facts have not
@@ -38,10 +39,15 @@ changed produces the same bytes.
 - **WHEN** an image is uploaded to a booru and the post is recorded against it
 - **THEN** the file beside the image names that post
 
+#### Scenario: Put in a collection
+- **WHEN** the user adds an image to a collection or takes it out of one
+- **THEN** the file beside that image lists its collections' ids afterwards
+
 ### Requirement: The library's own settings are described by one file
 The app SHALL keep one file in the library folder describing the library-level state a
-rebuild would otherwise lose: the auto-tag rules, the configured booru sites, and the library
-note. It SHALL be rewritten whenever any of those change. It SHALL NOT contain any API key or
+rebuild would otherwise lose: the auto-tag rules, the configured booru sites, the library
+note, and the collections with their ids and names. It SHALL be rewritten whenever any of
+those change. It SHALL NOT contain any API key or
 other credential; those live in the operating system's credential store (`booru-sites`) and
 SHALL NOT be written into the library folder.
 
@@ -56,6 +62,10 @@ SHALL NOT be written into the library folder.
 #### Scenario: The note is written
 - **WHEN** the library note is saved
 - **THEN** the library's own file carries its text
+
+#### Scenario: A collection is renamed
+- **WHEN** the user creates, renames or deletes a collection
+- **THEN** the library's own file lists the collections as they now stand, by id and name
 
 ### Requirement: A write that cannot be mirrored is a failed write
 A write that stores the row but cannot write the file describing it SHALL be reported as a
@@ -119,8 +129,9 @@ read it.
 ### Requirement: A library can be rebuilt from its folder
 The app SHALL be able to build a working library database from the files in the folder alone:
 every image whose describing file can be read SHALL come back with its tags, rating, trash
-state, times, source and posts, and searchable exactly as before; the auto-tag rules, the
-booru sites and the note SHALL come back from the library-level file.
+state, times, source, posts and collections, and searchable exactly as before; the auto-tag
+rules, the booru sites, the note and the collections SHALL come back from the library-level
+file.
 
 Rebuilding SHALL NOT read, decode or rewrite any image or thumbnail — an image's dimensions
 come from its describing file — and SHALL NOT remove any file under the folder. A describing
@@ -153,6 +164,10 @@ if it is interrupted.
 #### Scenario: Interrupted part-way
 - **WHEN** a rebuild is interrupted before it finishes
 - **THEN** the library is not left with a partly built database presented as complete, and rebuilding again works
+
+#### Scenario: Collections come back
+- **WHEN** a library whose images are in collections is rebuilt
+- **THEN** every collection is back by its id and name, and every image is in the collections it was in
 
 ### Requirement: A rebuild is offered where the damage is met, and only on request
 The app SHALL offer to rebuild a library from the start screen when that library will not

@@ -165,9 +165,48 @@ CREATE TABLE booru_sites (
 );
 ";
 
+/// Schema v6 (`collections` design D1): named, unordered sets of images,
+/// separate from tags (§6 — a collection is never uploaded, a tag is). The
+/// seed runs inside the migration itself, which is what makes it run exactly
+/// once per database, for a fresh library and one upgraded from an older
+/// version alike, and never again: "deleted stays deleted" (spec
+/// `collections`) falls out of a migration never re-running rather than out of
+/// a check at open time. The fixed id `favorites` is what lets `library.json`
+/// and this seed agree on a rebuild (design D5).
+///
+/// `<now>` is spelled in SQL rather than bound as a parameter: the migration
+/// text has no Rust `now_ms` to call, and SQLite can spell the same
+/// milliseconds-since-epoch unit itself. Uniqueness is on `slug`, not `name`:
+/// `Queue` and `queue` are one collection to a query (design D1).
+const SCHEMA_V6: &str = r"
+CREATE TABLE collections (
+    id         TEXT PRIMARY KEY,
+    name       TEXT NOT NULL,
+    slug       TEXT NOT NULL UNIQUE,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+);
+
+CREATE TABLE image_collections (
+    image_id      TEXT NOT NULL REFERENCES images (id) ON DELETE CASCADE,
+    collection_id TEXT NOT NULL REFERENCES collections (id) ON DELETE CASCADE,
+    added_at      INTEGER NOT NULL,
+    PRIMARY KEY (image_id, collection_id)
+);
+
+CREATE INDEX image_collections_by_collection ON image_collections (collection_id, image_id);
+
+INSERT INTO collections (id, name, slug, created_at, updated_at)
+VALUES ('favorites', 'Favorites', 'favorites',
+        CAST(strftime('%s','now') AS INTEGER) * 1000,
+        CAST(strftime('%s','now') AS INTEGER) * 1000);
+";
+
 /// One entry per schema version, applied in order. Appending is the only way to
 /// change the schema: `user_version` counts how many of these have run.
-const MIGRATIONS: &[&str] = &[SCHEMA_V1, SCHEMA_V2, SCHEMA_V3, SCHEMA_V4, SCHEMA_V5];
+const MIGRATIONS: &[&str] = &[
+    SCHEMA_V1, SCHEMA_V2, SCHEMA_V3, SCHEMA_V4, SCHEMA_V5, SCHEMA_V6,
+];
 
 /// Open (creating if needed) the library database with the pragmas D2 fixes,
 /// migrate it to the current schema, and register the SQL functions the query
@@ -307,6 +346,30 @@ mod tests {
                 "missing table {expected}: {names:?}"
             );
         }
+        for expected in ["collections", "image_collections"] {
+            assert!(
+                names.contains(&expected.to_string()),
+                "missing table {expected}: {names:?}"
+            );
+        }
+        assert_eq!(
+            favorites_row(&conn),
+            Some(("Favorites".to_string(), "favorites".to_string()))
+        );
+    }
+
+    /// The seed row's name and slug, or `None` when `collections` has no row
+    /// with the fixed id the migration inserts.
+    fn favorites_row(conn: &Connection) -> Option<(String, String)> {
+        match conn.query_row(
+            "SELECT name, slug FROM collections WHERE id = 'favorites'",
+            [],
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+        ) {
+            Ok(row) => Some(row),
+            Err(rusqlite::Error::QueryReturnedNoRows) => None,
+            Err(error) => panic!("{error}"),
+        }
     }
 
     /// A library written by the shipped v1 build has to reach the current
@@ -437,6 +500,80 @@ mod tests {
         assert_eq!(version, MIGRATIONS.len() as i64);
         assert!(table_names(&conn).contains(&"booru_sites".to_string()));
         assert_eq!(fts_matches(&conn, "kyoto"), vec!["a".to_string()]);
+    }
+
+    /// A library written after `booru-upload` shipped (v5, no `collections`
+    /// table) has to reach v6 with its rows intact and exactly one collection,
+    /// the seed (task 1.1).
+    #[test]
+    fn a_v5_library_migrates_to_v6_keeping_its_rows_and_seeding_favorites_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("library.sqlite");
+
+        let conn = Connection::open(&path).unwrap();
+        conn.execute_batch(SCHEMA_V1).unwrap();
+        conn.execute_batch(SCHEMA_V2).unwrap();
+        conn.execute_batch(SCHEMA_V3).unwrap();
+        conn.execute_batch(SCHEMA_V4).unwrap();
+        conn.execute_batch(SCHEMA_V5).unwrap();
+        conn.pragma_update(None, "user_version", 5i64).unwrap();
+        insert_bare_image(&conn, "a", "sunset over kyoto");
+        drop(conn);
+
+        let conn = open(&path).unwrap();
+
+        let version: i64 = conn
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, MIGRATIONS.len() as i64);
+        assert!(table_names(&conn).contains(&"collections".to_string()));
+        assert_eq!(
+            favorites_row(&conn),
+            Some(("Favorites".to_string(), "favorites".to_string()))
+        );
+        let collection_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM collections", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(
+            collection_count, 1,
+            "an upgraded library has exactly one collection, the seed"
+        );
+        assert_eq!(fts_matches(&conn, "kyoto"), vec!["a".to_string()]);
+    }
+
+    /// A fresh library gets the same one seeded collection a migrated one
+    /// does (task 1.1) — the migration runs for `Library::open_or_create`
+    /// exactly as it does for an upgrade, since both go through `open`.
+    #[test]
+    fn a_fresh_library_has_exactly_one_collection_favorites() {
+        let (_dir, conn) = temp_db();
+
+        let collection_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM collections", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(collection_count, 1);
+        assert_eq!(
+            favorites_row(&conn),
+            Some(("Favorites".to_string(), "favorites".to_string()))
+        );
+    }
+
+    /// Opening twice must not reseed: the migration runs once, and
+    /// `reopening_does_not_reapply_migrations` already pins that the whole
+    /// migration list does not rerun on a second open, so this only has to
+    /// prove the deleted case (spec `collections`, "Deleted stays deleted").
+    #[test]
+    fn deleting_favorites_and_reopening_does_not_bring_it_back() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("library.sqlite");
+        let conn = open(&path).unwrap();
+        conn.execute("DELETE FROM collections WHERE id = 'favorites'", [])
+            .unwrap();
+        drop(conn);
+
+        let conn = open(&path).unwrap();
+
+        assert_eq!(favorites_row(&conn), None);
     }
 
     #[test]

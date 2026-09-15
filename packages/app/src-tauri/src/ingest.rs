@@ -293,6 +293,7 @@ pub fn row_to_record(row: &Row) -> rusqlite::Result<ImageRecord> {
         missing: row.get(17)?,
         file_modified_at: row.get(18)?,
         posts: Vec::new(),
+        collections: Vec::new(),
     })
 }
 
@@ -302,11 +303,12 @@ pub fn load_record(conn: &Connection, id: &str) -> Result<Option<ImageRecord>> {
 
 /// Load records for `ids`, in the order given; ids with no row are dropped.
 ///
-/// Three statements however many ids are asked for, never one per image: this
-/// is also what `booru-upload` design D5 relies on for `ImageRecord.posts` —
-/// the `posts` table is joined in here alongside the existing tags fill, so
-/// every caller of `load_record`/`load_records` (a search page and a single-
-/// image read alike) gets it for free.
+/// Four statements however many ids are asked for, never one per image: this
+/// is also what `booru-upload` design D5 relies on for `ImageRecord.posts` and
+/// what `collections` design D4 relies on for `ImageRecord.collections` — both
+/// are joined in here alongside the existing tags fill, so every caller of
+/// `load_record`/`load_records` (a search page and a single-image read alike)
+/// gets them for free.
 pub fn load_records(conn: &Connection, ids: &[String]) -> Result<Vec<ImageRecord>> {
     if ids.is_empty() {
         return Ok(Vec::new());
@@ -356,6 +358,21 @@ pub fn load_records(conn: &Connection, ids: &[String]) -> Result<Vec<ImageRecord
                 remote_id: row.get(2)?,
                 posted_at: row.get(3)?,
             });
+        }
+    }
+
+    // Ids, sorted (`collections` design D4): the one column with no natural
+    // order of its own, unlike tags (by name) and posts (by site).
+    let mut stmt = conn.prepare(&format!(
+        "SELECT image_id, collection_id FROM image_collections
+         WHERE image_id IN ({placeholders})
+         ORDER BY collection_id"
+    ))?;
+    let mut rows = stmt.query(params_from_iter(ids))?;
+    while let Some(row) = rows.next()? {
+        let image_id: String = row.get(0)?;
+        if let Some(record) = by_id.get_mut(&image_id) {
+            record.collections.push(row.get(1)?);
         }
     }
 
@@ -690,6 +707,26 @@ mod tests {
 
         let got: Vec<&str> = records.iter().map(|record| record.id.as_str()).collect();
         assert_eq!(got, vec!["c", "a"]);
+    }
+
+    /// `collections` task 1.4: `load_records` fills `collections` the same
+    /// way it already fills `tags` and `posts`, in one extra statement
+    /// regardless of how many images are asked for, and every fresh library
+    /// already has the seeded `favorites` collection to join against.
+    #[test]
+    fn load_records_fills_collections_alongside_tags_and_posts() {
+        let (_dir, library) = library();
+        let bytes = png_bytes(2, 2);
+        let tags: Vec<String> = Vec::new();
+        store_image(&library, input("in", &bytes, &tags)).unwrap();
+        store_image(&library, input("out", &bytes, &tags)).unwrap();
+        crate::collections::add(&library, &["in".to_string()], "favorites").unwrap();
+
+        let ids = vec!["in".to_string(), "out".to_string()];
+        let records = load_records(&library.conn, &ids).unwrap();
+
+        assert_eq!(records[0].collections, vec!["favorites".to_string()]);
+        assert!(records[1].collections.is_empty());
     }
 
     /// `booru-upload` task 1.6: `load_records` — the one function a search

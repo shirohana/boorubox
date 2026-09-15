@@ -134,6 +134,7 @@ it('rebuild_library passes the path and returns the report', async () => {
     keptAs: 'library.sqlite.corrupt-1700000000000',
     rules: 2,
     sites: 1,
+    collections: 0,
   }
   const calls = spyIPC(report)
   await expect(rebuildLibrary('/library')).resolves.toEqual(report)
@@ -197,6 +198,8 @@ const request: SearchRequest = {
     includeUnrated: false,
     accounts: [],
     excludeAccounts: [],
+    collections: [],
+    excludeCollections: [],
   },
   text: '',
   view: 'library',
@@ -299,6 +302,7 @@ it('tag_counts wraps the same request as search in a `req` argument', async () =
   const counts: TagCounts = {
     tags: [{ name: 'cat', count: 3 }],
     ratings: { g: 0, s: 3, q: 0, e: 1, unrated: 2 },
+    collections: [],
   }
   const calls = spyIPC(counts)
   await expect(tagCounts(request)).resolves.toEqual(counts)

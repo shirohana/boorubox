@@ -18,6 +18,8 @@ describe('parseTagSearch', () => {
       expect(result.includeUnrated).toBe(false)
       expect(result.accounts).toEqual([])
       expect(result.excludeAccounts).toEqual([])
+      expect(result.collections).toEqual([])
+      expect(result.excludeCollections).toEqual([])
     })
 
     it('should handle only whitespace', () => {
@@ -260,6 +262,53 @@ describe('parseTagSearch', () => {
   // because tagcount is parsed FIRST, so no input can tell the shapes apart and
   // no case fails before the fix. These pin what the one-read restructure has
   // to preserve, and are what breaks if the parse steps are ever reordered.
+  describe('collection filters', () => {
+    it('should parse a single collection', () => {
+      const result = parseTagSearch('collection:favorites')
+      expect(result.collections).toEqual(['favorites'])
+      expect(result.excludeCollections).toEqual([])
+      expect(result.includeTags).toEqual([])
+    })
+
+    it('should lower-case the slug, matching what Rust computed', () => {
+      const result = parseTagSearch('collection:Favorites')
+      expect(result.collections).toEqual(['favorites'])
+    })
+
+    it('should parse a comma-separated list', () => {
+      const result = parseTagSearch('collection:favorites,queue')
+      expect(sorted(result.collections)).toEqual(sorted(['favorites', 'queue']))
+    })
+
+    it('should parse exclusions', () => {
+      const result = parseTagSearch('-collection:favorites -collection:queue,to_upload')
+      expect(result.collections).toEqual([])
+      expect(sorted(result.excludeCollections)).toEqual(sorted(['favorites', 'queue', 'to_upload']))
+    })
+
+    it('should keep collections and exclusions apart, alongside tags', () => {
+      const result = parseTagSearch('cat collection:favorites -collection:queue')
+      expect(result.includeTags).toEqual(['cat'])
+      expect(result.collections).toEqual(['favorites'])
+      expect(result.excludeCollections).toEqual(['queue'])
+    })
+
+    it('should read a slug with a hyphen whole, as Rust computes it', () => {
+      // `collections::slug` only lower-cases and turns whitespace into `_`, so
+      // `To-upload` is the slug `to-upload`: a narrower charset here would
+      // read the term the sidebar wrote as `collection:to`.
+      const result = parseTagSearch('collection:to-upload -collection:re-run')
+      expect(result.collections).toEqual(['to-upload'])
+      expect(result.excludeCollections).toEqual(['re-run'])
+      expect(result.includeTags).toEqual([])
+    })
+
+    it('should list a repeated collection once', () => {
+      const result = parseTagSearch('collection:favorites collection:favorites,queue')
+      expect(sorted(result.collections)).toEqual(sorted(['favorites', 'queue']))
+    })
+  })
+
   describe('tag count filters', () => {
     const operators: [query: string, tagCount: ParsedTagSearch['tagCount']][] = [
       ['tagcount:2', { operator: '=', value: 2 }],

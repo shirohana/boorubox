@@ -139,6 +139,42 @@ export interface ImageRecord {
    * design D5). Empty for an image never posted anywhere.
    */
   posts: PostRef[]
+  /**
+   * The collections this image is in, by id, sorted (`collections` design
+   * D4). Never a tag: not sent to a booru, not matched by a tag term.
+   */
+  collections: string[]
+}
+
+/**
+ * A named, unordered set of images the user keeps for themselves
+ * (`collections` design D1–D3): favourites, a project, a batch to upload.
+ * Referenced everywhere else by `id`, which never changes; `name` is the only
+ * field a rename touches.
+ */
+export interface Collection {
+  id: string
+  name: string
+  /**
+   * `name`, lower-cased with runs of whitespace as `_` (design D2), computed
+   * once in Rust — the webview never recomputes it, so the query language and
+   * the sidebar always agree on what a collection is called.
+   */
+  slug: string
+  /** Epoch milliseconds. */
+  createdAt: number
+  updatedAt: number
+}
+
+/**
+ * One collection's row in the sidebar and the inspector's menus: the
+ * collection plus how many of the matched result are in it (design D7).
+ */
+export interface CollectionCount {
+  id: string
+  name: string
+  slug: string
+  count: number
 }
 
 /**
@@ -182,6 +218,12 @@ export interface ParsedTagSearch {
   includeUnrated: boolean
   accounts: string[]
   excludeAccounts: string[]
+  /**
+   * Slugs (design D6): `collection:my_favorites` compiles against
+   * `collections.slug`, never the id — Rust never sees one from the webview.
+   */
+  collections: string[]
+  excludeCollections: string[]
 }
 
 /**
@@ -308,6 +350,7 @@ export interface RebuildReport {
   keptAs: string
   rules: number
   sites: number
+  collections: number
 }
 
 export interface RatingCounts {
@@ -327,6 +370,13 @@ export interface RatingCounts {
 export interface TagCounts {
   tags: TagCount[]
   ratings: RatingCounts
+  /**
+   * Every collection in the library, counted over the matched set with the
+   * rating clause included (design D7) — the sidebar's Collections section
+   * and the inspector's badges read this rather than keeping a count of
+   * their own.
+   */
+  collections: CollectionCount[]
 }
 
 export interface ImageCounts {
