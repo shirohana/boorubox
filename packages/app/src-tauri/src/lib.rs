@@ -60,6 +60,11 @@ pub struct AppState {
     /// one function that can change the answer, on both outcomes, so nothing
     /// else has to remember to clear it.
     pub open_failure: Mutex<Option<(std::path::PathBuf, OpenFailureKind)>>,
+    /// The path `open_remembered_library_and_listen` is still opening on its
+    /// blocking thread (`launch-screen` design D1), `None` once that open has
+    /// settled either way. `LibraryStatus.opening` mirrors this so the
+    /// webview can name the folder before `state.library` is set.
+    pub launch_opening: Mutex<Option<std::path::PathBuf>>,
     /// The OS credential store behind `booru::credentials::Credentials`
     /// (`booru-upload` design D7). Built once here rather than per call:
     /// `KeyringCredentials` itself has no state, but a trait object is what
@@ -79,6 +84,7 @@ impl Default for AppState {
             listener_shutdown: Mutex::new(None),
             import_control: Mutex::new(None),
             open_failure: Mutex::new(None),
+            launch_opening: Mutex::new(None),
             credentials: Arc::new(booru::credentials::KeyringCredentials),
         }
     }
@@ -179,6 +185,7 @@ pub fn run() {
             commands::app_settings,
             commands::set_theme,
             commands::set_grid_tile_size,
+            commands::set_open_last_on_launch,
             commands::search,
             commands::search_ids,
             commands::search_position,
@@ -229,31 +236,56 @@ pub fn run() {
         .expect("error while running tauri application");
 }
 
-/// Everything that must be true before the window appears: the last library
-/// open if it still opens, and the capture listener bound.
+/// Everything that must be true before the window appears: the capture
+/// listener bound, and the last library's open under way if it still runs.
 ///
-/// Nothing here can fail the launch. A library that will not open leaves the
-/// app on the start screen with the path named (spec `library-folder`), and a
-/// port already taken leaves the listener stopped with its reason on the
-/// settings screen (spec `capture-ingest`, design D6).
+/// Nothing here can fail the launch, and nothing here waits for the library to
+/// open: `setup` returns as soon as the listener is bound, so the window
+/// paints before a large library finishes opening (`launch-screen` design
+/// D1) rather than after. A library that will not open leaves the app on the
+/// start screen with the path named (spec `library-folder`), and a port
+/// already taken leaves the listener stopped with its reason on the settings
+/// screen (spec `capture-ingest`, design D6).
 fn open_remembered_library_and_listen(app: &tauri::App) {
     let handle = app.handle().clone();
     let state = app.state::<AppState>();
     let settings = settings::load(&handle);
 
-    if let Some(path) = &settings.library_path {
-        // The path stays in settings whether or not it opened, and only picking
-        // another replaces it. The refusal itself is not dropped with the
-        // `Result`: `open_into_state` records it in `AppState.open_failure`, so
-        // `library_status` names this folder as `damaged_path`, `newer_path` or
-        // `missing_path` depending on why it would not open (design D9).
-        // `ExistingOnly` is what makes that reachable — creating the folder here
-        // would report a healthy empty library instead of a missing one.
-        let _ = commands::open_into_state(&handle, &state, path, commands::OpenMode::ExistingOnly);
+    // Off: the path stays remembered (spec `library-folder`'s "The remembered
+    // path SHALL be kept in both cases"), nothing opens, and no flag is set —
+    // `status` reads as the plain not-opened case, which is what sends the
+    // start screen to its recent list (design D3).
+    if let Some(path) = settings.library_path.clone()
+        && settings.open_last_on_launch
+    {
+        spawn_launch_open(handle.clone(), path);
     }
 
     tauri::async_runtime::block_on(commands::rebind_listener(&handle, &state, settings.port));
     *lock(&state.settings) = settings;
+}
+
+/// Open `path` on a blocking thread and clear `AppState.launch_opening` when
+/// it settles, either way, emitting `LIBRARY_OPENED_EVENT` so the webview
+/// re-reads `library_status` rather than being handed the outcome directly —
+/// the same path a capture or a failure during the open already reports
+/// through (`launch-screen` design D1).
+fn spawn_launch_open(handle: tauri::AppHandle, path: std::path::PathBuf) {
+    let state = handle.state::<AppState>();
+    *lock(&state.launch_opening) = Some(path.clone());
+
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = handle.state::<AppState>();
+        // The refusal itself is not dropped with the `Result`: `open_into_state`
+        // records it in `AppState.open_failure`, so `library_status` names this
+        // folder as `damaged_path`, `newer_path` or `missing_path` depending on
+        // why it would not open (design D9). `ExistingOnly` is what makes that
+        // reachable — creating the folder here would report a healthy empty
+        // library instead of a missing one.
+        let _ = commands::open_into_state(&handle, &state, &path, commands::OpenMode::ExistingOnly);
+        *lock(&state.launch_opening) = None;
+        let _ = handle.emit(commands::LIBRARY_OPENED_EVENT, ());
+    });
 }
 
 /// A headless app the command and settings tests can hand to the code under

@@ -545,6 +545,11 @@ impl Default for ListenerStatus {
 #[serde(rename_all = "camelCase")]
 pub struct LibraryStatus {
     pub opened: bool,
+    /// The path a launch-time open is still running against (`launch-screen`
+    /// design D1) — set while `setup`'s blocking open of the remembered
+    /// library runs, `None` once it settles either way. Lets the webview
+    /// name the folder on the opening screen before `opened` can be true.
+    pub opening: Option<String>,
     pub library_path: Option<String>,
     /// A remembered path that could not be opened; kept until another is picked.
     pub missing_path: Option<String>,
@@ -588,6 +593,11 @@ pub struct AppSettings {
     /// of `settings.json` — D13 records why that reading was right until a
     /// panel big enough to write in sat in the sidebar.
     pub notes_collapsed: bool,
+    /// Whether the app reopens `LibraryStatus.libraryPath`'s remembered
+    /// folder automatically at launch, or waits on the start screen for the
+    /// user to pick one (`launch-screen` design D3). Takes effect at the
+    /// next launch, not immediately.
+    pub open_last_on_launch: bool,
 }
 
 /// One entry of the start screen's recent list. `name` and `available` are
@@ -918,6 +928,7 @@ mod tests {
             theme: Theme::Dark,
             grid_tile_size: GRID_TILE_DEFAULT,
             notes_collapsed: true,
+            open_last_on_launch: false,
         };
 
         assert_eq!(
@@ -926,6 +937,7 @@ mod tests {
                 "theme": "dark",
                 "gridTileSize": 180,
                 "notesCollapsed": true,
+                "openLastOnLaunch": false,
             }),
         );
     }

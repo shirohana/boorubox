@@ -24,6 +24,7 @@
   import { Input } from '$lib/components/ui/input'
   import { Kbd } from '$lib/components/ui/kbd'
   import { Slider } from '$lib/components/ui/slider'
+  import { Switch } from '$lib/components/ui/switch'
   import { KEYBOARD_MAP } from '$lib/keyboard'
   import { windowDragRegion } from '$lib/platform'
 
@@ -41,6 +42,9 @@
   // (`library-sidecars` task 3.5, "the control is absent with no library
   // open").
   const canRebuild = $derived(library.status?.opened === true)
+  // `launch-screen` design D3: defaults the switch on while the setting is
+  // still loading, matching the Rust default an old settings file reads as.
+  const openLastOnLaunch = $derived(settings.current?.openLastOnLaunch ?? true)
 
   const themes: { value: Theme, label: string }[] = [
     { value: 'system', label: 'System' },
@@ -101,6 +105,15 @@
     error = null
     try {
       await settings.setTheme(value)
+    } catch (cause) {
+      error = errorText(cause)
+    }
+  }
+
+  async function chooseOpenLastOnLaunch(value: boolean) {
+    error = null
+    try {
+      await settings.setOpenLastOnLaunch(value)
     } catch (cause) {
       error = errorText(cause)
     }
@@ -222,6 +235,24 @@
         </span>
         {trash.count === 1 ? 'image' : 'images'}, not counted above.
       </p>
+
+      <!--
+        `launch-screen` design D3: on by default (spec `library-folder`'s
+        "reopen the last library on launch without asking"), turned off to land
+        on the start screen's recent list instead. Takes effect at the next
+        launch — nothing here re-opens or closes the library that is running.
+      -->
+      <div class="flex items-center justify-between gap-3 border-t border-border pt-4">
+        <div class="min-w-0">
+          <p class="text-sm font-medium">Open the last library at launch</p>
+          <p class="text-sm text-muted-foreground">Takes effect at the next launch.</p>
+        </div>
+        <Switch
+          aria-label="Open the last library at launch"
+          checked={openLastOnLaunch}
+          onCheckedChange={(value) => void chooseOpenLastOnLaunch(value)}
+        />
+      </div>
 
       {#if canRebuild}
         <!--

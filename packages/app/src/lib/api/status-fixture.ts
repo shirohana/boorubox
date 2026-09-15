@@ -7,6 +7,7 @@ import { DEFAULT_PORT } from '@boorubox/shared'
 export function status(overrides: Partial<LibraryStatus> = {}): LibraryStatus {
   return {
     opened: true,
+    opening: null,
     libraryPath: '/library',
     missingPath: null,
     damagedPath: null,

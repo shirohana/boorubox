@@ -102,6 +102,14 @@ export function setGridTileSize(size: number): Promise<AppSettings> {
 }
 
 /**
+ * Whether the app reopens the remembered library automatically at launch
+ * (`launch-screen` design D3). Takes effect at the next launch.
+ */
+export function setOpenLastOnLaunch(value: boolean): Promise<AppSettings> {
+  return invoke('set_open_last_on_launch', { value })
+}
+
+/**
  * Rebinds the capture listener (design D6). The port is stored whether or not
  * it binds, so a failure comes back as a stopped listener with its reason, not
  * as a rejection.

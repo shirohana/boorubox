@@ -117,3 +117,16 @@ export function onSidecarsProgress(
 ): Promise<UnlistenFn> {
   return listen<ExportProgress>(SIDECARS_PROGRESS_EVENT, (event) => handler(event.payload))
 }
+
+/**
+ * Emitted once the launch-time open of the remembered library settles,
+ * success or failure alike (`launch-screen` design D1, `commands.rs`).
+ * Carries no payload: `libraryStatus()` is the one truth, and this event only
+ * says it is worth reading again.
+ */
+export const LIBRARY_OPENED_EVENT = 'library:opened'
+
+/** Subscribes to the launch-time open settling. */
+export function onLibraryOpened(handler: () => void): Promise<UnlistenFn> {
+  return listen(LIBRARY_OPENED_EVENT, () => handler())
+}

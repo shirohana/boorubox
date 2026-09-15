@@ -16,11 +16,13 @@ import {
   CAPTURE_WITHDRAWN_EVENT,
   EXPORT_PROGRESS_EVENT,
   IMPORT_PROGRESS_EVENT,
+  LIBRARY_OPENED_EVENT,
   onCapturePending,
   onCaptureStored,
   onCaptureWithdrawn,
   onExportProgress,
   onImportProgress,
+  onLibraryOpened,
   onRebuildProgress,
   onRulesProgress,
   onSidecarsProgress,
@@ -129,6 +131,17 @@ it('hands the subscriber the sidecar backfill progress payload, unwrapped', asyn
   await emit(SIDECARS_PROGRESS_EVENT, progress)
 
   expect(handler).toHaveBeenCalledWith(progress)
+})
+
+it('hands the subscriber the launch-time open settling, with no payload', async () => {
+  mockIPC(() => {}, { shouldMockEvents: true })
+  const handler = vi.fn()
+
+  await onLibraryOpened(handler)
+  await emit(LIBRARY_OPENED_EVENT)
+
+  expect(handler).toHaveBeenCalledTimes(1)
+  expect(handler).toHaveBeenCalledWith()
 })
 
 it('hands the subscriber the announcement that was withdrawn, with its reason', async () => {

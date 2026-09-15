@@ -396,6 +396,13 @@ export interface ListenerStatus {
 /** Everything the UI needs to decide between `/start` and the library. */
 export interface LibraryStatus {
   opened: boolean
+  /**
+   * The path a launch-time open is still running against (`launch-screen`
+   * design D1) — set while the remembered library's open runs off the main
+   * thread, `null` once it settles either way. Lets the opening screen name
+   * the folder before `opened` can be true.
+   */
+  opening: string | null
   libraryPath: string | null
   /** A remembered path that could not be opened; kept until another is picked. */
   missingPath: string | null
@@ -441,6 +448,13 @@ export interface AppSettings {
    * D13 records why the old reading was right until the panel existed.
    */
   notesCollapsed: boolean
+  /**
+   * Whether the app reopens `LibraryStatus.libraryPath`'s remembered folder
+   * automatically at launch, or waits on the start screen for the user to
+   * pick one (`launch-screen` design D3). Takes effect at the next launch,
+   * not immediately.
+   */
+  openLastOnLaunch: boolean
 }
 
 /**

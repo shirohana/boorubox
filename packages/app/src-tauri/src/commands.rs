@@ -67,6 +67,13 @@ const REBUILD_PROGRESS_EVENT: &str = "library:rebuild";
 /// design D7, D13, spec `pending-work`).
 const SIDECARS_PROGRESS_EVENT: &str = "library:sidecars";
 
+/// Emitted once the launch-time open of the remembered library settles,
+/// success or failure alike (`launch-screen` design D1). Carries no payload:
+/// `library_status` is the one truth, and this event only tells the webview
+/// to re-read it — the same path a capture or a failure already reports
+/// through, so nothing about that path has to change for the launch case.
+pub const LIBRARY_OPENED_EVENT: &str = "library:opened";
+
 /// Run `work` against the shared library on a blocking thread.
 ///
 /// Tauri runs a synchronous command on the app's main thread, and on macOS that
@@ -325,6 +332,20 @@ pub fn set_notes_collapsed<R: Runtime>(
 ) -> Result<AppSettings> {
     write_settings(&app, &state, |settings| {
         settings.notes_collapsed = collapsed;
+    })
+}
+
+/// Whether `setup` reopens the remembered library automatically at the next
+/// launch (`launch-screen` design D3). Takes effect next launch: this launch
+/// already decided whether to open before the webview could call it.
+#[tauri::command]
+pub fn set_open_last_on_launch<R: Runtime>(
+    value: bool,
+    app: AppHandle<R>,
+    state: State<'_, AppState>,
+) -> Result<AppSettings> {
+    write_settings(&app, &state, |settings| {
+        settings.open_last_on_launch = value;
     })
 }
 
@@ -1251,6 +1272,9 @@ async fn status(state: &AppState) -> Result<LibraryStatus> {
 
     Ok(LibraryStatus {
         opened: open.is_some(),
+        opening: lock(&state.launch_opening)
+            .as_ref()
+            .map(|path| path.display().to_string()),
         library_path: open.as_ref().map(|library| library.path.clone()),
         // Derived, not stored: a remembered path with no library open is exactly
         // the path that would not open, which the spec keeps until the user
@@ -1369,6 +1393,36 @@ mod tests {
             .collect()
     }
 
+    /// `launch-screen` task 1.3 / design D4: what is slow is measured, not
+    /// guessed. Ignored because it needs a real library folder on disk and
+    /// exists to be run by hand — `LAUNCH_SCREEN_MEASURE_DIR=<path> cargo test
+    /// --release -- --ignored --nocapture measure_launch_open_time` — whenever
+    /// the number needs rechecking against a larger library than the one
+    /// `design.md` Risks records.
+    #[test]
+    #[ignore = "manual timing measurement, run by hand against a real library"]
+    fn measure_launch_open_time() {
+        let dir = std::env::var("LAUNCH_SCREEN_MEASURE_DIR")
+            .expect("set LAUNCH_SCREEN_MEASURE_DIR to a library folder to time");
+        let path = Path::new(&dir);
+
+        let start = std::time::Instant::now();
+        let opened = Library::open_existing(path).unwrap();
+        let open_existing = start.elapsed();
+        let count = opened.image_count().unwrap();
+        drop(opened);
+
+        let app = mock_app();
+        let state = app.state::<AppState>();
+        let start = std::time::Instant::now();
+        open_into_state(app.handle(), &state, path, OpenMode::ExistingOnly).unwrap();
+        let full = start.elapsed();
+
+        eprintln!(
+            "measure_launch_open_time: {count} images, open_existing={open_existing:?}, open_into_state={full:?}"
+        );
+    }
+
     #[test]
     fn open_library_creates_the_folder_and_reports_it_open() {
         let dir = tempfile::tempdir().unwrap();
@@ -1393,6 +1447,21 @@ mod tests {
         assert!(!status.opened);
         assert_eq!(status.library_path, None);
         assert_eq!(status.missing_path, None);
+    }
+
+    /// `launch-screen` design D1: `library_status.opening` is what lets the
+    /// webview name the folder on the opening screen before the launch open
+    /// has set `state.library` — `opened` must still read false meanwhile.
+    #[test]
+    fn library_status_reports_the_opening_path_while_the_launch_flag_is_set() {
+        let app = mock_app();
+        let opening = PathBuf::from("/library/opening");
+        *lock(&app.state::<AppState>().launch_opening) = Some(opening.clone());
+
+        let status = status_of(&app);
+
+        assert!(!status.opened);
+        assert_eq!(status.opening, Some(opening.display().to_string()));
     }
 
     #[test]

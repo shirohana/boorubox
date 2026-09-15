@@ -14,6 +14,7 @@ const stored: AppSettings = {
   theme: 'system',
   gridTileSize: GRID_TILE_DEFAULT,
   notesCollapsed: false,
+  openLastOnLaunch: true,
 }
 
 it('asks Rust once and keeps the answer', async () => {
@@ -32,7 +33,13 @@ it('asks Rust once and keeps the answer', async () => {
 
 it('keeps what the write answered, not what it was asked for', async () => {
   mockIPC(
-    () => ({ theme: 'dark', gridTileSize: GRID_TILE_MAX, notesCollapsed: true }) satisfies AppSettings,
+    () =>
+      ({
+        theme: 'dark',
+        gridTileSize: GRID_TILE_MAX,
+        notesCollapsed: true,
+        openLastOnLaunch: true,
+      }) satisfies AppSettings,
   )
 
   await settings.setTheme('dark')
@@ -45,4 +52,7 @@ it('keeps what the write answered, not what it was asked for', async () => {
 
   await settings.setNotesCollapsed(true)
   expect(settings.current?.notesCollapsed).toBe(true)
+
+  await settings.setOpenLastOnLaunch(false)
+  expect(settings.current?.openLastOnLaunch).toBe(true)
 })

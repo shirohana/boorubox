@@ -6,10 +6,12 @@
     appUpdate,
     library,
     onCaptureStored,
+    onLibraryOpened,
     pendingCaptures,
     settings,
     sidecarsBackfill,
   } from '$lib/api'
+  import OpeningScreen from '$lib/components/common/OpeningScreen.svelte'
   import AppSidebar from '$lib/components/frame/Sidebar.svelte'
   import LibrarySwitchDialog from '$lib/components/frame/LibrarySwitchDialog.svelte'
   import TopBar from '$lib/components/frame/TopBar.svelte'
@@ -28,11 +30,15 @@
 
   const onStart = $derived(page.url.pathname === '/start')
   const libraryOpen = $derived(library.status?.opened === true)
+  // `launch-screen` design D2: the folder a launch-time open is still running
+  // against, read off the status the same way as `libraryOpen` rather than in
+  // an `$effect` — a store reassigned wholesale on every refresh re-runs an
+  // effect that reads a field off it directly (repo CLAUDE.md).
+  const opening = $derived(library.status?.opening ?? null)
   const failure = $derived(library.error ?? settings.error)
   const libraryAnswered = $derived(library.status !== null || library.error !== null)
   const settingsAnswered = $derived(settings.current !== null || settings.error !== null)
 
-  void library.load()
   void settings.load()
   // Design D4: fire-and-forget, silent on failure — nothing here may delay
   // the window above from appearing.
@@ -44,6 +50,22 @@
   // `system` installs — without it an explicit choice would be repainted the
   // next time the OS switched appearance.
   $effect(() => applyTheme(settings.current?.theme ?? 'system'))
+
+  // Design D2: the Rust side clears `AppState.launch_opening` and only then
+  // emits `library:opened`. Reading `library_status` first and subscribing
+  // afterwards risks a fast open settling, and its event firing, in the gap
+  // between the two — the event would be lost and the opening screen would
+  // never clear. Subscribing before the first status read closes that gap:
+  // `library.load()` only fires once the subscription is registered, so any
+  // event the open can still cause is one this listener is already up for.
+  $effect(() => {
+    const subscription = onLibraryOpened(() => void library.refresh())
+    subscription.catch(() => {})
+    void subscription.then(() => library.load())
+    return () => {
+      void subscription.then((unlisten) => unlisten()).catch(() => {})
+    }
+  })
 
   // The image count in the sidebar is part of the frame, so it follows a
   // capture on every screen — not only on the one that lists the images. The
@@ -81,9 +103,11 @@
 
   // The gate from spec `library-folder`: with no library open, `/start` is the
   // only reachable route. The children stay unrendered until the redirect has
-  // landed — rendering them first flashes the grid, search and import.
+  // landed — rendering them first flashes the grid, search and import. Not
+  // while `opening` is set: a launch-time open still running is not "no
+  // library open", and redirecting here would fight the opening screen below.
   $effect(() => {
-    if (library.status && !libraryOpen && !onStart) void goto(resolve('/start'))
+    if (library.status && !opening && !libraryOpen && !onStart) void goto(resolve('/start'))
   })
 
   // Whole-app zoom, on every screen including /start. Not guarded by the
@@ -156,7 +180,15 @@
     <p class="mt-2 text-sm text-muted-foreground">{failure}</p>
   </main>
 {:else if !libraryAnswered || !settingsAnswered}
-  <p class="p-6 text-sm text-muted-foreground">Opening your library…</p>
+  <OpeningScreen />
+{:else if opening}
+  <!--
+    Checked ahead of `onStart`/`libraryOpen` (design D2): `opened` can read
+    true for one poll right at the end of the launch-time open, before
+    `opening` clears, but landing on the library UI either way is fine — the
+    next `library.refresh()` clears `opening` and this branch falls through.
+  -->
+  <OpeningScreen path={opening} />
 {:else if onStart}
   <!-- Spec `app-frame`: with no library open there is nothing for the frame to
        be about, so the start screen has the whole window. -->

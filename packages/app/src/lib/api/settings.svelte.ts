@@ -1,5 +1,11 @@
 import type { AppSettings, Theme } from '@boorubox/shared'
-import { appSettings, setGridTileSize, setNotesCollapsed, setTheme } from './commands'
+import {
+  appSettings,
+  setGridTileSize,
+  setNotesCollapsed,
+  setOpenLastOnLaunch,
+  setTheme,
+} from './commands'
 import { errorText } from './errors'
 
 /**
@@ -38,6 +44,15 @@ class Settings {
   /** Folds the sidebar's notes panel away, or unfolds it (`notes` design D13). */
   async setNotesCollapsed(collapsed: boolean): Promise<void> {
     this.current = await setNotesCollapsed(collapsed)
+  }
+
+  /**
+   * Whether the app reopens the remembered library at launch, or waits on the
+   * start screen instead (`launch-screen` design D3). Takes effect at the next
+   * launch, not this one.
+   */
+  async setOpenLastOnLaunch(value: boolean): Promise<void> {
+    this.current = await setOpenLastOnLaunch(value)
   }
 }
 

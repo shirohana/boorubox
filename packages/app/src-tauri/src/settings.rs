@@ -23,6 +23,7 @@ const THEME: &str = "theme";
 const GRID_TILE_SIZE: &str = "gridTileSize";
 const RECENT_LIBRARIES: &str = "recentLibraries";
 const NOTES_COLLAPSED: &str = "notesCollapsed";
+const OPEN_LAST_ON_LAUNCH: &str = "openLastOnLaunch";
 
 /// How many folders the recent list keeps (design D4). A bound, not a
 /// measurement: the list is there to be clicked through, and a longer one is a
@@ -41,6 +42,11 @@ pub struct Settings {
     /// A machine's display preference, so it belongs here rather than in the
     /// library the note's own text lives in.
     pub notes_collapsed: bool,
+    /// Whether `setup` reopens `library_path` automatically at launch
+    /// (`launch-screen` design D3). On by default so an existing settings
+    /// file, which has never written this key, keeps today's behaviour.
+    /// Off leaves the start screen showing the recent list instead.
+    pub open_last_on_launch: bool,
 }
 
 impl Default for Settings {
@@ -54,6 +60,7 @@ impl Default for Settings {
             // Expanded: a panel nobody asked to hide is a panel the user has
             // not seen yet.
             notes_collapsed: false,
+            open_last_on_launch: true,
         }
     }
 }
@@ -81,6 +88,7 @@ impl From<&Settings> for crate::model::AppSettings {
             theme: settings.theme,
             grid_tile_size: settings.grid_tile_size,
             notes_collapsed: settings.notes_collapsed,
+            open_last_on_launch: settings.open_last_on_launch,
         }
     }
 }
@@ -148,6 +156,11 @@ fn load_from<R: Runtime>(app: &AppHandle<R>, file: &str) -> Settings {
             .as_ref()
             .and_then(JsonValue::as_bool)
             .unwrap_or(defaults.notes_collapsed),
+        open_last_on_launch: store
+            .get(OPEN_LAST_ON_LAUNCH)
+            .as_ref()
+            .and_then(JsonValue::as_bool)
+            .unwrap_or(defaults.open_last_on_launch),
     }
 }
 
@@ -167,6 +180,7 @@ fn save_to<R: Runtime>(app: &AppHandle<R>, file: &str, settings: &Settings) -> R
         serde_json::to_value(settings.theme).unwrap_or_default(),
     );
     store.set(GRID_TILE_SIZE, settings.grid_tile_size);
+    store.set(OPEN_LAST_ON_LAUNCH, settings.open_last_on_launch);
     let recent = settings
         .recent_libraries
         .iter()
@@ -209,6 +223,7 @@ mod tests {
                 PathBuf::from("/tmp/older"),
             ],
             notes_collapsed: true,
+            open_last_on_launch: false,
         };
 
         // Written by one app and read back by another: sharing one app would
@@ -319,6 +334,22 @@ mod tests {
         store.save().unwrap();
 
         assert!(!load_from(mock_app().handle(), file).notes_collapsed);
+    }
+
+    /// `launch-screen` design D3: a settings file written before this setting
+    /// existed must keep reopening the remembered library, not silently
+    /// switch the user to the start screen.
+    #[test]
+    fn a_file_without_the_open_last_on_launch_key_reads_as_on() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("settings.json");
+        let file = file.to_str().unwrap();
+        let writer = mock_app();
+        let store = writer.handle().store(file).unwrap();
+        store.set(GRID_TILE_SIZE, GRID_TILE_DEFAULT);
+        store.save().unwrap();
+
+        assert!(load_from(mock_app().handle(), file).open_last_on_launch);
     }
 
     #[test]

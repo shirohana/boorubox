@@ -56,6 +56,7 @@ import {
   setGridTileSize,
   setListenerPort,
   setNotesCollapsed,
+  setOpenLastOnLaunch,
   setRating,
   setTheme,
   tagCounts,
@@ -146,6 +147,7 @@ it('app_settings takes no arguments', async () => {
     theme: 'system',
     gridTileSize: GRID_TILE_DEFAULT,
     notesCollapsed: false,
+    openLastOnLaunch: true,
   }
   const calls = spyIPC(settings)
   await expect(appSettings()).resolves.toEqual(settings)
@@ -157,6 +159,7 @@ it('set_theme passes the theme and returns the settings', async () => {
     theme: 'dark',
     gridTileSize: GRID_TILE_DEFAULT,
     notesCollapsed: false,
+    openLastOnLaunch: true,
   }
   const calls = spyIPC(settings)
   await expect(setTheme('dark')).resolves.toEqual(settings)
@@ -164,7 +167,12 @@ it('set_theme passes the theme and returns the settings', async () => {
 })
 
 it('set_grid_tile_size passes the size', async () => {
-  const calls = spyIPC({ theme: 'system', gridTileSize: GRID_TILE_MAX, notesCollapsed: false })
+  const calls = spyIPC({
+    theme: 'system',
+    gridTileSize: GRID_TILE_MAX,
+    notesCollapsed: false,
+    openLastOnLaunch: true,
+  })
   await setGridTileSize(10_000)
   expect(calls).toHaveBeenCalledWith('set_grid_tile_size', { size: 10_000 })
 })
@@ -174,10 +182,23 @@ it('set_notes_collapsed passes the flag and returns the settings', async () => {
     theme: 'system',
     gridTileSize: GRID_TILE_DEFAULT,
     notesCollapsed: true,
+    openLastOnLaunch: true,
   }
   const calls = spyIPC(settings)
   await expect(setNotesCollapsed(true)).resolves.toEqual(settings)
   expect(calls).toHaveBeenCalledWith('set_notes_collapsed', { collapsed: true })
+})
+
+it('set_open_last_on_launch passes the flag and returns the settings', async () => {
+  const settings: AppSettings = {
+    theme: 'system',
+    gridTileSize: GRID_TILE_DEFAULT,
+    notesCollapsed: false,
+    openLastOnLaunch: false,
+  }
+  const calls = spyIPC(settings)
+  await expect(setOpenLastOnLaunch(false)).resolves.toEqual(settings)
+  expect(calls).toHaveBeenCalledWith('set_open_last_on_launch', { value: false })
 })
 
 it('set_listener_port passes the port and returns the listener state', async () => {
