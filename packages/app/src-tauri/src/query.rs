@@ -13,7 +13,7 @@
 
 use rusqlite::functions::FunctionFlags;
 use rusqlite::types::Value;
-use rusqlite::{Connection, params_from_iter};
+use rusqlite::{Connection, OptionalExtension, params_from_iter};
 
 use crate::error::Result;
 use crate::ingest;
@@ -70,6 +70,28 @@ pub fn search(conn: &Connection, req: &SearchRequest) -> Result<SearchResult> {
 /// grid's row *n* are only ever read from the one `ORDER BY` this compiles.
 pub fn search_ids(conn: &Connection, req: &SearchRequest) -> Result<Vec<String>> {
     Plan::for_request(req, RatingClause::Included).page(conn, req.limit, req.offset)
+}
+
+/// The zero-based row `id` occupies in `req`'s order — the same order
+/// `search_ids` pages — or `None` when `id` is not in the matched set at all
+/// (`inspector-polish` design D2). Built on the same `Plan` as `search_ids`,
+/// with `ROW_NUMBER() OVER (<the plan's order>)` filtered to the one id
+/// asked for: one query, no walk of the pages between here and there.
+pub fn search_position(conn: &Connection, req: &SearchRequest, id: &str) -> Result<Option<i64>> {
+    let plan = Plan::for_request(req, RatingClause::Included);
+    let mut stmt = conn.prepare(&format!(
+        "{} SELECT row_number FROM (
+             SELECT id, ROW_NUMBER() OVER (ORDER BY {}) - 1 AS row_number FROM {}
+         ) WHERE id = ?",
+        plan.ctes,
+        plan.order_by(),
+        plan.rows
+    ))?;
+    let mut params = plan.params.clone();
+    params.push(Value::Text(id.to_string()));
+    Ok(stmt
+        .query_row(params_from_iter(&params), |row| row.get(0))
+        .optional()?)
 }
 
 /// The sidebar's two halves for one request (design D8). Both ignore `limit`
@@ -553,7 +575,7 @@ const X_RESERVED: [&str; 6] = [
 /// asked twice. The webview had a second copy of this rule (`getXAccountFromUrl`
 /// in `grouping.ts`) for as long as it grouped its own results; its URL table is
 /// the `x_account` tests below.
-fn x_account(url: &str) -> Option<&str> {
+pub(crate) fn x_account(url: &str) -> Option<&str> {
     let (host, path) = host_and_path(url)?;
     if !X_HOSTS.contains(&host.to_lowercase().as_str()) {
         return None;
@@ -816,6 +838,58 @@ mod tests {
                 .collect::<Vec<_>>(),
         );
         assert_eq!(ids.len(), 2, "the limit must still apply");
+    }
+
+    /// `inspector-polish` design D2: `search_position` answers the same row
+    /// `search_ids` pages an id at, without walking pages to find it.
+    #[test]
+    fn search_position_matches_the_row_search_ids_returns_it_at() {
+        let fixture = fixture();
+        let req = request(ParsedTagSearch::default());
+
+        let ids = search_ids(&fixture.library.conn, &req).unwrap();
+        assert_eq!(
+            ids[2], "dog-e",
+            "the third-newest id, fixed by capture time"
+        );
+
+        let position = search_position(&fixture.library.conn, &req, "dog-e").unwrap();
+
+        assert_eq!(position, Some(2));
+        assert_eq!(
+            ids.iter().position(|id| id == "dog-e"),
+            Some(2),
+            "search_position and search_ids must agree on the row"
+        );
+    }
+
+    #[test]
+    fn search_position_is_none_for_an_id_the_requests_tags_exclude() {
+        let fixture = fixture();
+        let req = request(ParsedTagSearch {
+            include_tags: vec!["dog".into()],
+            ..Default::default()
+        });
+
+        let position = search_position(&fixture.library.conn, &req, "cat-s").unwrap();
+
+        assert_eq!(position, None, "cat-s carries no `dog` tag");
+    }
+
+    #[test]
+    fn search_position_agrees_with_search_ids_when_a_group_is_set() {
+        let fixture = fixture();
+        let req = SearchRequest {
+            group: GroupBy::XAccount,
+            ..request(ParsedTagSearch::default())
+        };
+
+        let ids = search_ids(&fixture.library.conn, &req).unwrap();
+
+        for (row, id) in ids.iter().enumerate() {
+            let position = search_position(&fixture.library.conn, &req, id).unwrap();
+            assert_eq!(position, Some(row as i64), "row for {id}");
+        }
     }
 
     #[test]

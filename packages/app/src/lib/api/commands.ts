@@ -121,6 +121,16 @@ export function searchIds(req: SearchRequest): Promise<string[]> {
   return invoke('search_ids', { req })
 }
 
+/**
+ * The zero-based row `id` occupies in the order a `search` of `req` would
+ * page, or `null` when `id` is not in `req`'s matched set — what a
+ * click-driven search rewrite asks to keep its subject current
+ * (`inspector-polish` design D2).
+ */
+export function searchPosition(req: SearchRequest, id: string): Promise<number | null> {
+  return invoke('search_position', { req, id })
+}
+
 export function imageCounts(): Promise<ImageCounts> {
   return invoke('image_counts')
 }

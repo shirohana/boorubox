@@ -7,9 +7,9 @@
   import MinusIcon from '@lucide/svelte/icons/minus'
   import PlusIcon from '@lucide/svelte/icons/plus'
   import {
+    activeTerms,
     addTagToQuery,
     excludeTagFromQuery,
-    parseTagSearch,
     toggleTagInQuery,
   } from '$lib/domain/tag-utils'
 
@@ -22,9 +22,11 @@
 
   let { tags, tagQuery, onquery }: Props = $props()
 
-  const parsed = $derived(parseTagSearch(tagQuery))
-  const included = $derived(new Set([...parsed.includeTags, ...parsed.orGroups.flat()]))
-  const excluded = $derived(new Set(parsed.excludeTags))
+  // Design D3: the one reader for "is this term active", shared with the
+  // inspector's badges.
+  const terms = $derived(activeTerms(tagQuery))
+  const included = $derived(terms.included)
+  const excluded = $derived(terms.excluded)
 
   /**
    * A tag the search names but the result does not carry is listed at zero, so

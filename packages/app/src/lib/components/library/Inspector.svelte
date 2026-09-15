@@ -8,6 +8,7 @@
   import { errorText } from '$lib/api'
   import PostedLabel from '$lib/components/booru/PostedLabel.svelte'
   import UploadAction from '$lib/components/booru/UploadAction.svelte'
+  import ExternalLink from '$lib/components/common/ExternalLink.svelte'
   import RatingControl from '$lib/components/tags/RatingControl.svelte'
   import TagInput from '$lib/components/tags/TagInput.svelte'
   import { Badge } from '$lib/components/ui/badge'
@@ -15,7 +16,14 @@
   import * as ContextMenu from '$lib/components/ui/context-menu'
   import { formatBytes, formatTimestamp } from '$lib/domain/format'
   import { editorText } from '$lib/domain/tag-input'
-  import { excludeTagFromQuery, sortTags, tagList, toggleTagInQuery } from '$lib/domain/tag-utils'
+  import {
+    activeTerms,
+    excludeTagFromQuery,
+    sortTags,
+    tagList,
+    toggleAccountInQuery,
+    toggleTagInQuery,
+  } from '$lib/domain/tag-utils'
   import SelectionThumbs from './SelectionThumbs.svelte'
   import type { TrashActions } from './trash-actions'
 
@@ -47,13 +55,21 @@
     actions: TrashActions
     /** The toolbar's tag query, so a click on a tag can rewrite it (design D14). */
     tagQuery: string
-    onquery: (next: string) => void
     /**
-     * A rating was chosen here. Only the viewer's placement listens: it takes
-     * the keyboard focus back off the choice so Space still closes it (design
-     * D4, amended). Beside the grid nobody wants the focus moved.
+     * A tag or account was acted on as a search term. `id` is the image this
+     * panel describes — `image` below, not always the focused card (design
+     * D2) — so the screen can keep it current in the new result.
      */
-    onrated?: () => void
+    onquery: (next: string, id: string) => void
+    /**
+     * A completed action in this panel: a rating chosen, a tag saved or
+     * removed, a tag or account acted on as a search term (`app-frame` design
+     * D1, amended from `onrated`). Each placement decides where the focus
+     * goes back to — the viewer's own surface, or the grid's current card.
+     * Never fired after a failed save; the editor keeps the focus so the text
+     * can be fixed.
+     */
+    onrelease?: () => void
     /**
      * Open the viewer at a row — the screen's own way in, so a thumbnail in the
      * selection strip opens the one viewer rather than a second one
@@ -70,7 +86,7 @@
     actions,
     tagQuery,
     onquery,
-    onrated,
+    onrelease,
     onactivate,
   }: Props = $props()
 
@@ -123,6 +139,24 @@
   /** `sortTags` is the only tag order, applied at render (design D4). */
   const tags = $derived(image ? sortTags(image.tags) : [])
   const saved = $derived(tags.join(' '))
+  /** Design D3: the same reader the sidebar uses, so a tag's marking agrees. */
+  const terms = $derived(activeTerms(tagQuery))
+
+  /**
+   * A tag or account acted on as a search term (spec `tag-editing`): rewrites
+   * the query for the image this panel describes, then hands the keyboard
+   * back (`app-frame` design D1) — before the rewrite settles, because this is
+   * about the keyboard, not the result (the same rule `RatingControl`'s
+   * `onchosen` follows). Inside the viewer that is the whole hand-back. Beside
+   * the grid the screen has already emptied the selection by the time this
+   * returns, so there is no card to hand back to and the screen's own
+   * `focusCard` takes it, on the row the image lands at in the new result.
+   */
+  function query(next: string) {
+    if (!image) return
+    onquery(next, image.id)
+    onrelease?.()
+  }
 
   let tagInput = $state<TagInput | null>(null)
   let draft = $state('')
@@ -142,12 +176,19 @@
     error = null
   })
 
+  /**
+   * A tag save or removal, from the editor or the context menu. `onrelease`
+   * fires only on success (design D1): a failed save leaves the focus in the
+   * editor so the text can be fixed, which is `submitFromEditor`'s own
+   * conditional blur below.
+   */
   async function write(tags: string[]) {
     if (!image || saving) return
     saving = true
     error = null
     try {
       await results.saveTags(image.id, tags)
+      onrelease?.()
     } catch (cause) {
       error = errorText(cause)
     } finally {
@@ -232,10 +273,17 @@
       <dd class="wrap-break-word">{origin}</dd>
 
       <dt class="text-muted-foreground">Page</dt>
-      <dd class="wrap-break-word">{image.pageUrl ?? '—'}</dd>
+      <!-- Wrapping, so `ExternalLink`'s failure line gets a row of its own. -->
+      <dd class="flex flex-wrap items-start gap-1 wrap-break-word">
+        <span class="min-w-0 flex-1 wrap-break-word">{image.pageUrl ?? '—'}</span>
+        <ExternalLink url={image.pageUrl} />
+      </dd>
 
       <dt class="text-muted-foreground">Image</dt>
-      <dd class="wrap-break-word">{image.imageUrl ?? '—'}</dd>
+      <dd class="flex flex-wrap items-start gap-1 wrap-break-word">
+        <span class="min-w-0 flex-1 wrap-break-word">{image.imageUrl ?? '—'}</span>
+        <ExternalLink url={image.imageUrl} />
+      </dd>
 
       <dt class="text-muted-foreground">Dimensions</dt>
       <dd>{image.width} × {image.height}</dd>
@@ -266,7 +314,7 @@
 
     <section class="border-t border-border px-4 py-3">
       <h3 class="mb-2 text-xs font-medium text-muted-foreground">Rating</h3>
-      <RatingControl value={image.rating} onchoose={rate} onchosen={onrated} />
+      <RatingControl value={image.rating} onchoose={rate} onchosen={onrelease} />
     </section>
 
     <section class="border-t border-border px-4 py-3">
@@ -300,13 +348,38 @@
         <p class="mt-2 text-xs text-destructive">{error}</p>
       {/if}
 
+      {#if image.account}
+        {@const account = image.account}
+        <!--
+          Spec `tag-editing`, "An X account on screen is a search term": its
+          own row, above the tags, so it reads as a filter and not a tag
+          (design D4). Blue while inactive; the tag marking below once it is
+          part of the query, so "in the search" looks the same everywhere.
+        -->
+        <button
+          type="button"
+          class="
+            mt-2 rounded-md px-1.5 py-0.5 text-xs font-medium
+            {terms.accounts.has(account)
+              ? 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-300'
+              : terms.excludedAccounts.has(account)
+              ? 'bg-destructive/10 text-destructive line-through'
+              : 'bg-sky-500/15 text-sky-700 dark:text-sky-300'}
+          "
+          onclick={() => query(toggleAccountInQuery(tagQuery, account))}
+        >
+          {account}
+        </button>
+      {/if}
+
       {#if tags.length === 0}
         <p class="mt-2 text-xs text-muted-foreground">No tags</p>
       {:else}
         <!--
           Every tag on screen is a search term (spec `tag-editing`): a click puts
           it in the query or takes it out, and the menu offers the other two
-          things one can do to a tag.
+          things one can do to a tag. The marking is `activeTerms`' (design D3),
+          the sidebar's own colours.
         -->
         <ul class="mt-2 flex flex-wrap gap-1">
           {#each tags as tag (tag)}
@@ -317,17 +390,26 @@
                     <button
                       type="button"
                       {...props}
-                      onclick={() => onquery(toggleTagInQuery(tagQuery, tag))}
+                      onclick={() => query(toggleTagInQuery(tagQuery, tag))}
                     >
-                      <Badge variant="secondary">{tag}</Badge>
+                      <Badge
+                        variant="secondary"
+                        class={terms.included.has(tag)
+                          ? 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-300'
+                          : terms.excluded.has(tag)
+                          ? 'bg-destructive/10 text-destructive line-through'
+                          : ''}
+                      >
+                        {tag}
+                      </Badge>
                     </button>
                   {/snippet}
                 </ContextMenu.Trigger>
                 <ContextMenu.Content>
-                  <ContextMenu.Item onSelect={() => onquery(toggleTagInQuery(tagQuery, tag))}>
+                  <ContextMenu.Item onSelect={() => query(toggleTagInQuery(tagQuery, tag))}>
                     Search for this tag
                   </ContextMenu.Item>
-                  <ContextMenu.Item onSelect={() => onquery(excludeTagFromQuery(tagQuery, tag))}>
+                  <ContextMenu.Item onSelect={() => query(excludeTagFromQuery(tagQuery, tag))}>
                     Exclude from the search
                   </ContextMenu.Item>
                   <ContextMenu.Separator />

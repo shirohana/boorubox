@@ -386,6 +386,22 @@ pub async fn search_ids(req: SearchRequest, state: State<'_, AppState>) -> Resul
     .await
 }
 
+/// The zero-based row `id` occupies in the order a `search` of `req` would
+/// page, or `None` when `id` is not in `req`'s matched set — what a
+/// click-driven search rewrite asks to keep its subject current
+/// (`inspector-polish` design D2).
+#[tauri::command]
+pub async fn search_position(
+    req: SearchRequest,
+    id: String,
+    state: State<'_, AppState>,
+) -> Result<Option<i64>> {
+    with_library_off_main_thread(&state.library, move |library| {
+        query::search_position(&library.conn, &req, &id)
+    })
+    .await
+}
+
 /// The sidebar's tag list and rating pills for one search (design D8).
 #[tauri::command]
 pub async fn tag_counts(req: SearchRequest, state: State<'_, AppState>) -> Result<TagCounts> {
@@ -1964,6 +1980,26 @@ mod tests {
                 .map(|image| image.id.clone())
                 .collect::<Vec<_>>(),
         );
+    }
+
+    #[test]
+    fn search_position_agrees_with_the_row_search_ids_pages_it_at() {
+        let (_library, app) = app_with_library();
+        import(&app, &folder_of_images(5));
+        let ids = ids_in_library(&app);
+        let third = ids[2].clone();
+
+        let position = now(search_position(everything(), third, app.state())).unwrap();
+
+        assert_eq!(position, Some(2));
+
+        let missing = now(search_position(
+            everything(),
+            "no-such-id".to_string(),
+            app.state(),
+        ))
+        .unwrap();
+        assert_eq!(missing, None);
     }
 
     #[test]

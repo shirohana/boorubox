@@ -112,6 +112,13 @@ export interface ImageRecord {
   imageUrl: string | null
   pageUrl: string | null
   pageTitle: string | null
+  /**
+   * The X account `pageUrl` names, derived from it by the same rule the
+   * search's `account:` filter matches on (Rust's `query::x_account`),
+   * computed on every load rather than stored. `null` for a page that names
+   * no X account.
+   */
+  account: string | null
   /** What the capturing client's site adapter extracted, as received. */
   adapter: SiteAdapterRecord | null
   rating: Rating | null

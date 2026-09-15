@@ -156,6 +156,17 @@
   }
 
   /**
+   * A completed action in the inspector beside the grid hands the keyboard
+   * back here (`app-frame` design D1): only the DOM focus moved, not the
+   * selection, so this brings the focused card back into it without touching
+   * `selection.focusAt` — that would drag the anchor along behind a write that
+   * never meant to move it.
+   */
+  export function refocus(): void {
+    if (selection.focus >= 0) showCard(selection.focus)
+  }
+
+  /**
    * The selection if there is one, otherwise the focused image (`trash` design
    * D12). Two or more images are confirmed before anything moves, by the screen
    * that owns the dialog — this key handler asks for the write and nothing

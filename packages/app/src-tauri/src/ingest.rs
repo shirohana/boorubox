@@ -259,6 +259,11 @@ pub fn row_to_record(row: &Row) -> rusqlite::Result<ImageRecord> {
     let id: String = row.get(0)?;
     let ext: String = row.get(1)?;
     let file = crate::library::LibraryPaths::relative_image_path(&id, &ext);
+    let page_url: Option<String> = row.get(9)?;
+    let account = page_url
+        .as_deref()
+        .and_then(crate::query::x_account)
+        .map(str::to_string);
     Ok(ImageRecord {
         id,
         ext,
@@ -270,8 +275,9 @@ pub fn row_to_record(row: &Row) -> rusqlite::Result<ImageRecord> {
         source: row.get(6)?,
         source_ref: row.get(7)?,
         image_url: row.get(8)?,
-        page_url: row.get(9)?,
+        page_url,
         page_title: row.get(10)?,
+        account,
         // A record that will not parse reads as none rather than failing the
         // row: the column is a document written by a client, and one bad
         // document must not take a whole page of the grid down with it.
@@ -626,6 +632,48 @@ mod tests {
         store_image(&library, input("id-2", &bytes, &tags)).unwrap();
         let record = load_record(&library.conn, "id-2").unwrap().unwrap();
         assert_eq!(record.file_modified_at, None);
+    }
+
+    /// `inspector-polish` design D4: `account` is a projection of `page_url`
+    /// through `query::x_account`, computed on every load rather than stored.
+    #[test]
+    fn account_is_derived_from_the_page_url_on_load() {
+        let (_dir, library) = library();
+        let bytes = png_bytes(2, 2);
+        let tags: Vec<String> = Vec::new();
+
+        store_image(
+            &library,
+            IngestInput {
+                page_url: Some("https://x.com/alice/status/1"),
+                ..input("id-1", &bytes, &tags)
+            },
+        )
+        .unwrap();
+        let record = load_record(&library.conn, "id-1").unwrap().unwrap();
+        assert_eq!(record.account, Some("alice".to_string()));
+
+        store_image(
+            &library,
+            IngestInput {
+                page_url: Some("https://x.com/home"),
+                ..input("id-2", &bytes, &tags)
+            },
+        )
+        .unwrap();
+        let record = load_record(&library.conn, "id-2").unwrap().unwrap();
+        assert_eq!(record.account, None, "x.com's own pages name no account");
+
+        store_image(
+            &library,
+            IngestInput {
+                page_url: None,
+                ..input("id-3", &bytes, &tags)
+            },
+        )
+        .unwrap();
+        let record = load_record(&library.conn, "id-3").unwrap().unwrap();
+        assert_eq!(record.account, None, "no page URL means no account");
     }
 
     #[test]

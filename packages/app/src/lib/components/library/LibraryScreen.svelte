@@ -20,6 +20,7 @@
     onFileDrop,
     restoreImages,
     searchIds,
+    searchPosition,
     SearchResults,
     settings,
     trash,
@@ -158,8 +159,65 @@
     lightboxOpen = true
   }
 
-  /** Every tag and rating click rewrites the query and runs it (design D14). */
-  const searchFor = (next: string) => runSearch({ tagQuery: next, text })
+  /**
+   * Every tag, rating, sidebar and account click rewrites the query and runs
+   * it, keeping `id` — the image the click's panel describes — current in the
+   * new result (`inspector-polish` design D2): the screen asks
+   * `search_position` for the row `id` now occupies, in parallel with the
+   * search itself, then moves the grid's focus there and, with the viewer
+   * open, its index. With no id to keep — nothing is focused — this is a
+   * plain reset, exactly like a typed search (design Non-Goals).
+   */
+  async function searchKeeping(next: string, id: string | undefined) {
+    if (id === undefined) {
+      runSearch({ tagQuery: next, text })
+      return
+    }
+
+    const nextInputs: SearchInputs = { tagQuery: next, text }
+    const view = { sort: results.sort, group: results.group, view: results.view }
+    // Everything a typed search does, done now rather than a round trip later:
+    // the field has to show the query that is running, and the old indices name
+    // other images the moment `run` clears the rows. Only where the focus lands
+    // has to wait for an answer.
+    tagQuery = next
+    selection.reset()
+    const running = results.run(nextInputs)
+    // Read after `run` has started — `#start` bumps it before its first await —
+    // and never `results.inputs`: that field comes back out of `$state` as a
+    // *proxy* of what was assigned, so it never compares equal to the object
+    // this call passed in and the guard below would fire on every click.
+    const generation = results.generation
+    const [, row] = await Promise.all([
+      running,
+      // A position that cannot be answered is not a row: nobody awaits this
+      // call, and an escaping rejection would leave the viewer open on an index
+      // that now names another image (design D2's rejected alternative).
+      searchPosition(buildSearchRequest(nextInputs, view, 0), id).catch((error) => {
+        actionError = errorText(error)
+        return null
+      }),
+    ])
+
+    // A second click, a typed search or a refresh started a newer run while
+    // this one waited on the position: the row it found is a row of a result
+    // nobody is looking at (design D2 risk: the race with a fast second click).
+    if (results.generation !== generation) return
+
+    if (row === null) {
+      lightboxOpen = false
+      return
+    }
+    grid?.focusCard(row)
+    if (lightboxOpen) {
+      lightboxIndex = row
+      // The run loaded page 0 and this row is usually not on it — that is why
+      // the user is filtering. The viewer reads `results.at(index)` and would
+      // sit on "Loading…" otherwise; its own `move` ensures the same range for
+      // the same reason.
+      results.ensureRange(row, row + 1)
+    }
+  }
 
   /** Slot Grid · tile: the menu rates its own image, not the inspector's. */
   async function rate(image: ImageRecord, rating: Rating | null) {
@@ -449,8 +507,16 @@
     (`null`) are still honest (design D8) — the last query's numbers never
     show, only their own headings do until the new counts arrive.
   -->
-  <RatingPills counts={results.counts?.ratings ?? null} {tagQuery} onquery={searchFor} />
-  <TagSidebar tags={results.counts?.tags ?? null} {tagQuery} onquery={searchFor} />
+  <RatingPills
+    counts={results.counts?.ratings ?? null}
+    {tagQuery}
+    onquery={(next) => void searchKeeping(next, focused?.id)}
+  />
+  <TagSidebar
+    tags={results.counts?.tags ?? null}
+    {tagQuery}
+    onquery={(next) => void searchKeeping(next, focused?.id)}
+  />
 {/snippet}
 
 {#each imports.reports as report (report)}
@@ -518,7 +584,8 @@
         {selection}
         {actions}
         {tagQuery}
-        onquery={searchFor}
+        onquery={searchKeeping}
+        onrelease={() => grid?.refocus()}
         onactivate={openViewer}
       />
     </aside>
@@ -532,7 +599,7 @@
     {columns}
     {actions}
     {tagQuery}
-    onquery={searchFor}
+    onquery={searchKeeping}
     bind:mode={lightboxMode}
     bind:index={lightboxIndex}
     onmove={(index) => grid?.scrollIntoView(index)}

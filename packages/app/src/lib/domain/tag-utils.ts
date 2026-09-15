@@ -320,3 +320,64 @@ export function toggleRatingInQuery(query: string, rating: Rating | 'unrated'): 
   if (kept.length === 0) return withoutRatings
   return append(withoutRatings, `rating:${[...kept].sort().join(',')}`)
 }
+
+/**
+ * Rewrites one of the two account lists — `account:` or `-account:` — from
+ * `kept`, the same way `toggleRatingInQuery` rewrites `rating:` (design D4):
+ * the metatag holds every handle in one comma list, so there is nothing to
+ * edit in place. `marker` is matched lowercase against whole tokens, so
+ * rewriting one list leaves the other standing.
+ */
+function rewriteAccounts(query: string, marker: 'account:' | '-account:', kept: string[]): string {
+  const base = tidy(
+    query
+      .split(/\s+/)
+      .filter((token) => !token.toLowerCase().startsWith(marker))
+      .join(' '),
+  )
+  if (kept.length === 0) return base
+  return append(base, `${marker}${kept.join(',')}`)
+}
+
+/**
+ * Adds or removes `handle` from the account list, leaving the rest of the
+ * query (design D4, D6). The handle is kept exactly as given — case included —
+ * because `query.rs` compares the raw path segment (design D6).
+ */
+export function toggleAccountInQuery(query: string, handle: string): string {
+  const parsed = parseTagSearch(query)
+  // A handle the query excludes stops being excluded rather than being asked
+  // for and ruled out in the same breath, which matches nothing at all:
+  // `addTagToQuery`'s rule for `-tag`, and what the struck-through entry in the
+  // panel promises when it is clicked.
+  if (parsed.excludeAccounts.includes(handle)) {
+    const kept = parsed.excludeAccounts.filter((value) => value !== handle)
+    return rewriteAccounts(query, '-account:', kept)
+  }
+  const kept = parsed.accounts.includes(handle)
+    ? parsed.accounts.filter((value) => value !== handle)
+    : [...parsed.accounts, handle]
+  return rewriteAccounts(query, 'account:', kept)
+}
+
+/**
+ * Which tags and accounts a query is currently asking for or ruling out
+ * (design D3): one reader, shared by the tag sidebar and the inspector panel,
+ * so "is this term active" is answered the same way everywhere it is asked.
+ */
+export interface ActiveTerms {
+  included: Set<string>
+  excluded: Set<string>
+  accounts: Set<string>
+  excludedAccounts: Set<string>
+}
+
+export function activeTerms(query: string): ActiveTerms {
+  const parsed = parseTagSearch(query)
+  return {
+    included: new Set([...parsed.includeTags, ...parsed.orGroups.flat()]),
+    excluded: new Set(parsed.excludeTags),
+    accounts: new Set(parsed.accounts),
+    excludedAccounts: new Set(parsed.excludeAccounts),
+  }
+}

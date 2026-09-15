@@ -1,10 +1,12 @@
 import { describe, expect, it } from 'vitest'
 import {
+  activeTerms,
   addTagToQuery,
   excludeTagFromQuery,
   parseTagSearch,
   removeTagFromQuery,
   tagList,
+  toggleAccountInQuery,
   toggleRatingInQuery,
   toggleTagInQuery,
 } from './tag-utils'
@@ -172,6 +174,52 @@ describe('toggleRatingInQuery', () => {
     expect(parsed.includeUnrated).toBe(true)
     expect(parsed.ratings).toEqual(['q', 's'])
     expect(parsed.includeTags).toEqual(['cat'])
+  })
+})
+
+describe('activeTerms', () => {
+  it('reads included, excluded and or-grouped tags, plus accounts', () => {
+    const terms = activeTerms('cat dog or bird -mouse account:alice -account:eve')
+    expect(terms.included).toEqual(new Set(['cat', 'dog', 'bird']))
+    expect(terms.excluded).toEqual(new Set(['mouse']))
+    expect(terms.accounts).toEqual(new Set(['alice']))
+    expect(terms.excludedAccounts).toEqual(new Set(['eve']))
+  })
+
+  it('answers empty sets for an empty query', () => {
+    const terms = activeTerms('')
+    expect(terms.included.size).toBe(0)
+    expect(terms.excluded.size).toBe(0)
+    expect(terms.accounts.size).toBe(0)
+    expect(terms.excludedAccounts.size).toBe(0)
+  })
+})
+
+describe('toggleAccountInQuery', () => {
+  it('starts a query', () => {
+    expect(toggleAccountInQuery('', 'alice')).toBe('account:alice')
+  })
+
+  it('removes the only account, leaving the rest of the query', () => {
+    expect(toggleAccountInQuery('cat account:alice', 'alice')).toBe('cat')
+  })
+
+  it('rewrites the whole list when one account leaves it', () => {
+    expect(toggleAccountInQuery('account:alice,bob', 'alice')).toBe('account:bob')
+  })
+
+  it('leaves an exclusion untouched and adds beside it', () => {
+    expect(toggleAccountInQuery('-account:eve', 'alice')).toBe('-account:eve account:alice')
+  })
+
+  it('takes the exclusion out instead of contradicting it', () => {
+    expect(toggleAccountInQuery('cat -account:alice', 'alice')).toBe('cat')
+    expect(toggleAccountInQuery('-account:alice,eve', 'alice')).toBe('-account:eve')
+  })
+
+  it('keeps the case it is given', () => {
+    expect(toggleAccountInQuery('', 'Bob')).toBe('account:Bob')
+    expect(toggleAccountInQuery('account:Bob', 'Bob')).toBe('')
   })
 })
 

@@ -1,47 +1,4 @@
-# app-frame Specification
-
-## Purpose
-The frame every screen of the app is drawn in: a fixed set of regions, one inspector panel
-that appears in two places, one keyboard map, and one theme setting. Later features fill named
-slots in this frame instead of adding screens of their own.
-
-## Requirements
-
-### Requirement: The frame has fixed regions
-While a library is open the app SHALL present four regions — a navigation sidebar, a toolbar,
-a main content region, and an inspector panel — and SHALL keep the sidebar and the toolbar in
-place across every screen reached from the navigation. The sidebar SHALL name the open library
-and offer the actions that change which library is open.
-
-The sidebar SHALL collapse to an icon rail and expand again on request, and the window SHALL
-be movable by dragging a surface that is not a control on every screen. A control that only
-collapses or expands a region SHALL NOT present itself as a way to resize it: no region of the
-frame is resizable by dragging, so no edge of one SHALL show a resize affordance.
-
-#### Scenario: Moving between screens
-- **WHEN** the user moves from the library to the settings screen
-- **THEN** the sidebar and its library name stay in place and the main content region changes
-
-#### Scenario: No library open
-- **WHEN** no library is open
-- **THEN** the frame is not shown and the start screen occupies the window
-
-#### Scenario: The edge of the sidebar
-- **WHEN** the pointer rests on the edge between the sidebar and the main content region
-- **THEN** it is shown as something to click, not as something to drag, and clicking it collapses or expands the sidebar
-
-### Requirement: No control appears before it does something
-The app SHALL NOT present a control, menu entry or navigation item that performs no action,
-and SHALL NOT show a navigation item for a screen that does not exist. A region reserved for a
-feature that is not built SHALL be absent, not empty.
-
-#### Scenario: A feature that is not built
-- **WHEN** a screen or action for a capability the app does not yet have would appear
-- **THEN** nothing for it is rendered: no disabled control, no placeholder and no empty panel
-
-#### Scenario: Read-only stands in for an editor
-- **WHEN** a fact can be shown but not yet changed
-- **THEN** it is shown as text with no editing affordance
+## MODIFIED Requirements
 
 ### Requirement: One inspector panel, two placements
 The app SHALL show the facts of the current image in an inspector panel that is the same in
@@ -131,20 +88,3 @@ panel is inside it. A failed save SHALL keep the focus in the editor so the text
 - **WHEN** the focused card is in the first row and the up arrow is pressed
 - **THEN** the focus stays on that card and the grid does not scroll away
 
-### Requirement: Theme follows the system unless chosen
-The app SHALL offer three appearance settings — follow the system, light, dark — SHALL persist
-the choice outside the library folder, and SHALL apply it before the first frame is painted.
-While set to follow the system it SHALL react to the operating system changing appearance
-without a restart.
-
-#### Scenario: First launch
-- **WHEN** the app has never been given an appearance setting and the system is in dark mode
-- **THEN** the app opens dark, with no flash of the light palette
-
-#### Scenario: Chosen explicitly
-- **WHEN** the user picks light while the system is dark
-- **THEN** the app is light, and is still light after a restart
-
-#### Scenario: System changes while running
-- **WHEN** the setting is "follow the system" and the operating system switches to dark
-- **THEN** the app switches to dark without a restart

@@ -17,6 +17,7 @@ export function img(overrides: Partial<ImageRecord> = {}): ImageRecord {
     imageUrl: 'https://example.com/a.png',
     pageUrl: 'https://example.com/page',
     pageTitle: null,
+    account: null,
     adapter: null,
     rating: null,
     tags: [],

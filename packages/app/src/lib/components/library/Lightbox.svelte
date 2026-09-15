@@ -40,7 +40,7 @@
     actions: TrashActions
     /** Forwarded to the inspector, which edits here exactly as it does beside the grid. */
     tagQuery: string
-    onquery: (next: string) => void
+    onquery: (next: string, id: string) => void
     /**
      * Every image this viewer moves to. The grid behind it scrolls that index
      * into view, so closing does not jump to a row the user never saw it reach
@@ -283,10 +283,11 @@
         <!--
           A rating chosen with Enter or Space leaves the focus on that choice,
           where the next Space is the choice's own press and no longer closes
-          the viewer (item 3.1's hand check). The panel says when a choice was
-          made and the focus comes back to the surface Space is bound on
-          (design D4, amended). Beside the grid nothing is passed, so the
-          control keeps its focus there.
+          the viewer (item 3.1's hand check). Every completed action in the
+          panel — a rating, a tag save, a tag or account acted on as a search
+          term — says so through `onrelease`, and the focus comes back to the
+          surface Space is bound on (`app-frame` design D1, amended). Beside
+          the grid the grid's own card gets it instead.
         -->
         <Inspector
           image={image ?? null}
@@ -294,7 +295,7 @@
           {actions}
           {tagQuery}
           {onquery}
-          onrated={() => surface?.focus()}
+          onrelease={() => surface?.focus()}
         />
       </aside>
     {/if}

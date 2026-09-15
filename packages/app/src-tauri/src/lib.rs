@@ -179,6 +179,7 @@ pub fn run() {
             commands::set_grid_tile_size,
             commands::search,
             commands::search_ids,
+            commands::search_position,
             commands::tag_counts,
             commands::update_tags,
             commands::set_rating,

@@ -178,6 +178,12 @@ pub struct ImageRecord {
     pub image_url: Option<String>,
     pub page_url: Option<String>,
     pub page_title: Option<String>,
+    /// The X account `page_url` names, by the same rule the `account:` search
+    /// filter uses (`query::x_account`, `inspector-polish` design D4).
+    /// Derived at load time, never a column and never part of the sidecar —
+    /// a second source for this would let the filter and the display
+    /// disagree about what an image's account is.
+    pub account: Option<String>,
     /// What the capturing client's site adapter extracted, as received
     /// (design D11). Storage only in this schema: nothing derives tags, a
     /// rating or an artist from it yet.
@@ -885,6 +891,7 @@ mod tests {
             image_url: None,
             page_url: None,
             page_title: None,
+            account: None,
             adapter: None,
             rating: None,
             tags: Vec::new(),
