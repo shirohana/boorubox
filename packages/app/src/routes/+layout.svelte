@@ -17,7 +17,8 @@
   import UpdateDialog from '$lib/components/update/UpdateDialog.svelte'
   import { getCurrentWebview } from '@tauri-apps/api/webview'
   import { getCurrentWindow } from '@tauri-apps/api/window'
-  import { KEY_ZOOM_OUT, KEY_ZOOM_RESET, KEYS_ZOOM_IN } from '$lib/keyboard'
+  import { fullscreen } from '$lib/fullscreen.svelte'
+  import { KEY_FULLSCREEN, KEY_ZOOM_OUT, KEY_ZOOM_RESET, KEYS_ZOOM_IN } from '$lib/keyboard'
   import { isMacos } from '$lib/platform'
   import { applyTheme } from '$lib/theme.svelte'
   import { zoomBy } from '$lib/zoom'
@@ -97,6 +98,20 @@
     void zoomBy(direction)
   }
 
+  // F11 on every platform (design D2). Not guarded by the typing check either:
+  // F11 types nothing. `preventDefault` so the webview's own full-screen
+  // handling of the key does nothing on top of this.
+  function fullscreenKey(event: KeyboardEvent) {
+    if (event.key !== KEY_FULLSCREEN) return
+    event.preventDefault()
+    void fullscreen.toggle()
+  }
+
+  function windowKeys(event: KeyboardEvent) {
+    zoomKeys(event)
+    fullscreenKey(event)
+  }
+
   /**
    * Leaving macOS fullscreen (⌃⌘F) leaves the window itself as first responder:
    * the webview is no longer where keys go, and nothing on the page fires until
@@ -120,7 +135,11 @@
   }
 </script>
 
-<svelte:window onkeydown={zoomKeys} onblur={isMacos ? reclaimKeys : undefined} />
+<svelte:window
+  onkeydown={windowKeys}
+  onblur={isMacos ? reclaimKeys : undefined}
+  onresize={() => void fullscreen.refresh()}
+/>
 
 <!--
   Mounted unconditionally, not only once the library is open: a launch check

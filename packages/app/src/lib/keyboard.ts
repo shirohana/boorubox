@@ -30,6 +30,8 @@ export const KEY_TAB = 'Tab'
 export const KEYS_ZOOM_IN = ['=', '+']
 export const KEY_ZOOM_OUT = '-'
 export const KEY_ZOOM_RESET = '0'
+/** Enters or leaves full screen (`lib/fullscreen.svelte.ts`). Types nothing, so unguarded. */
+export const KEY_FULLSCREEN = 'F11'
 /** With Cmd/Ctrl: collapse or expand the sidebar. Bound by the sidebar provider, listed here. */
 export const KEY_SIDEBAR = 'b'
 /**
@@ -63,6 +65,7 @@ export const KEYBOARD_MAP: KeyBinding[] = [
   { where: 'Anywhere', keys: ['/'], action: 'Focus the tag search' },
   { where: 'Anywhere', keys: ['⌘ B'], action: 'Collapse or expand the sidebar' },
   { where: 'Anywhere', keys: ['⌘ =', '⌘ -', '⌘ 0'], action: 'Zoom in, zoom out, reset zoom' },
+  { where: 'Anywhere', keys: ['F11'], action: 'Enter or leave full screen' },
   { where: 'Search field', keys: ['Esc'], action: 'Leave the field' },
   { where: 'Grid', keys: ['←', '→', '↑', '↓'], action: 'Move the focused card' },
   { where: 'Grid', keys: ['Home', 'End'], action: 'Focus the first or last card' },

@@ -10,8 +10,12 @@
   // This reverses the first build's page-rendered band, whose argument was
   // that a frame-drawn bar would be empty on /settings. With the toggle in it
   // the bar is never empty, so that argument no longer holds.
+  import Maximize2Icon from '@lucide/svelte/icons/maximize-2'
+  import Minimize2Icon from '@lucide/svelte/icons/minimize-2'
+  import { Button } from '$lib/components/ui/button'
   import * as Sidebar from '$lib/components/ui/sidebar'
-  import { windowDragRegion } from '$lib/platform'
+  import { fullscreen } from '$lib/fullscreen.svelte'
+  import { isMacos, windowDragRegion } from '$lib/platform'
   import { frame } from './frame.svelte'
 </script>
 
@@ -29,4 +33,29 @@
 >
   <Sidebar.Trigger />
   {@render frame.toolbar?.()}
+  {#if !isMacos}
+    <!--
+      Windows only (design D3): macOS's window already draws a full-screen
+      control (the green traffic light), and a second one in the bar would
+      duplicate it (spec `app-frame`, "no second control on macOS"). It
+      belongs to the window, not to any one screen, so it lives here rather
+      than in a route's `frame.toolbar` — it has to be on /settings too.
+    -->
+    <Button
+      variant="ghost"
+      size="icon-sm"
+      class="ms-auto shrink-0"
+      type="button"
+      aria-pressed={fullscreen.active}
+      title="Full screen (F11)"
+      onclick={() => void fullscreen.toggle()}
+    >
+      {#if fullscreen.active}
+        <Minimize2Icon />
+      {:else}
+        <Maximize2Icon />
+      {/if}
+      <span class="sr-only">Full screen</span>
+    </Button>
+  {/if}
 </header>
