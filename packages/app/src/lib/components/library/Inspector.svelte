@@ -8,12 +8,14 @@
   import { errorText } from '$lib/api'
   import PostedLabel from '$lib/components/booru/PostedLabel.svelte'
   import UploadAction from '$lib/components/booru/UploadAction.svelte'
+  import PencilIcon from '@lucide/svelte/icons/pencil'
   import ExternalLink from '$lib/components/common/ExternalLink.svelte'
   import RatingControl from '$lib/components/tags/RatingControl.svelte'
   import TagInput from '$lib/components/tags/TagInput.svelte'
   import { Badge } from '$lib/components/ui/badge'
   import { Button } from '$lib/components/ui/button'
   import * as ContextMenu from '$lib/components/ui/context-menu'
+  import { Input } from '$lib/components/ui/input'
   import { formatBytes, formatTimestamp } from '$lib/domain/format'
   import { editorText } from '$lib/domain/tag-input'
   import {
@@ -24,6 +26,7 @@
     toggleAccountInQuery,
     toggleTagInQuery,
   } from '$lib/domain/tag-utils'
+  import { KEY_ENTER, KEY_ESCAPE } from '$lib/keyboard'
   import SelectionThumbs from './SelectionThumbs.svelte'
   import type { TrashActions } from './trash-actions'
 
@@ -176,6 +179,85 @@
     error = null
   })
 
+  // The facts form (design D3): editing state, one field per row. Kept apart
+  // from the tag editor's `draft` above — a facts save does not touch tags and
+  // must not reset that editor's dirty text.
+  let editingFacts = $state(false)
+  let draftTitle = $state('')
+  let draftPageUrl = $state('')
+  let draftImageUrl = $state('')
+  let factsSaving = $state(false)
+  let factsError = $state<string | null>(null)
+
+  // Changing the described image discards the facts draft (design D3): the
+  // image it was for is gone from the panel. Keyed on the id alone, not
+  // `updatedAt` — a save's own record replacement must not blow away the
+  // "leave editing mode" that just happened, and no other write touches facts.
+  let shownFactsId: string | undefined
+  $effect(() => {
+    const id = image?.id
+    if (id === shownFactsId) return
+    shownFactsId = id
+    editingFacts = false
+    factsError = null
+  })
+
+  function startEditFacts() {
+    if (!image) return
+    draftTitle = image.pageTitle ?? ''
+    draftPageUrl = image.pageUrl ?? ''
+    draftImageUrl = image.imageUrl ?? ''
+    factsError = null
+    editingFacts = true
+  }
+
+  function cancelEditFacts() {
+    editingFacts = false
+    factsError = null
+  }
+
+  /**
+   * Saves the title and the two addresses. `onrelease` fires only on success
+   * (design D3, the same rule `write` follows below): a refused address keeps
+   * the form open with the typed text so it can be fixed.
+   */
+  async function saveFacts() {
+    if (!image || factsSaving) return
+    factsSaving = true
+    factsError = null
+    try {
+      await results.saveFacts(image.id, {
+        pageTitle: draftTitle,
+        pageUrl: draftPageUrl,
+        imageUrl: draftImageUrl,
+      })
+      editingFacts = false
+      onrelease?.()
+    } catch (cause) {
+      factsError = errorText(cause)
+    } finally {
+      factsSaving = false
+    }
+  }
+
+  /**
+   * Enter saves, Escape cancels (design D3) — both `preventDefault`, since
+   * inside the viewer a native `<dialog>` would otherwise close on the same
+   * Escape (`Lightbox.svelte`'s `onkeydown` stands down once the key event
+   * already has a default prevented). `stopPropagation` on Escape too, so nothing
+   * else in the panel or the frame reads the same key press a second time.
+   */
+  function onFactsKeydown(event: KeyboardEvent) {
+    if (event.key === KEY_ENTER) {
+      event.preventDefault()
+      void saveFacts()
+    } else if (event.key === KEY_ESCAPE) {
+      event.preventDefault()
+      event.stopPropagation()
+      cancelEditFacts()
+    }
+  }
+
   /**
    * A tag save or removal, from the editor or the context menu. `onrelease`
    * fires only on success (design D1): a failed save leaves the focus in the
@@ -257,8 +339,21 @@
   {:else if !image}
     <p class="p-4 text-sm text-muted-foreground">No image selected</p>
   {:else}
-    <header class="border-b border-border px-4 py-3">
+    <header class="flex items-start justify-between gap-2 border-b border-border px-4 py-3">
       <h2 class="text-sm font-medium wrap-break-word">{title}</h2>
+      {#if !editingFacts}
+        <Button
+          type="button"
+          size="icon-xs"
+          variant="ghost"
+          class="shrink-0"
+          aria-label="Edit title and addresses"
+          title="Edit title and addresses"
+          onclick={startEditFacts}
+        >
+          <PencilIcon class="size-3" />
+        </Button>
+      {/if}
     </header>
 
     <dl class="grid grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-1.5 px-4 py-3 text-xs">
@@ -267,23 +362,70 @@
         blank; this row is the stored page title itself, which is often absent.
       -->
       <dt class="text-muted-foreground">Title</dt>
-      <dd class="wrap-break-word">{image.pageTitle ?? '—'}</dd>
+      {#if editingFacts}
+        <dd>
+          <Input
+            bind:value={draftTitle}
+            class="h-6 px-1.5 text-xs"
+            aria-label="Title"
+            onkeydown={onFactsKeydown}
+          />
+        </dd>
+      {:else}
+        <dd class="wrap-break-word">{image.pageTitle ?? '—'}</dd>
+      {/if}
 
       <dt class="text-muted-foreground">Source</dt>
       <dd class="wrap-break-word">{origin}</dd>
 
       <dt class="text-muted-foreground">Page</dt>
-      <!-- Wrapping, so `ExternalLink`'s failure line gets a row of its own. -->
-      <dd class="flex flex-wrap items-start gap-1 wrap-break-word">
-        <span class="min-w-0 flex-1 wrap-break-word">{image.pageUrl ?? '—'}</span>
-        <ExternalLink url={image.pageUrl} />
-      </dd>
+      {#if editingFacts}
+        <dd>
+          <Input
+            bind:value={draftPageUrl}
+            class="h-6 px-1.5 text-xs"
+            aria-label="Page address"
+            placeholder="https://…"
+            onkeydown={onFactsKeydown}
+          />
+        </dd>
+      {:else}
+        <!-- Wrapping, so `ExternalLink`'s failure line gets a row of its own. -->
+        <dd class="flex flex-wrap items-start gap-1 wrap-break-word">
+          <span class="min-w-0 flex-1 wrap-break-word">{image.pageUrl ?? '—'}</span>
+          <ExternalLink url={image.pageUrl} />
+        </dd>
+      {/if}
 
       <dt class="text-muted-foreground">Image</dt>
-      <dd class="flex flex-wrap items-start gap-1 wrap-break-word">
-        <span class="min-w-0 flex-1 wrap-break-word">{image.imageUrl ?? '—'}</span>
-        <ExternalLink url={image.imageUrl} />
-      </dd>
+      {#if editingFacts}
+        <dd>
+          <Input
+            bind:value={draftImageUrl}
+            class="h-6 px-1.5 text-xs"
+            aria-label="Image address"
+            placeholder="https://…"
+            onkeydown={onFactsKeydown}
+          />
+        </dd>
+      {:else}
+        <dd class="flex flex-wrap items-start gap-1 wrap-break-word">
+          <span class="min-w-0 flex-1 wrap-break-word">{image.imageUrl ?? '—'}</span>
+          <ExternalLink url={image.imageUrl} />
+        </dd>
+      {/if}
+
+      {#if editingFacts}
+        <div class="col-span-2 flex items-center justify-end gap-2 pt-0.5">
+          <Button size="xs" variant="outline" disabled={factsSaving} onclick={cancelEditFacts}>
+            Cancel
+          </Button>
+          <Button size="xs" disabled={factsSaving} onclick={saveFacts}>Save</Button>
+        </div>
+        {#if factsError}
+          <p class="col-span-2 text-destructive">{factsError}</p>
+        {/if}
+      {/if}
 
       <dt class="text-muted-foreground">Dimensions</dt>
       <dd>{image.width} × {image.height}</dd>

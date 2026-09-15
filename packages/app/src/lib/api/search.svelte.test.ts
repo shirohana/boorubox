@@ -349,3 +349,28 @@ it('replaces the record a rating change returns', async () => {
 
   expect(results.at(2)?.rating).toBe('q')
 })
+
+it('replaces the record a facts edit returns (`editable-info` design D2)', async () => {
+  mockIPC((cmd, args) => {
+    if (cmd === 'tag_counts') return noCounts
+    if (cmd === 'update_facts') {
+      const { id, edit } = args as {
+        id: string
+        edit: { pageTitle: string | null, pageUrl: string | null, imageUrl: string | null }
+      }
+      return img({ id, pageTitle: edit.pageTitle, pageUrl: edit.pageUrl, imageUrl: edit.imageUrl })
+    }
+    return pagedLibrary(3)(0)
+  })
+  const results = new SearchResults()
+  await results.run({ tagQuery: '', text: '' })
+
+  await results.saveFacts('image-1', {
+    pageTitle: 'A title',
+    pageUrl: 'https://x.com/alice/status/9',
+    imageUrl: null,
+  })
+
+  expect(results.at(1)?.pageTitle).toBe('A title')
+  expect(results.at(1)?.pageUrl).toBe('https://x.com/alice/status/9')
+})

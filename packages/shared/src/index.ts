@@ -141,6 +141,20 @@ export interface ImageRecord {
   posts: PostRef[]
 }
 
+/**
+ * What `updateFacts` sends (`editable-info` design D1). `null` and an empty
+ * string both mean "clear this field" — Rust trims and treats either the same
+ * way, so the form has no separate "clear" affordance to get out of sync with
+ * what typing nothing does. Every field is required (never `undefined`): Rust
+ * has no `#[serde(default)]` on these, since the whole form is always sent
+ * together.
+ */
+export interface FactsEdit {
+  pageTitle: string | null
+  pageUrl: string | null
+  imageUrl: string | null
+}
+
 export interface TagCountFilter {
   operator: '=' | '>' | '<' | '>=' | '<=' | 'range' | 'list'
   value?: number

@@ -18,15 +18,16 @@ use crate::error::{AppError, Result};
 use crate::library::{self, Library, SharedLibrary, with_library, with_library_if_open};
 use crate::model::{
     AppSettings, BooruConnectionTest, BooruSite, BooruUploadForm, BooruUploadOutcome, BundlePlan,
-    DeleteReport, ExportProgress, ExportReport, GRID_TILE_MAX, GRID_TILE_MIN, ImageCounts,
-    ImageRecord, ImportReport, LibraryStatus, ListenerStatus, Note, PostRef, RebuildProgress,
-    RebuildReport, RecentLibrary, Rule, RuleInput, RuleListEntry, RulesImportReport,
-    RulesRunReport, SearchRequest, SearchResult, SidecarsProgress, TagCount, TagCounts, Theme,
+    DeleteReport, ExportProgress, ExportReport, FactsEdit, GRID_TILE_MAX, GRID_TILE_MIN,
+    ImageCounts, ImageRecord, ImportReport, LibraryStatus, ListenerStatus, Note, PostRef,
+    RebuildProgress, RebuildReport, RecentLibrary, Rule, RuleInput, RuleListEntry,
+    RulesImportReport, RulesRunReport, SearchRequest, SearchResult, SidecarsProgress, TagCount,
+    TagCounts, Theme,
 };
 use crate::settings::Settings;
 use crate::{
-    AppState, OpenFailureKind, VERSION, booru, db, export, from_tauri, http, import, ingest, lock,
-    maintenance, notes, query, recover, rules, settings, tags, thumbs, trash,
+    AppState, OpenFailureKind, VERSION, booru, db, export, facts, from_tauri, http, import, ingest,
+    lock, maintenance, notes, query, recover, rules, settings, tags, thumbs, trash,
 };
 
 /// Progress while `import_paths` runs. The webview subscribes under this name;
@@ -435,6 +436,23 @@ pub async fn set_rating(
 ) -> Result<ImageRecord> {
     with_library_off_main_thread(&state.library, move |library| {
         tags::set_rating(library, &id, rating.as_deref())
+    })
+    .await
+}
+
+/// Title, page address and image address, the three facts a local import
+/// starts with none of (`editable-info` design D1). A non-empty address that
+/// is not `http`/`https` is refused; empty clears the field. Answers with the
+/// row as it now stands, so the webview can redraw it without re-running the
+/// search (design D2).
+#[tauri::command]
+pub async fn update_facts(
+    id: String,
+    edit: FactsEdit,
+    state: State<'_, AppState>,
+) -> Result<ImageRecord> {
+    with_library_off_main_thread(&state.library, move |library| {
+        facts::update(library, &id, &edit)
     })
     .await
 }
@@ -1891,6 +1909,30 @@ mod tests {
     }
 
     #[test]
+    fn update_facts_answers_with_the_row_it_changed_and_refuses_a_bad_address() {
+        let (_library, app) = app_with_library();
+        import(&app, &folder_of_images(1));
+        let id = ids_in_library(&app).remove(0);
+
+        let edit = FactsEdit {
+            page_title: Some("a title".to_string()),
+            page_url: Some("https://x.com/alice/status/9".to_string()),
+            image_url: None,
+        };
+        let record = now(update_facts(id.clone(), edit, app.state())).unwrap();
+        assert_eq!(record.page_title.as_deref(), Some("a title"));
+        assert_eq!(record.account.as_deref(), Some("alice"));
+
+        let bad = FactsEdit {
+            page_title: None,
+            page_url: Some("not a url".to_string()),
+            image_url: None,
+        };
+        let error = now(update_facts(id, bad, app.state())).unwrap_err();
+        assert!(matches!(error, AppError::BadRequest(_)), "{error:?}");
+    }
+
+    #[test]
     fn suggestions_and_counts_read_the_open_library() {
         let (_library, app) = app_with_library();
         import(&app, &folder_of_images(2));
@@ -1922,6 +1964,16 @@ mod tests {
             now(set_rating(
                 "no-such-id".to_string(),
                 Some("s".to_string()),
+                app.state(),
+            ))
+            .unwrap_err(),
+            now(update_facts(
+                "no-such-id".to_string(),
+                FactsEdit {
+                    page_title: Some("title".to_string()),
+                    page_url: None,
+                    image_url: None,
+                },
                 app.state(),
             ))
             .unwrap_err(),

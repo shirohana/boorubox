@@ -4,6 +4,7 @@ pub mod commands;
 pub mod db;
 pub mod error;
 pub mod export;
+pub mod facts;
 pub mod http;
 pub mod import;
 pub mod ingest;
@@ -183,6 +184,7 @@ pub fn run() {
             commands::tag_counts,
             commands::update_tags,
             commands::set_rating,
+            commands::update_facts,
             commands::tag_suggestions,
             commands::image_counts,
             commands::thumbnail_path,

@@ -207,6 +207,17 @@ pub struct ImageRecord {
     pub posts: Vec<PostRef>,
 }
 
+/// What `update_facts` takes (`editable-info` design D1): `None` and an empty
+/// string (after trimming) both mean "clear this field" — the webview's Save
+/// button has no way to tell the two apart once a user has emptied a field.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FactsEdit {
+    pub page_title: Option<String>,
+    pub page_url: Option<String>,
+    pub image_url: Option<String>,
+}
+
 /// The `tagcount:` comparison, as `parseTagSearch` emits it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum TagCountOperator {

@@ -10,6 +10,7 @@
 // answers about the same request.
 
 import type {
+  FactsEdit,
   GroupBy,
   GroupSlice,
   ImageRecord,
@@ -19,7 +20,7 @@ import type {
   TagCounts,
 } from '@boorubox/shared'
 import { parseTagSearch } from '$lib/domain/tag-utils'
-import { search, setRating, tagCounts, updateTags } from './commands'
+import { search, setRating, tagCounts, updateFacts, updateTags } from './commands'
 import { errorText } from './errors'
 
 /** Records per `search` call. */
@@ -178,6 +179,13 @@ export class SearchResults {
   /** Writes or clears one image's rating and redraws it (design D11). */
   async saveRating(id: string, rating: Rating | null): Promise<ImageRecord> {
     const record = await setRating(id, rating)
+    this.replace(record)
+    return record
+  }
+
+  /** Writes the title and the two addresses and redraws it (`editable-info` design D2). */
+  async saveFacts(id: string, edit: FactsEdit): Promise<ImageRecord> {
+    const record = await updateFacts(id, edit)
     this.replace(record)
     return record
   }

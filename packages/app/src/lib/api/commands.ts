@@ -11,6 +11,7 @@ import type {
   BundlePlan,
   DeleteReport,
   ExportReport,
+  FactsEdit,
   ImageCounts,
   ImageRecord,
   ImportReport,
@@ -200,6 +201,18 @@ export function updateTags(id: string, tags: string[]): Promise<ImageRecord> {
 /** `null` clears the rating. Anything but `g`/`s`/`q`/`e`/null is refused (D11). */
 export function setRating(id: string, rating: Rating | null): Promise<ImageRecord> {
   return invoke('set_rating', { id, rating })
+}
+
+/**
+ * Writes the title, page address and image address (`editable-info` design
+ * D1) and returns the row as it now stands, so the caller can redraw it
+ * without re-running the search (design D2) — the returned record's `account`
+ * follows a changed page address for free. A non-empty address that is not
+ * `http`/`https` is refused with a reason; the form stays open on the typed
+ * text either way, since nothing here is written.
+ */
+export function updateFacts(id: string, edit: FactsEdit): Promise<ImageRecord> {
+  return invoke('update_facts', { id, edit })
 }
 
 /**
