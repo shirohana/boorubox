@@ -9,6 +9,7 @@
   // state and the keys can never disagree. `↑` `↓` are the grid's row step and
   // therefore CLAMPED (design D5) — the asymmetry is deliberate and argued in
   // `navigation-math`.
+  import { flushSync, onDestroy } from 'svelte'
   import type { SearchResults } from '$lib/api'
   import { imageUrl } from '$lib/api'
   import { Button } from '$lib/components/ui/button'
@@ -23,10 +24,12 @@
     KEY_TAB,
     KEY_UP,
   } from '$lib/keyboard'
+  import { clickIntent, DOUBLE_CLICK_MS } from './click-intent'
   import { moveFocus } from './grid-focus'
   import Inspector from './Inspector.svelte'
   import { nextTabStop } from './tab-cycle'
   import type { TrashActions } from './trash-actions'
+  import { fitScale, panOffset, zoomStep, zoomTarget, type Point, type Size } from './viewer-zoom'
 
   interface Props {
     results: SearchResults
@@ -69,12 +72,62 @@
   let surface = $state<HTMLDivElement | null>(null)
   /** The image is fitted into this; the empty space around it closes the viewer (design D4). */
   let stage = $state<HTMLDivElement | null>(null)
+  /**
+   * The inset box the image is fitted into and panned inside (design D4). Its
+   * measured size, not the stage's, is what `fitScale`/`zoomTarget`/`panOffset`
+   * see, so the margin around the image (Tailwind's `inset-6`, 24px — `design
+   * D4`'s `PAN_MARGIN_PX`) is never itself part of the picture.
+   */
+  let viewport = $state<HTMLDivElement | null>(null)
+
+  /** Shown or hidden by a click on the image or by Tab; reset per mount, i.e. per open (D1). */
+  let chrome = $state(false)
+  /**
+   * `null` reads as "at the fit": the fit itself depends on the natural size
+   * of whichever image is showing, so resetting the zoom on `move()` is
+   * forgetting the last scale rather than recomputing one (design D3).
+   */
+  let scale = $state<number | null>(null)
+  /** Set from the `<img>`'s `load` event; `null` until then (see Handoff). */
+  let naturalSize = $state<Size | null>(null)
+  let viewportWidth = $state(0)
+  let viewportHeight = $state(0)
+  /** The last pointer position inside the viewport, the pan anchor (design D5). */
+  let pointer = $state<Point | null>(null)
 
   const image = $derived(results.at(index))
   const src = $derived(image && libraryPath ? imageUrl(libraryPath, image) : null)
   const title = $derived(image?.pageTitle || image?.imageUrl || image?.id || '')
   const previous = $derived(offsetIndexBounded(index, -1, results.total))
   const next = $derived(offsetIndexBounded(index, 1, results.total))
+
+  const viewportSize = $derived<Size | null>(
+    viewportWidth > 0 && viewportHeight > 0
+      ? { width: viewportWidth, height: viewportHeight }
+      : null,
+  )
+  /** Whether the image's natural size and the viewport are both known yet — see Handoff. */
+  const measured = $derived(naturalSize !== null && viewportSize !== null)
+  const fit = $derived(naturalSize && viewportSize ? fitScale(naturalSize, viewportSize) : 1)
+  const displayScale = $derived(scale ?? fit)
+  /**
+   * Whether the image overflows its viewport — the one question both the
+   * double click and the pan ask. Not `scale !== null`: a wheel step down
+   * clamps to the fit as a *number*, and a double click there has to zoom in
+   * rather than toggle back to the fit it is already at.
+   */
+  const zoomed = $derived(displayScale > fit)
+  const content = $derived<Size | null>(
+    naturalSize
+      ? { width: naturalSize.width * displayScale, height: naturalSize.height * displayScale }
+      : null,
+  )
+  const offset = $derived<Point>(
+    content && viewportSize && pointer ? panOffset(pointer, viewportSize, content) : { x: 0, y: 0 },
+  )
+  const imgStyle = $derived(
+    content ? `width:${content.width}px;height:${content.height}px;transform:translate(${offset.x}px,${offset.y}px)` : '',
+  )
 
   $effect(() => {
     dialog?.showModal()
@@ -88,9 +141,81 @@
   function move(destination: number | null) {
     if (destination === null) return
     index = destination
+    // Design D3: moving on returns the zoom to the fit; the fit itself
+    // depends on the new image's natural size, which is not known until its
+    // own `load` event.
+    scale = null
+    naturalSize = null
     results.ensureRange(destination, destination + 1)
     onmove(destination)
   }
+
+  function onimgload(event: Event) {
+    const el = event.currentTarget as HTMLImageElement
+    naturalSize = { width: el.naturalWidth, height: el.naturalHeight }
+  }
+
+  function updatePointer(event: { clientX: number, clientY: number }) {
+    if (!viewport) return
+    const rect = viewport.getBoundingClientRect()
+    pointer = { x: event.clientX - rect.left, y: event.clientY - rect.top }
+  }
+
+  function toggleZoom(event: MouseEvent) {
+    updatePointer(event)
+    if (zoomed) {
+      scale = null
+    } else if (naturalSize && viewportSize) {
+      scale = zoomTarget(naturalSize, viewportSize)
+    }
+  }
+
+  function onviewportwheel(event: WheelEvent) {
+    // Always taken, even before the image is measured: otherwise the page
+    // behind scrolls out from under the still-loading picture.
+    event.preventDefault()
+    // A trackpad's horizontal swipe reports `deltaY === 0`: no notch in either
+    // direction. Read as one, a sideways swipe shrinks the zoom.
+    if (event.deltaY === 0) return
+    if (!naturalSize || !viewportSize) return
+    updatePointer(event)
+    scale = zoomStep(displayScale, event.deltaY < 0 ? 1 : -1, fit)
+  }
+
+  function onviewportpointermove(event: PointerEvent) {
+    // Only while zoomed: at the fit there is no overflow to pan, so every move
+    // would cost a `getBoundingClientRect` (a forced layout) and a style write
+    // to arrive back at the same centred image. The gestures that zoom set the
+    // anchor from their own event, so nothing is stale on the way in.
+    if (!zoomed) return
+    updatePointer(event)
+  }
+
+  /** Design D2: a click's `detail` and whether one is pending decide the gesture. */
+  let singleClickTimer: ReturnType<typeof setTimeout> | null = null
+
+  function onimageclick(event: MouseEvent) {
+    const intent = clickIntent(event.detail, singleClickTimer !== null)
+    if (intent === 'schedule') {
+      // A click far enough from the last one restarts the engine's `detail`
+      // count, so a second `detail === 1` can arrive while one is pending:
+      // without this its timer is unreachable and the bar toggles twice, a
+      // flash 250ms apart.
+      if (singleClickTimer !== null) clearTimeout(singleClickTimer)
+      singleClickTimer = setTimeout(() => {
+        singleClickTimer = null
+        chrome = !chrome
+      }, DOUBLE_CLICK_MS)
+    } else if (intent === 'double') {
+      if (singleClickTimer !== null) clearTimeout(singleClickTimer)
+      singleClickTimer = null
+      toggleZoom(event)
+    }
+  }
+
+  onDestroy(() => {
+    if (singleClickTimer !== null) clearTimeout(singleClickTimer)
+  })
 
   /**
    * The controls Tab may land on, in document order: `Previous`, `Next`,
@@ -114,11 +239,16 @@
    * check). So the cycle is walked here, over the dialog's own tabbable
    * elements, which is the one form that behaves the same in both engines
    * (design D2, amended).
+   *
+   * `offsetParent !== null` drops stops inside the hidden chrome (design D1):
+   * the bar is hidden with the `hidden` attribute rather than opacity for
+   * exactly this — `display: none` clears `offsetParent`, so its buttons
+   * leave the cycle the same keystroke that would otherwise land on them.
    */
   function trapTab(event: KeyboardEvent) {
     if (!surface) return
     const stops = [...surface.querySelectorAll<HTMLElement>(TAB_STOPS)]
-      .filter((stop) => stop.tabIndex >= 0)
+      .filter((stop) => stop.tabIndex >= 0 && stop.offsetParent !== null)
     const active = document.activeElement
     const from = active instanceof Node
       ? stops.findIndex((stop) => stop === active || stop.contains(active))
@@ -140,6 +270,14 @@
     // being typed. The suggestion list still wins — it prevents Tab's default,
     // which the guard above reads.
     if (event.key === KEY_TAB) {
+      // Design D6: Tab reveals the chrome before it moves the focus, so the
+      // first Tab lands on Previous rather than on a bar that is not there
+      // yet. `flushSync` forces the `hidden` attribute off before `trapTab`
+      // reads `offsetParent` on the same keystroke.
+      if (!chrome) {
+        chrome = true
+        flushSync()
+      }
       trapTab(event)
       return
     }
@@ -177,10 +315,13 @@
     // later, so without this the tile's own double click closes it again.
     if (event.detail > 1) return
     // Design D4: the dark region is the `::backdrop`, whose clicks target the
-    // `<dialog>`, and the empty space around the image inside the transparent
-    // box. A click on either lands on that element itself; a click on the
+    // `<dialog>`; the margin between the stage's edge and the viewport box;
+    // and, inside the viewport box, the space beside a centred image that is
+    // not zoomed to fill it — the box forwards those the same way, because a
+    // click there lands on the box itself, not the image. A click on the
     // image, the chrome or the inspector lands on a descendant and stays there.
-    if (event.target === dialog || event.target === stage) dialog?.close()
+    const target = event.target
+    if (target === dialog || target === stage || target === viewport) dialog?.close()
   }
 </script>
 
@@ -201,75 +342,112 @@
   -->
   <div bind:this={surface} tabindex="-1" class="flex h-full min-h-0 gap-3 outline-none">
     <div class="flex min-w-0 flex-1 flex-col">
-      <!-- Minimal chrome: the image is what the viewer is for. -->
-      <!-- The dialog reaches the window's top edge, where the traffic lights are (D13). -->
-      <header
-        class="
-          flex items-center justify-between gap-3 px-1 py-2 text-white
-          in-data-[platform=macos]:ps-16
-        "
-      >
-        <div class="min-w-0">
-          <p class="truncate text-sm">{title}</p>
-          <p class="text-xs text-white/60">
-            {(index + 1).toLocaleString()} of {results.total.toLocaleString()}
-          </p>
-        </div>
-        <div class="flex shrink-0 items-center gap-1">
-          <Button
-            size="sm"
-            variant="ghost"
-            class="text-white hover:bg-white/15 hover:text-white"
-            disabled={previous === null}
-            onclick={() => move(previous)}
-          >
-            Previous
-          </Button>
-          <Button
-            size="sm"
-            variant="ghost"
-            class="text-white hover:bg-white/15 hover:text-white"
-            disabled={next === null}
-            onclick={() => move(next)}
-          >
-            Next
-          </Button>
-          <Button
-            size="sm"
-            variant="ghost"
-            class="text-white hover:bg-white/15 hover:text-white"
-            aria-pressed={mode === 'inspect'}
-            onclick={() => (mode = mode === 'inspect' ? 'gallery' : 'inspect')}
-          >
-            Info
-          </Button>
-          <Button
-            size="sm"
-            variant="ghost"
-            class="text-white hover:bg-white/15 hover:text-white"
-            onclick={() => dialog?.close()}
-          >
-            Close
-          </Button>
-        </div>
-      </header>
-
       <!--
-        The image is fitted to whatever space is left, so opening the inspector
-        refits it rather than cropping it (design D10).
+        The image is fitted to the whole stage (design D1): the chrome floats
+        over it in the corner instead of taking a row of its own, and the
+        dialog reaches the window's top edge, where the traffic lights are
+        (D13) — cleared by shifting the bar, not by padding a header that no
+        longer spans the width.
       -->
-      <div bind:this={stage} class="flex min-h-0 min-w-0 flex-1 items-center justify-center">
-        {#if src}
-          <!-- Undraggable for the same reason as the tile's thumbnail (design D1). -->
-          <img
-            {src}
-            alt={title}
-            draggable="false"
-            class="max-h-full max-w-full object-contain"
-          />
-        {:else}
-          <p class="text-sm text-white/60">Loading…</p>
-        {/if}
+      <div bind:this={stage} class="relative flex min-h-0 min-w-0 flex-1">
+        <!--
+          The inset box the image is fitted into and panned inside; the strip
+          between this and the stage's edge is the margin (design D4). A click
+          that lands on this box itself — not the image — closes the viewer,
+          same as a click on the stage (`onclick` above).
+        -->
+        <!--
+          Wheel and pointer position are mouse-only by design (Non-Goals: no
+          touch, no keyboard zoom); Tab already reaches the chrome without it.
+        -->
+        <!-- svelte-ignore a11y_no_static_element_interactions -->
+        <div
+          bind:this={viewport}
+          bind:clientWidth={viewportWidth}
+          bind:clientHeight={viewportHeight}
+          onwheel={onviewportwheel}
+          onpointermove={onviewportpointermove}
+          class="absolute inset-6 flex items-center justify-center overflow-hidden"
+        >
+          {#if src}
+            <!--
+              Undraggable for the same reason as the tile's thumbnail (design
+              D1). The click toggling the chrome or the zoom is mouse-only,
+              same as the div above; the image is not a control.
+            -->
+            <!-- svelte-ignore a11y_click_events_have_key_events -->
+            <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
+            <img
+              {src}
+              alt={title}
+              draggable="false"
+              onload={onimgload}
+              onclick={onimageclick}
+              class={measured ? 'max-w-none' : 'max-h-full max-w-full object-contain'}
+              style={measured ? imgStyle : undefined}
+            />
+          {:else}
+            <p class="text-sm text-white/60">Loading…</p>
+          {/if}
+        </div>
+
+        <!--
+          The bar (design D1): title, counter and the four buttons, hidden by
+          default and shown by a click on the image (via `onimageclick`,
+          design D2) or by Tab. `hidden`, not opacity — see `trapTab`.
+        -->
+        <header
+          hidden={!chrome}
+          class="
+            absolute top-2 left-2 z-10 flex max-w-[calc(100%-1rem)] items-center gap-3 rounded-lg
+            bg-black/70 px-2.5 py-1.5 text-white backdrop-blur-sm
+            in-data-[platform=macos]:left-16 in-data-[platform=macos]:max-w-[calc(100%-4.5rem)]
+          "
+        >
+          <div class="min-w-0">
+            <p class="truncate text-sm">{title}</p>
+            <p class="text-xs text-white/60">
+              {(index + 1).toLocaleString()} of {results.total.toLocaleString()}
+            </p>
+          </div>
+          <div class="flex shrink-0 items-center gap-1">
+            <Button
+              size="xs"
+              variant="ghost"
+              class="text-white hover:bg-white/15 hover:text-white"
+              disabled={previous === null}
+              onclick={() => move(previous)}
+            >
+              Previous
+            </Button>
+            <Button
+              size="xs"
+              variant="ghost"
+              class="text-white hover:bg-white/15 hover:text-white"
+              disabled={next === null}
+              onclick={() => move(next)}
+            >
+              Next
+            </Button>
+            <Button
+              size="xs"
+              variant="ghost"
+              class="text-white hover:bg-white/15 hover:text-white"
+              aria-pressed={mode === 'inspect'}
+              onclick={() => (mode = mode === 'inspect' ? 'gallery' : 'inspect')}
+            >
+              Info
+            </Button>
+            <Button
+              size="xs"
+              variant="ghost"
+              class="text-white hover:bg-white/15 hover:text-white"
+              onclick={() => dialog?.close()}
+            >
+              Close
+            </Button>
+          </div>
+        </header>
       </div>
     </div>
 
