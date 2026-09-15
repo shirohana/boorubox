@@ -139,18 +139,18 @@
 }
 
 /*
-  The sidebar is a column that scrolls up and down and never sideways: a
-  sideways scroll dragged the padding out from under the tag list and pressed
-  the names against the window's edge, and everything in there truncates or
-  wraps on its own. `scrollbar-gutter: stable` keeps the scrollbar's width
-  reserved while the list is short enough not to need one, so toggling a tag or
-  a rating cannot reflow the column (with macOS overlay scrollbars the gutter is
-  zero and nothing moves either way). Two selectors, because the copy-in's
-  content wrapper — upstream code, left unedited — and the filters region
-  mounted inside it are both scroll containers.
+  The tag list is the sidebar's one scrolling region (`sidebar-layout` design
+  D1): a sideways scroll dragged the padding out from under it and pressed the
+  names against the window's edge, and everything in there truncates or wraps
+  on its own. `scrollbar-gutter: stable` keeps the scrollbar's width reserved
+  while the list is short enough not to need one, so toggling a tag or a rating
+  cannot reflow the column (with macOS overlay scrollbars the gutter is zero
+  and nothing moves either way). Two selectors, because the copy-in's content
+  wrapper — upstream code, left unedited — and the tag list mounted inside it
+  are both scroll containers.
 */
 [data-slot='sidebar-content'],
-[data-sidebar='filters'] {
+[data-sidebar='tags'] {
   overflow-x: hidden;
   scrollbar-gutter: stable;
 }

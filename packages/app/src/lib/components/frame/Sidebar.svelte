@@ -83,23 +83,18 @@
 >
   <Sidebar.Content class="p-2">
     <!--
-      The filters region, filled by whichever route has a result set to describe
-      (`frame.filters`). Collapsed to the icon rail there is no room for a list
-      of names, so it is hidden rather than clipped — the same rule the library
-      footer follows.
+      The sidebar region, filled by whichever route has a result set to
+      describe (`frame.sidebar`). Collapsed to the icon rail there is no room
+      for a list of names, so it is hidden rather than clipped — the same rule
+      the library footer follows. A plain flex column with no scroll of its own
+      (`sidebar-layout` design D1): search, rating and filter sections are
+      natural height, and only `TagSidebar`'s own section — the one that can
+      outgrow the panel — scrolls, via the `data-sidebar="tags"` hook in
+      app.css.
     -->
-    {#if frame.filters}
-      <!--
-        `data-sidebar="filters"` is the hook app.css scrolls this region by: its
-        rules sit beside the copy-in content wrapper's, which cannot be reached
-        from a class here. Dropping the attribute drops the scrollbar gutter and
-        the sideways-scroll clip with it.
-      -->
-      <div
-        data-sidebar="filters"
-        class="min-h-0 flex-1 overflow-y-auto group-data-[collapsible=icon]:hidden"
-      >
-        {@render frame.filters()}
+    {#if frame.sidebar}
+      <div class="flex min-h-0 flex-1 flex-col group-data-[collapsible=icon]:hidden">
+        {@render frame.sidebar()}
       </div>
       <Sidebar.Separator class="my-2 group-data-[collapsible=icon]:hidden" />
     {/if}

@@ -1,8 +1,8 @@
 <script lang="ts">
-  // Slot Toolbar · view (design D17): the order and the grouping, beside the
-  // tile-size slider. Both are part of the search request, so choosing one
-  // re-runs the query rather than re-arranging what is on screen (design D6,
-  // D7).
+  // Slot Sidebar · filter (design D17), under a `Filter` heading
+  // (`sidebar-layout` design D3): the order and the grouping. Both are part of
+  // the search request, so choosing one re-runs the query rather than
+  // re-arranging what is on screen (design D6, D7).
   import type { GroupBy, Sort } from '@boorubox/shared'
   import * as Select from '$lib/components/ui/select'
 
@@ -45,31 +45,37 @@
   const groupLabel = $derived(GROUPS.find((option) => option.key === group)?.label ?? '')
 </script>
 
-<Select.Root
-  type="single"
-  value={sortKey}
-  onValueChange={(key) => {
-    const picked = SORTS.find((option) => option.key === key)
-    if (picked) onsort(picked.sort)
-  }}
->
-  <Select.Trigger size="sm" class="w-36 shrink-0" aria-label="Sort">{sortLabel}</Select.Trigger>
-  <Select.Content>
-    {#each offered as option (option.key)}
-      <Select.Item value={option.key} label={option.label}>{option.label}</Select.Item>
-    {/each}
-  </Select.Content>
-</Select.Root>
+<section class="p-2">
+  <h2 class="px-1 pb-1 text-xs font-medium text-muted-foreground">Filter</h2>
 
-<Select.Root
-  type="single"
-  value={group}
-  onValueChange={(key) => ongroup(key as GroupBy)}
->
-  <Select.Trigger size="sm" class="w-32 shrink-0" aria-label="Group">{groupLabel}</Select.Trigger>
-  <Select.Content>
-    {#each GROUPS as option (option.key)}
-      <Select.Item value={option.key} label={option.label}>{option.label}</Select.Item>
-    {/each}
-  </Select.Content>
-</Select.Root>
+  <div class="flex flex-col gap-1">
+    <Select.Root
+      type="single"
+      value={sortKey}
+      onValueChange={(key) => {
+        const picked = SORTS.find((option) => option.key === key)
+        if (picked) onsort(picked.sort)
+      }}
+    >
+      <Select.Trigger size="sm" class="w-full" aria-label="Sort">{sortLabel}</Select.Trigger>
+      <Select.Content>
+        {#each offered as option (option.key)}
+          <Select.Item value={option.key} label={option.label}>{option.label}</Select.Item>
+        {/each}
+      </Select.Content>
+    </Select.Root>
+
+    <Select.Root
+      type="single"
+      value={group}
+      onValueChange={(key) => ongroup(key as GroupBy)}
+    >
+      <Select.Trigger size="sm" class="w-full" aria-label="Group">{groupLabel}</Select.Trigger>
+      <Select.Content>
+        {#each GROUPS as option (option.key)}
+          <Select.Item value={option.key} label={option.label}>{option.label}</Select.Item>
+        {/each}
+      </Select.Content>
+    </Select.Root>
+  </div>
+</section>

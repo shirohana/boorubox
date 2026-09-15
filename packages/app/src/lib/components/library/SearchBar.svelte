@@ -1,9 +1,10 @@
 <script lang="ts">
   // Two inputs, not one (design D14): a bare word in the tag box is a tag, which
   // is the legacy syntax, so free text over page title and URLs needs its own
-  // box. In the toolbar band there is no room for labels above them, so the
-  // placeholders carry the distinction and `aria-label` carries it to a screen
-  // reader.
+  // box. Stacked in the sidebar (`sidebar-layout` design D2) there is no room
+  // for the example syntax in the placeholder either, so it moves to the tag
+  // field's `title` and shows on hover instead; `aria-label` still carries the
+  // text field's purpose to a screen reader.
   //
   // There is no Search button: the query runs after a typing pause and on
   // Enter, so a button would only ever repeat a search that had already run.
@@ -56,46 +57,55 @@
   $effect(() => () => clearTimeout(timer))
 </script>
 
-<!--
-  The floor, not `min-w-0`: the fields are `flex-1` on a zero basis, so with no
-  floor they were the first thing in the band to give and at a half-screen
-  window with a selection they shrank to two empty rings. The selection row is
-  the one that gives instead (it scrolls). Two fields share the floor, so each
-  keeps about enough for a word.
--->
-<form
-  class="flex min-w-56 flex-1 items-center gap-2"
-  onsubmit={(event) => {
-    event.preventDefault()
-    searchNow()
-  }}
->
-  <!-- Slot Toolbar · search: the same editor the inspector uses (design D17). -->
-  <TagInput
-    id="tag-query"
-    class="h-8 min-w-0 flex-1"
-    label="Tags"
-    bind:value={tagQuery}
-    oninput={searchAfterPause}
-    onsubmit={searchNow}
-    onescape={leaveOnEscape}
-    placeholder="Tags — cat -dog · cat or dog · rating:s,q"
-  />
+<section class="p-2">
+  <h2 class="px-1 pb-1 text-xs font-medium text-muted-foreground">Search</h2>
 
-  <Input
-    id="text-query"
-    class="h-8 min-w-0 flex-1"
-    aria-label="Page title or URL"
-    bind:value={text}
-    oninput={searchAfterPause}
-    onkeydown={leaveOnEscape}
-    placeholder="Page title or URL"
-    autocomplete="off"
-    autocorrect="off"
-    spellcheck={false}
-  />
+  <form
+    class="flex flex-col gap-1"
+    onsubmit={(event) => {
+      event.preventDefault()
+      searchNow()
+    }}
+  >
+    <!--
+      Slot Sidebar · search: the same editor the inspector uses (design D17).
+      `multiline` (`sidebar-layout` design D2): the sidebar is narrower than
+      the old toolbar band, so a long query wraps instead of scrolling
+      sideways out of view. The wrapping `title` is what carries the example
+      syntax now that the placeholder is too short to hold it — a title on an
+      ancestor with none of its own is what the field's tooltip falls back to.
+    -->
+    <div title="cat -dog · cat or dog · rating:s,q">
+      <TagInput
+        id="tag-query"
+        class="max-h-32 min-h-7 text-xs"
+        label="Tags"
+        multiline
+        bind:value={tagQuery}
+        oninput={searchAfterPause}
+        onsubmit={searchNow}
+        onescape={leaveOnEscape}
+        placeholder="Tags"
+      />
+    </div>
 
-  {#if tagQuery || text}
-    <Button type="button" size="sm" variant="ghost" onclick={clear}>Clear</Button>
-  {/if}
-</form>
+    <Input
+      id="text-query"
+      class="h-7 text-xs"
+      aria-label="Page title or URL"
+      bind:value={text}
+      oninput={searchAfterPause}
+      onkeydown={leaveOnEscape}
+      placeholder="Title or URL"
+      autocomplete="off"
+      autocorrect="off"
+      spellcheck={false}
+    />
+
+    {#if tagQuery || text}
+      <Button type="button" size="sm" variant="ghost" class="self-end" onclick={clear}>
+        Clear
+      </Button>
+    {/if}
+  </form>
+</section>

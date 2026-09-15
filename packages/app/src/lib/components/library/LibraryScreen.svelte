@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { untrack } from 'svelte'
+  import { tick, untrack } from 'svelte'
   // The library screen, drawn against one of two sets of images (`trash` design
   // D1). `/` renders it over the library and `/trash` over the trash; the grid,
   // the search, the viewer, the inspector and the selection are the same
@@ -50,6 +50,7 @@
   import ViewControls from './ViewControls.svelte'
   import { Button } from '$lib/components/ui/button'
   import { Slider } from '$lib/components/ui/slider'
+  import { useSidebar } from '$lib/components/ui/sidebar'
   import { isInDialog, isTypingTarget, KEY_ESCAPE, KEY_SEARCH, KEY_SELECT_ALL } from '$lib/keyboard'
 
   let { view }: { view: 'library' | 'trash' } = $props()
@@ -59,6 +60,13 @@
   // between them — `SearchResults` says the same thing about its own field.
   // svelte-ignore state_referenced_locally
   const results = new SearchResults(view)
+
+  // The `/` shortcut's way to expand a collapsed sidebar before it focuses the
+  // tag query (`sidebar-layout` design D4). Read once, during initialisation,
+  // because `useSidebar` reads Svelte's component context and cannot be called
+  // later from inside `screenKeys` — the provider is `+layout.svelte`'s, an
+  // ancestor of this screen.
+  const sidebarState = useSidebar()
 
   /**
    * The focus, the anchor and the selection, which are one state machine
@@ -415,10 +423,20 @@
     if (lightboxOpen || isTypingTarget(event) || isInDialog(event)) return
 
     if (event.key === KEY_SEARCH) {
-      const field = document.getElementById('tag-query')
-      if (!(field instanceof HTMLInputElement)) return
       event.preventDefault()
-      field.focus()
+      // Collapsed to the icon rail the field is `display: none`
+      // (`group-data-[collapsible=icon]:hidden`), so the sidebar has to expand
+      // first; `tick` waits for that state change to reach the DOM before the
+      // focus call can land on a field that is still hidden (design D4). The
+      // sidebar's tag field is a textarea (`multiline`, design D2), unlike the
+      // inspector's — either element type is a valid focus target.
+      sidebarState.setOpen(true)
+      void tick().then(() => {
+        const field = document.getElementById('tag-query')
+        if (field instanceof HTMLInputElement || field instanceof HTMLTextAreaElement) {
+          field.focus()
+        }
+      })
       return
     }
 
@@ -441,16 +459,16 @@
     }
   }
 
-  // The route's controls in the frame's top bar and its filters region, for as
-  // long as this route is mounted (see `frame.svelte.ts`). The sidebar's
-  // filters are absent rather than empty on every other screen, which is what
-  // unsetting them here means.
+  // The route's controls in the frame's top bar and its sidebar region, for as
+  // long as this route is mounted (see `frame.svelte.ts`). The frame's sidebar
+  // slot is absent rather than empty on every other screen, which is what
+  // unsetting it here means.
   $effect(() => {
     frame.toolbar = toolbar
-    frame.filters = filters
+    frame.sidebar = sidebar
     return () => {
       frame.toolbar = null
-      frame.filters = null
+      frame.sidebar = null
     }
   })
 
@@ -460,22 +478,6 @@
 <svelte:window onkeydown={screenKeys} />
 
 {#snippet toolbar()}
-  <SearchBar bind:tagQuery bind:text onsearch={runSearch} />
-
-  <ViewControls
-    view={results.view}
-    sort={results.sort}
-    group={results.group}
-    onsort={(sort) => {
-      selection.reset()
-      void results.setSort(sort)
-    }}
-    ongroup={(group) => {
-      selection.reset()
-      void results.setGroup(group)
-    }}
-  />
-
   <Slider
     type="single"
     class="w-24 shrink-0"
@@ -502,7 +504,9 @@
 
   <!--
     Design D6: the selection replaces this row's actions and nothing else. The
-    search fields and the view controls above stay where they are.
+    tile size and the inspector toggle above stay where they are — the search
+    and the order controls moved out to the sidebar (`sidebar-layout` design
+    D5), which is the room this row now has for a selection at a narrow window.
   -->
   {#if selection.count > 0}
     <SelectionToolbar
@@ -525,13 +529,16 @@
   {/if}
 {/snippet}
 
-{#snippet filters()}
+{#snippet sidebar()}
   <!--
-    Slot Sidebar · filters. Both panels stay mounted while a search runs:
+    Slot Sidebar · sidebar (`sidebar-layout` design D1, D5): Search, Rating,
+    Tags, Filter, top to bottom. The panels stay mounted while a search runs:
     unmounting them flickers the whole region on every click. Blank counts
     (`null`) are still honest (design D8) — the last query's numbers never
     show, only their own headings do until the new counts arrive.
   -->
+  <SearchBar bind:tagQuery bind:text onsearch={runSearch} />
+
   <RatingPills
     counts={results.counts?.ratings ?? null}
     {tagQuery}
@@ -541,6 +548,20 @@
     tags={results.counts?.tags ?? null}
     {tagQuery}
     onquery={(next) => void searchKeeping(next, focused?.id)}
+  />
+
+  <ViewControls
+    view={results.view}
+    sort={results.sort}
+    group={results.group}
+    onsort={(sort) => {
+      selection.reset()
+      void results.setSort(sort)
+    }}
+    ongroup={(group) => {
+      selection.reset()
+      void results.setGroup(group)
+    }}
   />
 {/snippet}
 

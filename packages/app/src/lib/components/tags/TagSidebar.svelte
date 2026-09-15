@@ -48,7 +48,15 @@
   })
 </script>
 
-<section class="min-h-0 p-2">
+<!--
+  The sidebar's one flexible section (`sidebar-layout` design D1): it takes
+  whatever height Search, Rating and Filter leave and scrolls on its own.
+  `data-sidebar="tags"` is the hook app.css scrolls it by — its rules sit
+  beside the copy-in content wrapper's, which cannot be reached from a class
+  here. Dropping the attribute drops the scrollbar gutter and the
+  sideways-scroll clip with it.
+-->
+<section data-sidebar="tags" class="min-h-0 flex-1 overflow-y-auto p-2">
   <h2 class="px-1 pb-1 text-xs font-medium text-muted-foreground">Tags</h2>
 
   {#if listed && listed.length === 0}
