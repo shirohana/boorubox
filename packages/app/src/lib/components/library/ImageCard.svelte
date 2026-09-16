@@ -135,6 +135,35 @@
     return selected ? selection.ids() : [image.id]
   }
 
+  /** The trigger, for the card's tab stop the closed menu hands the focus to. */
+  let tile = $state<HTMLDivElement | null>(null)
+  /** The menu's own element while it is open, to tell its focus from another control's. */
+  let menu = $state<HTMLElement | null>(null)
+
+  /**
+   * Where the focus goes when the menu closes. bits-ui returns it to the
+   * trigger only when the trigger is tabbable, and this one is a
+   * `tabindex="-1"` div; failing that, to whatever was focused before the menu
+   * opened, which a right-click never set. Either way the focus landed
+   * outside the grid, where none of its keys are bound, and the arrows, Space
+   * and `i` were dead after every menu action. The card's own tab stop takes
+   * it instead; `focusin` then makes this tile current, as a click would.
+   *
+   * Only when the focus is orphaned — on `<body>`, or still on an item of the
+   * menu that is going away. A menu closed by a click elsewhere is closed on
+   * the pointer's release, after the mousedown has already focused what was
+   * clicked: another tile, the search field. That focus is the user's and
+   * stays; pulling it back here made a right-click on one tile and a click
+   * on the next land on the first again between the two.
+   */
+  function onmenuclose(event: Event) {
+    const active = document.activeElement
+    const orphaned = !active || active === document.body || menu?.contains(active)
+    if (!orphaned) return
+    event.preventDefault()
+    tile?.querySelector<HTMLElement>('[data-card-focus]')?.focus()
+  }
+
   const collectionTarget: CollectionTarget = {
     resolveIds: resolveCollectionIds,
     memberships: () => collectionMemberships,
@@ -181,7 +210,7 @@
   <ContextMenu.Trigger class="group/tile relative aspect-square">
     {#snippet child({ props })}
       <!-- A class written here is replaced: {...props} carries the trigger's merged class. -->
-      <div onfocusin={onfocus} {...props}>
+      <div bind:this={tile} onfocusin={onfocus} {...props}>
         {#if !image}
           <div class="h-full rounded-lg border border-border bg-muted/40 {ring}">
             <span class="sr-only">Loading</span>
@@ -415,7 +444,7 @@
   </ContextMenu.Trigger>
 
   <!-- The menu acts on this tile's image, whatever the inspector is showing. -->
-  <ContextMenu.Content>
+  <ContextMenu.Content bind:ref={menu} onCloseAutoFocus={onmenuclose}>
     <!--
       `ContextMenu.GroupHeading` reads a `Menu.Group` context and throws
       without one (bits-ui 2.19) — the group is what makes the heading, and so
