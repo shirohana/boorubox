@@ -377,6 +377,21 @@ export interface TagCounts {
    * their own.
    */
   collections: CollectionCount[]
+  /**
+   * Every account of the request's view — including one with no matches —
+   * when `group` is `x-account`; empty otherwise, since the rail this backs
+   * is shown only then and the pass over every page address is not free
+   * enough to run when it is not shown.
+   *
+   * Each count drops the query's own `account:`/`-account:` clause and
+   * honours everything else — the rating pills' rule (design D8 of
+   * `tags-and-ratings`, "how many if I switched"), applied to accounts:
+   * while `account:alice` narrows the search, `bob`'s count still answers
+   * what he would give if the search switched to him. Ordered by count
+   * descending then handle ascending, the order `GroupSlice`s for an account
+   * grouping already use.
+   */
+  accounts: GroupSlice[]
 }
 
 export interface ImageCounts {

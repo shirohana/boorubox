@@ -692,14 +692,15 @@
   </div>
 
   <!--
-    Slot Grid · rail (`browse-feedback` design D9): the accounts of the result,
-    only while it is grouped by them. Between the grid and the inspector, and
-    the grid gives up the width — the inspector's own stays as it is.
+    Slot Grid · rail (`browse-feedback` design D9, `account-rail-counts` D2):
+    every account of the view with what it would give, only while grouped by
+    account. Between the grid and the inspector, and the grid gives up the
+    width — the inspector's own stays as it is.
   -->
   {#if results.group === 'x-account'}
     <aside class="w-48 shrink-0 overflow-y-auto border-s border-border">
       <AccountRail
-        groups={results.groups}
+        accounts={results.counts?.accounts ?? null}
         {tagQuery}
         onquery={(next) => void searchKeeping(next, focused?.id)}
       />

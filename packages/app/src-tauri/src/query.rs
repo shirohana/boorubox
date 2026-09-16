@@ -118,6 +118,12 @@ pub fn tag_counts(conn: &Connection, req: &SearchRequest) -> Result<TagCounts> {
         // what I am looking at is in this collection" is the same narrowing
         // question, not the pill's sideways one.
         collections: Plan::for_request(req, RatingClause::Included).collection_counts(conn)?,
+        // The account rail asks the pills' question, not the tag list's: how
+        // many would `bob` show if the search switched to him, `account:alice`
+        // notwithstanding. `for_account_counts` also skips the whole pass when
+        // the request is not grouped by account, so an ungrouped search never
+        // pays for it.
+        accounts: Plan::for_account_counts(req).account_counts(conn)?,
     })
 }
 
@@ -135,6 +141,11 @@ struct Plan {
     /// Group key and size ordering, ahead of the sort (design D7). `None` when
     /// nothing is grouped, which is also what makes `groups` empty.
     group_order: Option<&'static str>,
+    /// The view's own predicate (`view_predicate`), kept alongside `ctes`
+    /// rather than re-derived: `account_counts` needs it outside `matched`, to
+    /// restrict the every-account scan without re-running the rest of the
+    /// filter.
+    view: &'static str,
     sort: String,
     params: Vec<Value>,
 }
@@ -181,7 +192,24 @@ const DUPLICATE_KEYS_BY_KEY: &str = "group_key";
 
 impl Plan {
     fn for_request(req: &SearchRequest, rating: RatingClause) -> Plan {
-        let filter = compile(req, rating);
+        Plan::compiled(req, compile(req, rating, AccountClause::Included))
+    }
+
+    /// A plan for the account rail (design accounts-in-tag-counts): the account
+    /// clause dropped so `bob` still shows a count while `account:alice` is in
+    /// effect, everything else — rating included — honoured, same as
+    /// `for_request`'s default.
+    fn for_account_counts(req: &SearchRequest) -> Plan {
+        Plan::compiled(
+            req,
+            compile(req, RatingClause::Included, AccountClause::Dropped),
+        )
+    }
+
+    /// The CTEs, row source and group order a compiled `filter` produces —
+    /// shared by every `Plan` constructor so the grouping match arms exist
+    /// exactly once, whatever the filter was compiled with.
+    fn compiled(req: &SearchRequest, filter: Filter) -> Plan {
         let matched = format!(
             "WITH matched AS (SELECT {MATCHED_COLUMNS} FROM images WHERE {})",
             filter.sql()
@@ -205,6 +233,7 @@ impl Plan {
             ctes,
             rows,
             group_order,
+            view: view_predicate(req.view),
             sort: sort_sql(req.sort),
             params: filter.params,
         }
@@ -252,6 +281,34 @@ impl Plan {
         let mut stmt = conn.prepare(&format!(
             "{} SELECT group_key, group_size FROM slices ORDER BY {order}",
             self.ctes
+        ))?;
+        let slices = stmt.query_map(params_from_iter(&self.params), |row| {
+            Ok(GroupSlice {
+                key: row.get(0)?,
+                count: row.get(1)?,
+            })
+        })?;
+        Ok(slices.collect::<rusqlite::Result<_>>()?)
+    }
+
+    /// Every account of the request's view, zero-matches included, counted
+    /// with the account clause dropped (design accounts-in-tag-counts) —
+    /// `for_account_counts` builds `self` for exactly this. Empty whenever the
+    /// request is not grouped by account: `slices` is only ever a group of
+    /// accounts when `group_order` is `ACCOUNTS_LARGEST_FIRST`, and this is
+    /// also the rail's own visibility rule, so nothing is skipped that the
+    /// rail would have shown.
+    fn account_counts(&self, conn: &Connection) -> Result<Vec<GroupSlice>> {
+        if self.group_order != Some(ACCOUNTS_LARGEST_FIRST) {
+            return Ok(Vec::new());
+        }
+        let mut stmt = conn.prepare(&format!(
+            "{} SELECT a.handle, COALESCE(s.group_size, 0)
+             FROM (SELECT DISTINCT x_account(page_url) AS handle FROM images
+                   WHERE {} AND x_account(page_url) IS NOT NULL) AS a
+             LEFT JOIN slices AS s ON s.group_key = a.handle
+             ORDER BY 2 DESC, 1",
+            self.ctes, self.view
         ))?;
         let slices = stmt.query_map(params_from_iter(&self.params), |row| {
             Ok(GroupSlice {
@@ -416,20 +473,43 @@ enum RatingClause {
     Dropped,
 }
 
-fn compile(req: &SearchRequest, rating: RatingClause) -> Filter {
+/// Whether the `account:`/`-account:` clause is part of the compiled filter.
+/// The account rail (`account-rail-counts` design D1) is the one caller that
+/// drops it: `bob`'s count in the rail has to answer "how many would I get if
+/// I switched to him", the same sideways question `RatingClause::Dropped`
+/// answers for a rating pill, so `account:alice` in the search cannot also
+/// zero out every other account's row.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum AccountClause {
+    Included,
+    Dropped,
+}
+
+/// `images.deleted_at IS NULL` for the library, `IS NOT NULL` for the trash —
+/// the one predicate `req.view` ever compiles to. Factored out so
+/// `Plan::account_counts`'s every-account scan reads the same string
+/// `compile` puts in `matched`, rather than a second copy that could drift
+/// from it.
+fn view_predicate(view: SearchView) -> &'static str {
+    match view {
+        SearchView::Library => "images.deleted_at IS NULL",
+        SearchView::Trash => "images.deleted_at IS NOT NULL",
+    }
+}
+
+fn compile(req: &SearchRequest, rating: RatingClause, accounts: AccountClause) -> Filter {
     let query = &req.query;
     let mut filter = Filter::default();
 
-    match req.view {
-        SearchView::Library => filter.add("images.deleted_at IS NULL"),
-        SearchView::Trash => filter.add("images.deleted_at IS NOT NULL"),
-    }
+    filter.add(view_predicate(req.view));
     if rating == RatingClause::Included {
         push_rating(&mut filter, query);
     }
     push_file_types(&mut filter, query);
     push_tag_count(&mut filter, query);
-    push_accounts(&mut filter, query);
+    if accounts == AccountClause::Included {
+        push_accounts(&mut filter, query);
+    }
     push_collections(&mut filter, query);
     push_tags(&mut filter, query);
     push_text(&mut filter, &req.text);
@@ -2070,6 +2150,117 @@ mod tests {
             tag_pairs(&by_account),
             vec![("onsite".to_string(), 1)],
             "`offsite` is on a page the grouping does not admit",
+        );
+    }
+
+    fn account_pairs(counts: &TagCounts) -> Vec<(String, i64)> {
+        counts
+            .accounts
+            .iter()
+            .map(|slice| (slice.key.clone(), slice.count))
+            .collect()
+    }
+
+    /// The account rail's own half of `tag_counts`: nothing to show when there
+    /// is no rail, so an ungrouped request skips the whole pass over every
+    /// page address.
+    #[test]
+    fn accounts_is_empty_when_the_request_is_not_grouped_by_account() {
+        let fixture = accounts();
+
+        let counts = counts(&fixture, &request(ParsedTagSearch::default()));
+
+        assert!(counts.accounts.is_empty());
+    }
+
+    /// `alice` keeps two of her three when `cat` narrows the search and `bob`
+    /// keeps his one, but `carol` — matching nothing — still gets a row at
+    /// zero: the rail's whole point is to say what she would give if the
+    /// search switched to her.
+    #[test]
+    fn grouped_by_account_a_tag_search_lists_every_account_zero_included() {
+        let fixture = accounts();
+        crate::tags::update_tags(&fixture.library, "a1", &["cat".to_string()]).unwrap();
+        crate::tags::update_tags(&fixture.library, "a2", &["cat".to_string()]).unwrap();
+        crate::tags::update_tags(&fixture.library, "b1", &["cat".to_string()]).unwrap();
+
+        let counts = counts(
+            &fixture,
+            &SearchRequest {
+                group: GroupBy::XAccount,
+                ..request(ParsedTagSearch {
+                    include_tags: vec!["cat".into()],
+                    ..Default::default()
+                })
+            },
+        );
+
+        assert_eq!(
+            account_pairs(&counts),
+            vec![
+                ("alice".to_string(), 2),
+                ("bob".to_string(), 1),
+                ("carol".to_string(), 0),
+            ],
+        );
+    }
+
+    /// Design D8's "how many if I switched", applied to accounts:
+    /// `account:alice` narrows what `search` returns, but the rail still
+    /// answers what every other account would give if the search switched to
+    /// them.
+    #[test]
+    fn grouped_by_account_the_accounts_own_filter_is_dropped_for_the_rail() {
+        let fixture = accounts();
+        let req = SearchRequest {
+            group: GroupBy::XAccount,
+            ..request(ParsedTagSearch {
+                accounts: vec!["alice".into()],
+                ..Default::default()
+            })
+        };
+
+        let counts = counts(&fixture, &req);
+        let result = search(&fixture.library.conn, &req).unwrap();
+
+        assert_eq!(
+            account_pairs(&counts),
+            vec![
+                ("alice".to_string(), 3),
+                ("bob".to_string(), 1),
+                ("carol".to_string(), 1),
+            ],
+            "every account's own count, `account:alice` notwithstanding",
+        );
+        assert_eq!(
+            result.total, 3,
+            "the search itself still honours account:alice"
+        );
+    }
+
+    /// The rail describes the view it was asked for: a trashed page's account
+    /// shows up in the trash's rail and an untrashed one's does not, however
+    /// many images that account has elsewhere.
+    #[test]
+    fn the_trash_views_rail_lists_only_accounts_of_trashed_images() {
+        let fixture = accounts();
+        mark_deleted(&fixture.library.conn, "a1", 1);
+        mark_deleted(&fixture.library.conn, "a2", 2);
+        mark_deleted(&fixture.library.conn, "b1", 3);
+
+        let counts = counts(
+            &fixture,
+            &SearchRequest {
+                view: SearchView::Trash,
+                group: GroupBy::XAccount,
+                ..request(ParsedTagSearch::default())
+            },
+        );
+
+        assert_eq!(
+            account_pairs(&counts),
+            vec![("alice".to_string(), 2), ("bob".to_string(), 1)],
+            "carol's only image was never trashed",
         );
     }
 

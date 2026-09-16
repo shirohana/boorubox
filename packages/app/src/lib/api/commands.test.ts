@@ -343,6 +343,7 @@ it('tag_counts wraps the same request as search in a `req` argument', async () =
     tags: [{ name: 'cat', count: 3 }],
     ratings: { g: 0, s: 3, q: 0, e: 1, unrated: 2 },
     collections: [],
+    accounts: [],
   }
   const calls = spyIPC(counts)
   await expect(tagCounts(request)).resolves.toEqual(counts)

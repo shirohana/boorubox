@@ -19,6 +19,7 @@ const noCounts: TagCounts = {
   tags: [],
   ratings: { g: 0, s: 0, q: 0, e: 0, unrated: 0 },
   collections: [],
+  accounts: [],
 }
 
 /**
@@ -256,6 +257,7 @@ it('asks for the counts of the query it just ran', async () => {
     tags: [{ name: 'cat', count: 3 }],
     ratings: { g: 1, s: 2, q: 0, e: 0, unrated: 4 },
     collections: [],
+    accounts: [],
   })
   const results = new SearchResults()
   await results.run({ tagQuery: 'cat', text: 'kitten' })
@@ -271,7 +273,12 @@ it('asks for the counts of the query it just ran', async () => {
 })
 
 it('clears the counts when the query changes', async () => {
-  spyIPC(empty, { tags: [{ name: 'cat', count: 3 }], ratings: noCounts.ratings, collections: [] })
+  spyIPC(empty, {
+    tags: [{ name: 'cat', count: 3 }],
+    ratings: noCounts.ratings,
+    collections: [],
+    accounts: [],
+  })
   const results = new SearchResults()
   await results.run({ tagQuery: 'cat', text: '' })
   expect(results.counts).not.toBeNull()
@@ -290,9 +297,19 @@ it('discards counts from a query that was superseded while they were in flight',
   const current = results.run({ tagQuery: 'dog', text: '' })
 
   replies[2]({ images: [], total: 0, groups: [] })
-  replies[3]({ tags: [{ name: 'dog', count: 9 }], ratings: noCounts.ratings, collections: [] })
+  replies[3]({
+    tags: [{ name: 'dog', count: 9 }],
+    ratings: noCounts.ratings,
+    collections: [],
+    accounts: [],
+  })
   replies[0]({ images: [], total: 0, groups: [] })
-  replies[1]({ tags: [{ name: 'cat', count: 1 }], ratings: noCounts.ratings, collections: [] })
+  replies[1]({
+    tags: [{ name: 'cat', count: 1 }],
+    ratings: noCounts.ratings,
+    collections: [],
+    accounts: [],
+  })
   await Promise.all([stale, current])
 
   expect(results.counts?.tags).toEqual([{ name: 'dog', count: 9 }])

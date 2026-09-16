@@ -1,7 +1,10 @@
 <script lang="ts">
-  // Design D9: a `TagSidebar`-shaped list fed by the result's own groups.
-  // Rust already orders them largest first, so this never sorts what it is
-  // given.
+  // A `TagSidebar`-shaped list of every account in the view (`account-rail-
+  // counts` design D2), counted with the search's own account terms set aside
+  // — the rating pills' sideways question, so an included account leaves the
+  // others listed with what they would give. Rust orders largest first; the
+  // only sort here moves the search's own accounts to the front, stable, so
+  // that order holds within each half.
   import type { GroupSlice } from '@boorubox/shared'
   import MinusIcon from '@lucide/svelte/icons/minus'
   import PlusIcon from '@lucide/svelte/icons/plus'
@@ -13,23 +16,42 @@
   } from '$lib/domain/tag-utils'
 
   interface Props {
-    groups: GroupSlice[]
+    /** `null` while a search runs: the rows stay, their numbers go blank. */
+    accounts: GroupSlice[] | null
     tagQuery: string
     onquery: (next: string) => void
   }
 
-  let { groups, tagQuery, onquery }: Props = $props()
+  let { accounts, tagQuery, onquery }: Props = $props()
 
   // Design D3: the one reader for "is this term active", shared with the
   // tag sidebar and the inspector.
   const terms = $derived(activeTerms(tagQuery))
+  const isActive = (handle: string) =>
+    terms.accounts.has(handle) || terms.excludedAccounts.has(handle)
+
+  /**
+   * The last answer's rows, kept through the next search: counts are `null`
+   * for the length of every search, and rows drawn from `null` unmount, which
+   * throws the rail's scroll position away under the row just clicked — the
+   * reset `CollectionsSection` had. The numbers are blank meanwhile.
+   */
+  let lastHandles: string[] = []
+  const rows = $derived.by((): { handle: string, count: number | null }[] => {
+    if (!accounts) return lastHandles.map((handle) => ({ handle, count: null }))
+    lastHandles = accounts.map((account) => account.key)
+    return accounts.map((account) => ({ handle: account.key, count: account.count }))
+  })
+  const listed = $derived(
+    [...rows].sort((a, b) => Number(isActive(b.handle)) - Number(isActive(a.handle))),
+  )
 </script>
 
 <div class="p-2">
   <h2 class="px-1 pb-1 text-xs font-medium text-muted-foreground">Accounts</h2>
 
   <ul class="flex flex-col gap-0.5">
-    {#each groups as { key, count } (key)}
+    {#each listed as { handle: key, count } (key)}
       <li
         class="
           flex items-center gap-1 rounded-md px-1 text-xs
@@ -67,7 +89,7 @@
         >
           {key}
         </button>
-        <span class="shrink-0 text-muted-foreground tabular-nums">{count}</span>
+        <span class="shrink-0 text-muted-foreground tabular-nums">{count ?? ''}</span>
       </li>
     {/each}
   </ul>
