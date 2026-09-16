@@ -60,12 +60,15 @@ export function coverScale(natural: Size, viewport: Size): number {
 /**
  * The scale a click zooms to: the cover, or — when the image's aspect matches
  * the viewport's exactly, so the cover coincides with the fit — twice the
- * fit, so the click always visibly zooms.
+ * fit, so the click always visibly zooms; either way capped at `ceiling`
+ * times the fit (`click-zoom-ceiling` design D2). Capping the twice-the-fit
+ * fallback too is what makes a ceiling below 2 honest: a user who set 1.5×
+ * gets 1.5× on every image, not just the ones whose cover already overflows.
  */
-export function clickTarget(natural: Size, viewport: Size): number {
+export function clickTarget(natural: Size, viewport: Size, ceiling: number): number {
   const fit = fitScale(natural, viewport)
   const cover = coverScale(natural, viewport)
-  return cover > fit ? cover : 2 * fit
+  return Math.min(cover > fit ? cover : 2 * fit, ceiling * fit)
 }
 
 /**

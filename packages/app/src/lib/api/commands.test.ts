@@ -15,7 +15,12 @@ import type {
   SearchRequest,
   TagCounts,
 } from '@boorubox/shared'
-import { GRID_TILE_DEFAULT, GRID_TILE_MAX } from '@boorubox/shared'
+import {
+  CLICK_ZOOM_CEILING_DEFAULT,
+  CLICK_ZOOM_CEILING_MAX,
+  GRID_TILE_DEFAULT,
+  GRID_TILE_MAX,
+} from '@boorubox/shared'
 import { img } from '$lib/domain/image-fixture'
 import { clearMocks, mockIPC } from '@tauri-apps/api/mocks'
 import { afterEach, expect, it, vi } from 'vitest'
@@ -53,6 +58,7 @@ import {
   search,
   searchIds,
   selectionTagCounts,
+  setClickZoomCeilingPercent,
   setCollectionsCollapsed,
   setGridTileSize,
   setListenerPort,
@@ -147,6 +153,7 @@ it('app_settings takes no arguments', async () => {
   const settings: AppSettings = {
     theme: 'system',
     gridTileSize: GRID_TILE_DEFAULT,
+    clickZoomCeilingPercent: CLICK_ZOOM_CEILING_DEFAULT,
     notesCollapsed: false,
     collectionsCollapsed: false,
     openLastOnLaunch: true,
@@ -160,6 +167,7 @@ it('set_theme passes the theme and returns the settings', async () => {
   const settings: AppSettings = {
     theme: 'dark',
     gridTileSize: GRID_TILE_DEFAULT,
+    clickZoomCeilingPercent: CLICK_ZOOM_CEILING_DEFAULT,
     notesCollapsed: false,
     collectionsCollapsed: false,
     openLastOnLaunch: true,
@@ -173,6 +181,7 @@ it('set_grid_tile_size passes the size', async () => {
   const calls = spyIPC({
     theme: 'system',
     gridTileSize: GRID_TILE_MAX,
+    clickZoomCeilingPercent: CLICK_ZOOM_CEILING_DEFAULT,
     notesCollapsed: false,
     collectionsCollapsed: false,
     openLastOnLaunch: true,
@@ -181,10 +190,24 @@ it('set_grid_tile_size passes the size', async () => {
   expect(calls).toHaveBeenCalledWith('set_grid_tile_size', { size: 10_000 })
 })
 
+it('set_click_zoom_ceiling_percent passes the percent', async () => {
+  const calls = spyIPC({
+    theme: 'system',
+    gridTileSize: GRID_TILE_DEFAULT,
+    clickZoomCeilingPercent: CLICK_ZOOM_CEILING_MAX,
+    notesCollapsed: false,
+    collectionsCollapsed: false,
+    openLastOnLaunch: true,
+  })
+  await setClickZoomCeilingPercent(10_000)
+  expect(calls).toHaveBeenCalledWith('set_click_zoom_ceiling_percent', { percent: 10_000 })
+})
+
 it('set_notes_collapsed passes the flag and returns the settings', async () => {
   const settings: AppSettings = {
     theme: 'system',
     gridTileSize: GRID_TILE_DEFAULT,
+    clickZoomCeilingPercent: CLICK_ZOOM_CEILING_DEFAULT,
     notesCollapsed: true,
     collectionsCollapsed: false,
     openLastOnLaunch: true,
@@ -198,6 +221,7 @@ it('set_collections_collapsed passes the flag and returns the settings', async (
   const settings: AppSettings = {
     theme: 'system',
     gridTileSize: GRID_TILE_DEFAULT,
+    clickZoomCeilingPercent: CLICK_ZOOM_CEILING_DEFAULT,
     notesCollapsed: false,
     collectionsCollapsed: true,
     openLastOnLaunch: true,
@@ -211,6 +235,7 @@ it('set_open_last_on_launch passes the flag and returns the settings', async () 
   const settings: AppSettings = {
     theme: 'system',
     gridTileSize: GRID_TILE_DEFAULT,
+    clickZoomCeilingPercent: CLICK_ZOOM_CEILING_DEFAULT,
     notesCollapsed: false,
     collectionsCollapsed: false,
     openLastOnLaunch: false,

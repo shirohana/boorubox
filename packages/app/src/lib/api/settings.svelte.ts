@@ -1,6 +1,7 @@
 import type { AppSettings, Theme } from '@boorubox/shared'
 import {
   appSettings,
+  setClickZoomCeilingPercent,
   setCollectionsCollapsed,
   setGridTileSize,
   setNotesCollapsed,
@@ -40,6 +41,14 @@ class Settings {
   /** Rust clamps the size, so the stored value is what comes back, not `size`. */
   async setGridTileSize(size: number): Promise<void> {
     this.current = await setGridTileSize(size)
+  }
+
+  /**
+   * Rust clamps the percent, so the stored value is what comes back, not
+   * `percent` (`click-zoom-ceiling` design D4).
+   */
+  async setClickZoomCeilingPercent(percent: number): Promise<void> {
+    this.current = await setClickZoomCeilingPercent(percent)
   }
 
   /** Folds the sidebar's notes panel away, or unfolds it (`notes` design D13). */

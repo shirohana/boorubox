@@ -110,6 +110,14 @@ export function setGridTileSize(size: number): Promise<AppSettings> {
 }
 
 /**
+ * Clamped by Rust to `CLICK_ZOOM_CEILING_MIN`…`CLICK_ZOOM_CEILING_MAX`, never
+ * refused (`click-zoom-ceiling` design D4).
+ */
+export function setClickZoomCeilingPercent(percent: number): Promise<AppSettings> {
+  return invoke('set_click_zoom_ceiling_percent', { percent })
+}
+
+/**
  * Whether the app reopens the remembered library automatically at launch
  * (`launch-screen` design D3). Takes effect at the next launch.
  */

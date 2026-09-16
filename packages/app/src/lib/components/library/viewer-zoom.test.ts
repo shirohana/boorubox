@@ -41,7 +41,10 @@ describe('clickTarget', () => {
   it('zooms to the cover when the cover overflows the fit', () => {
     const natural = { width: 4000, height: 3000 }
     const viewport = { width: 1500, height: 900 }
-    expect(clickTarget(natural, viewport)).toBeCloseTo(coverScale(natural, viewport))
+    // A ceiling of 8, the wheel's own ceiling, is well above every cover
+    // below: it never binds, so these two answers are unchanged from before
+    // the ceiling argument existed.
+    expect(clickTarget(natural, viewport, 8)).toBeCloseTo(coverScale(natural, viewport))
   })
 
   it('zooms to twice the fit when the aspect matches the viewport exactly', () => {
@@ -51,7 +54,38 @@ describe('clickTarget', () => {
     const viewport = { width: 1500, height: 900 }
     const fit = fitScale(natural, viewport)
     expect(coverScale(natural, viewport)).toBeCloseTo(fit)
-    expect(clickTarget(natural, viewport)).toBeCloseTo(2 * fit)
+    expect(clickTarget(natural, viewport, 8)).toBeCloseTo(2 * fit)
+  })
+
+  it('stops a portrait image at the ceiling rather than covering the width', () => {
+    // 1000x3000 in 1500x900: the fit is 0.3 and the cover 1.5, five times the
+    // fit — past every ceiling the slider offers.
+    const natural = { width: 1000, height: 3000 }
+    const viewport = { width: 1500, height: 900 }
+    expect(clickTarget(natural, viewport, 1.5)).toBeCloseTo(0.45)
+    expect(clickTarget(natural, viewport, 3.5)).toBeCloseTo(1.05)
+    expect(clickTarget(natural, viewport, 5)).toBeCloseTo(coverScale(natural, viewport))
+  })
+
+  it('caps a small image at the ceiling rather than its cover', () => {
+    const natural = { width: 400, height: 300 }
+    const viewport = { width: 1500, height: 900 }
+    expect(clickTarget(natural, viewport, 1.5)).toBeCloseTo(1.5)
+  })
+
+  it('holds a wide image under the ceiling, and lets a raised ceiling reach its cover', () => {
+    // 4000x1000 in 1500x900: the fit is 0.375 and the cover 0.9, two and two
+    // fifths of the fit — over a ceiling of 1.5, under one of 3.
+    const natural = { width: 4000, height: 1000 }
+    const viewport = { width: 1500, height: 900 }
+    expect(clickTarget(natural, viewport, 1.5)).toBeCloseTo(0.5625)
+    expect(clickTarget(natural, viewport, 3)).toBeCloseTo(0.9)
+  })
+
+  it('caps the matched-aspect fallback too, not only the cover branch', () => {
+    const natural = { width: 3000, height: 1800 }
+    const viewport = { width: 1500, height: 900 }
+    expect(clickTarget(natural, viewport, 1.5)).toBeCloseTo(0.75)
   })
 })
 

@@ -1,6 +1,14 @@
 <script lang="ts">
   import type { RebuildReport, Theme } from '@boorubox/shared'
-  import { GRID_TILE_DEFAULT, GRID_TILE_MAX, GRID_TILE_MIN } from '@boorubox/shared'
+  import {
+    CLICK_ZOOM_CEILING_DEFAULT,
+    CLICK_ZOOM_CEILING_MAX,
+    CLICK_ZOOM_CEILING_MIN,
+    CLICK_ZOOM_CEILING_STEP,
+    GRID_TILE_DEFAULT,
+    GRID_TILE_MAX,
+    GRID_TILE_MIN,
+  } from '@boorubox/shared'
   import ChevronsUpDownIcon from '@lucide/svelte/icons/chevrons-up-down'
   import {
     appUpdate,
@@ -57,6 +65,11 @@
   // The slider follows the drag; the setting is written on release (design
   // D11), so this local copy is what the thumb sits on until then.
   let tileSize = $state(settings.current?.gridTileSize ?? GRID_TILE_DEFAULT)
+  // Same shape as `tileSize`: the slider follows the drag, the setting is
+  // written on release (design D4, copied from D11).
+  let clickZoomCeiling = $state(
+    settings.current?.clickZoomCeilingPercent ?? CLICK_ZOOM_CEILING_DEFAULT,
+  )
   let error = $state<string | null>(null)
   // Only the two outcomes the "About" section has to say anything extra for
   // (design D4): `available` replaces Check with an Update control of its
@@ -124,6 +137,16 @@
     try {
       await settings.setGridTileSize(size)
       tileSize = settings.current?.gridTileSize ?? size
+    } catch (cause) {
+      error = errorText(cause)
+    }
+  }
+
+  async function commitClickZoom(percent: number) {
+    error = null
+    try {
+      await settings.setClickZoomCeilingPercent(percent)
+      clickZoomCeiling = settings.current?.clickZoomCeilingPercent ?? percent
     } catch (cause) {
       error = errorText(cause)
     }
@@ -389,6 +412,22 @@
           step={10}
           bind:value={tileSize}
           onValueCommit={commitTileSize}
+        />
+      </div>
+
+      <div class="flex flex-col gap-2">
+        <label class="text-sm text-muted-foreground" for="click-zoom">
+          Click zoom — up to {clickZoomCeiling / 100}× the fit
+        </label>
+        <Slider
+          id="click-zoom"
+          type="single"
+          class="max-w-sm"
+          min={CLICK_ZOOM_CEILING_MIN}
+          max={CLICK_ZOOM_CEILING_MAX}
+          step={CLICK_ZOOM_CEILING_STEP}
+          bind:value={clickZoomCeiling}
+          onValueCommit={commitClickZoom}
         />
       </div>
     </section>

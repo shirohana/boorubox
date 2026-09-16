@@ -22,6 +22,20 @@ export const GRID_TILE_MIN = 120
 export const GRID_TILE_MAX = 360
 export const GRID_TILE_DEFAULT = 180
 
+/**
+ * The click zoom's ceiling, as a percent of the fit: what the settings
+ * slider offers and what `set_click_zoom_ceiling_percent` clamps a stored
+ * value to (`click-zoom-ceiling` design D1). The webview divides this by 100
+ * in exactly one place — the value handed to `clickTarget` — because a
+ * float has no place in a hand-editable settings file and `AppSettings`
+ * derives `Eq`, which `f64` cannot.
+ */
+export const CLICK_ZOOM_CEILING_MIN = 125
+export const CLICK_ZOOM_CEILING_MAX = 350
+export const CLICK_ZOOM_CEILING_DEFAULT = 150
+/** The slider's step, a quarter of the fit: a range this narrow needs it. */
+export const CLICK_ZOOM_CEILING_STEP = 25
+
 export type ImageSource = 'extension' | 'local' | 'legacy-bundle'
 
 export type Rating = 'g' | 's' | 'q' | 'e'
@@ -456,6 +470,14 @@ export type Theme = 'system' | 'light' | 'dark'
 export interface AppSettings {
   theme: Theme
   gridTileSize: number
+  /**
+   * How far a click in the viewer may zoom, as a percent of the fit
+   * (`click-zoom-ceiling` design D1): the click's target is the cover or
+   * this ceiling times the fit, whichever is smaller. A percent, not a
+   * float: Rust's `AppSettings` derives `Eq`, which `f64` cannot, and a float
+   * in `settings.json` invites `2` against `2.0` against `1.9999`.
+   */
+  clickZoomCeilingPercent: number
   /**
    * Whether the sidebar's notes panel is folded away (`notes` design D13).
    * A preference held for months rather than a view toggle, which is why it

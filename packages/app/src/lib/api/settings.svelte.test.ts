@@ -1,7 +1,12 @@
 // @vitest-environment jsdom
 
 import type { AppSettings } from '@boorubox/shared'
-import { GRID_TILE_DEFAULT, GRID_TILE_MAX } from '@boorubox/shared'
+import {
+  CLICK_ZOOM_CEILING_DEFAULT,
+  CLICK_ZOOM_CEILING_MAX,
+  GRID_TILE_DEFAULT,
+  GRID_TILE_MAX,
+} from '@boorubox/shared'
 import { clearMocks, mockIPC } from '@tauri-apps/api/mocks'
 import { afterEach, expect, it, vi } from 'vitest'
 import { settings } from './settings.svelte'
@@ -13,6 +18,7 @@ afterEach(() => {
 const stored: AppSettings = {
   theme: 'system',
   gridTileSize: GRID_TILE_DEFAULT,
+  clickZoomCeilingPercent: CLICK_ZOOM_CEILING_DEFAULT,
   notesCollapsed: false,
   collectionsCollapsed: false,
   openLastOnLaunch: true,
@@ -38,6 +44,7 @@ it('keeps what the write answered, not what it was asked for', async () => {
       ({
         theme: 'dark',
         gridTileSize: GRID_TILE_MAX,
+        clickZoomCeilingPercent: CLICK_ZOOM_CEILING_MAX,
         notesCollapsed: true,
         collectionsCollapsed: true,
         openLastOnLaunch: true,
@@ -51,6 +58,10 @@ it('keeps what the write answered, not what it was asked for', async () => {
   // to; taking the argument instead would show a value the file does not hold.
   await settings.setGridTileSize(GRID_TILE_MAX + 100)
   expect(settings.current?.gridTileSize).toBe(GRID_TILE_MAX)
+
+  // Same reasoning as the tile size's: the clamped answer is what is kept.
+  await settings.setClickZoomCeilingPercent(CLICK_ZOOM_CEILING_MAX + 100)
+  expect(settings.current?.clickZoomCeilingPercent).toBe(CLICK_ZOOM_CEILING_MAX)
 
   await settings.setNotesCollapsed(true)
   expect(settings.current?.notesCollapsed).toBe(true)

@@ -48,6 +48,13 @@
     mode: 'gallery' | 'inspect'
     /** Slot Inspector · actions, in this placement of the panel (`trash` design D13). */
     actions: TrashActions
+    /**
+     * A click's zoom target reaches no further than this multiple of the fit
+     * (`click-zoom-ceiling` design D2, D3). The viewer draws no chrome of its
+     * own to set this from — it is a settings-screen preference read as a
+     * prop.
+     */
+    clickZoomCeiling: number
     /** Forwarded to the inspector, which edits here exactly as it does beside the grid. */
     tagQuery: string
     onquery: (next: string, id: string) => void
@@ -68,6 +75,7 @@
     columns,
     mode = $bindable(),
     actions,
+    clickZoomCeiling,
     tagQuery,
     onquery,
     onmove,
@@ -210,7 +218,7 @@
     updatePointer(event)
     if (!naturalSize || !viewportSize) return
     if (zoomed) animateZoom(fit, () => (scale = null))
-    else animateZoom(clickTarget(naturalSize, viewportSize), () => {})
+    else animateZoom(clickTarget(naturalSize, viewportSize, clickZoomCeiling), () => {})
   }
 
   function onviewportwheel(event: WheelEvent) {

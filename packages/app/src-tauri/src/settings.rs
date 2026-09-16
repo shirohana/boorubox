@@ -10,7 +10,10 @@ use tauri_plugin_store::StoreExt;
 
 use crate::error::{AppError, Result};
 use crate::from_tauri;
-use crate::model::{DEFAULT_PORT, GRID_TILE_DEFAULT, GRID_TILE_MAX, GRID_TILE_MIN, Theme};
+use crate::model::{
+    CLICK_ZOOM_CEILING_DEFAULT, CLICK_ZOOM_CEILING_MAX, CLICK_ZOOM_CEILING_MIN, DEFAULT_PORT,
+    GRID_TILE_DEFAULT, GRID_TILE_MAX, GRID_TILE_MIN, Theme,
+};
 
 /// Resolved against the app config dir by tauri-plugin-store.
 const SETTINGS_FILE: &str = "settings.json";
@@ -21,6 +24,7 @@ const LIBRARY_PATH: &str = "libraryPath";
 const PORT: &str = "port";
 const THEME: &str = "theme";
 const GRID_TILE_SIZE: &str = "gridTileSize";
+const CLICK_ZOOM_CEILING_PERCENT: &str = "clickZoomCeilingPercent";
 const RECENT_LIBRARIES: &str = "recentLibraries";
 const NOTES_COLLAPSED: &str = "notesCollapsed";
 const COLLECTIONS_COLLAPSED: &str = "collectionsCollapsed";
@@ -37,6 +41,9 @@ pub struct Settings {
     pub port: u16,
     pub theme: Theme,
     pub grid_tile_size: u32,
+    /// How far a click in the viewer may zoom, as a percent of the fit
+    /// (`click-zoom-ceiling` design D1).
+    pub click_zoom_ceiling_percent: u32,
     /// Absolute paths, most recent first, each folder once (design D4).
     pub recent_libraries: Vec<PathBuf>,
     /// Whether the sidebar's notes panel is folded away (`notes` design D13).
@@ -60,6 +67,7 @@ impl Default for Settings {
             port: DEFAULT_PORT,
             theme: Theme::default(),
             grid_tile_size: GRID_TILE_DEFAULT,
+            click_zoom_ceiling_percent: CLICK_ZOOM_CEILING_DEFAULT,
             recent_libraries: Vec::new(),
             // Expanded: a panel nobody asked to hide is a panel the user has
             // not seen yet.
@@ -92,6 +100,7 @@ impl From<&Settings> for crate::model::AppSettings {
         crate::model::AppSettings {
             theme: settings.theme,
             grid_tile_size: settings.grid_tile_size,
+            click_zoom_ceiling_percent: settings.click_zoom_ceiling_percent,
             notes_collapsed: settings.notes_collapsed,
             collections_collapsed: settings.collections_collapsed,
             open_last_on_launch: settings.open_last_on_launch,
@@ -144,6 +153,16 @@ fn load_from<R: Runtime>(app: &AppHandle<R>, file: &str) -> Settings {
             .and_then(|size| u32::try_from(size).ok())
             .filter(|size| (GRID_TILE_MIN..=GRID_TILE_MAX).contains(size))
             .unwrap_or(defaults.grid_tile_size),
+        // Same reasoning as `grid_tile_size`: `set_click_zoom_ceiling_percent`
+        // is the only writer that clamps, so anything out of range here was
+        // hand-edited and is not a preference.
+        click_zoom_ceiling_percent: store
+            .get(CLICK_ZOOM_CEILING_PERCENT)
+            .as_ref()
+            .and_then(JsonValue::as_u64)
+            .and_then(|percent| u32::try_from(percent).ok())
+            .filter(|percent| (CLICK_ZOOM_CEILING_MIN..=CLICK_ZOOM_CEILING_MAX).contains(percent))
+            .unwrap_or(defaults.click_zoom_ceiling_percent),
         recent_libraries: store
             .get(RECENT_LIBRARIES)
             .as_ref()
@@ -191,6 +210,10 @@ fn save_to<R: Runtime>(app: &AppHandle<R>, file: &str, settings: &Settings) -> R
         serde_json::to_value(settings.theme).unwrap_or_default(),
     );
     store.set(GRID_TILE_SIZE, settings.grid_tile_size);
+    store.set(
+        CLICK_ZOOM_CEILING_PERCENT,
+        settings.click_zoom_ceiling_percent,
+    );
     store.set(OPEN_LAST_ON_LAUNCH, settings.open_last_on_launch);
     let recent = settings
         .recent_libraries
@@ -230,6 +253,7 @@ mod tests {
             port: 51234,
             theme: Theme::Dark,
             grid_tile_size: 240,
+            click_zoom_ceiling_percent: 350,
             recent_libraries: vec![
                 PathBuf::from("/tmp/boorubox-library"),
                 PathBuf::from("/tmp/older"),
@@ -331,6 +355,30 @@ mod tests {
         assert_eq!(
             load_from(mock_app().handle(), file).grid_tile_size,
             GRID_TILE_DEFAULT,
+        );
+    }
+
+    #[test]
+    fn a_click_zoom_ceiling_outside_the_range_reads_as_the_default() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("settings.json");
+        let file = file.to_str().unwrap();
+        let writer = mock_app();
+        let store = writer.handle().store(file).unwrap();
+        store.set(CLICK_ZOOM_CEILING_PERCENT, CLICK_ZOOM_CEILING_MAX + 1);
+        store.save().unwrap();
+
+        assert_eq!(
+            load_from(mock_app().handle(), file).click_zoom_ceiling_percent,
+            CLICK_ZOOM_CEILING_DEFAULT,
+        );
+
+        store.set(CLICK_ZOOM_CEILING_PERCENT, "wide");
+        store.save().unwrap();
+
+        assert_eq!(
+            load_from(mock_app().handle(), file).click_zoom_ceiling_percent,
+            CLICK_ZOOM_CEILING_DEFAULT,
         );
     }
 

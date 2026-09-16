@@ -30,6 +30,15 @@ pub const GRID_TILE_MIN: u32 = 120;
 pub const GRID_TILE_MAX: u32 = 360;
 pub const GRID_TILE_DEFAULT: u32 = 180;
 
+/// The click zoom's ceiling, as a percent of the fit: what the settings
+/// slider offers and what `set_click_zoom_ceiling_percent` clamps to
+/// (`click-zoom-ceiling` design D1). The webview has the same three numbers
+/// for the slider's own bounds; these are the ones that decide what reaches
+/// the settings file.
+pub const CLICK_ZOOM_CEILING_MIN: u32 = 125;
+pub const CLICK_ZOOM_CEILING_MAX: u32 = 350;
+pub const CLICK_ZOOM_CEILING_DEFAULT: u32 = 150;
+
 /// How an image entered the library. The string form is what the `images.source`
 /// column holds and what crosses IPC, so it is defined once here: `as_str` and
 /// `FromStr` back the serde, `ToSql` and `FromSql` impls below.
@@ -601,6 +610,10 @@ pub enum Theme {
 pub struct AppSettings {
     pub theme: Theme,
     pub grid_tile_size: u32,
+    /// How far a click in the viewer may zoom, as a percent of the fit
+    /// (`click-zoom-ceiling` design D1): the click's target is the cover or
+    /// this ceiling times the fit, whichever is smaller.
+    pub click_zoom_ceiling_percent: u32,
     /// Whether the sidebar's notes panel is folded away (`notes` design D13):
     /// a preference held for months, not the session state app-shell keeps out
     /// of `settings.json` — D13 records why that reading was right until a
@@ -943,6 +956,7 @@ mod tests {
         let settings = AppSettings {
             theme: Theme::Dark,
             grid_tile_size: GRID_TILE_DEFAULT,
+            click_zoom_ceiling_percent: CLICK_ZOOM_CEILING_DEFAULT,
             notes_collapsed: true,
             collections_collapsed: true,
             open_last_on_launch: false,
@@ -953,6 +967,7 @@ mod tests {
             serde_json::json!({
                 "theme": "dark",
                 "gridTileSize": 180,
+                "clickZoomCeilingPercent": 150,
                 "notesCollapsed": true,
                 "collectionsCollapsed": true,
                 "openLastOnLaunch": false,

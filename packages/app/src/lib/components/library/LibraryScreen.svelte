@@ -6,7 +6,12 @@
   // components in both. The view decides the request that is searched, which
   // actions each control offers, and what the empty state says — nothing else.
   import type { DeleteReport, ExportReport, ImageRecord, Rating } from '@boorubox/shared'
-  import { GRID_TILE_DEFAULT, GRID_TILE_MAX, GRID_TILE_MIN } from '@boorubox/shared'
+  import {
+    CLICK_ZOOM_CEILING_DEFAULT,
+    GRID_TILE_DEFAULT,
+    GRID_TILE_MAX,
+    GRID_TILE_MIN,
+  } from '@boorubox/shared'
   import PanelRightIcon from '@lucide/svelte/icons/panel-right'
   import {
     booruSites,
@@ -149,6 +154,17 @@
 
   const libraryPath = $derived(library.status?.libraryPath ?? null)
   const focused = $derived(results.at(selection.focus) ?? null)
+  /**
+   * The viewer's click zoom ceiling, as a multiple of the fit
+   * (`click-zoom-ceiling` design D3): read live off the settings store, never
+   * copied into local state, so a change on the settings screen takes effect
+   * the next time the viewer opens with no restart. A `$derived`, not an
+   * `$effect` on `settings.current` — a field read off a store object
+   * reassigned wholesale re-runs on every unrelated settings write.
+   */
+  const clickZoomCeiling = $derived(
+    (settings.current?.clickZoomCeilingPercent ?? CLICK_ZOOM_CEILING_DEFAULT) / 100,
+  )
   /**
    * The dialog's words. They outlive the pending write by the dialog's closing
    * animation: nulling them with it blanks the title mid-fade, so the last
@@ -729,6 +745,7 @@
     {libraryPath}
     {columns}
     {actions}
+    {clickZoomCeiling}
     {tagQuery}
     onquery={searchKeeping}
     bind:mode={browseSession.lightboxMode}

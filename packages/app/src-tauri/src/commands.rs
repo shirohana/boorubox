@@ -18,11 +18,11 @@ use crate::error::{AppError, Result};
 use crate::library::{self, Library, SharedLibrary, with_library, with_library_if_open};
 use crate::model::{
     AppSettings, BooruConnectionTest, BooruSite, BooruUploadForm, BooruUploadOutcome, BundlePlan,
-    Collection, DeleteReport, ExportProgress, ExportReport, FactsEdit, GRID_TILE_MAX,
-    GRID_TILE_MIN, ImageCounts, ImageRecord, ImportReport, LibraryStatus, ListenerStatus, Note,
-    PostRef, RebuildProgress, RebuildReport, RecentLibrary, Rule, RuleInput, RuleListEntry,
-    RulesImportReport, RulesRunReport, SearchRequest, SearchResult, SidecarsProgress, TagCount,
-    TagCounts, Theme,
+    CLICK_ZOOM_CEILING_MAX, CLICK_ZOOM_CEILING_MIN, Collection, DeleteReport, ExportProgress,
+    ExportReport, FactsEdit, GRID_TILE_MAX, GRID_TILE_MIN, ImageCounts, ImageRecord, ImportReport,
+    LibraryStatus, ListenerStatus, Note, PostRef, RebuildProgress, RebuildReport, RecentLibrary,
+    Rule, RuleInput, RuleListEntry, RulesImportReport, RulesRunReport, SearchRequest, SearchResult,
+    SidecarsProgress, TagCount, TagCounts, Theme,
 };
 use crate::settings::Settings;
 use crate::{
@@ -372,6 +372,21 @@ pub fn set_grid_tile_size<R: Runtime>(
 ) -> Result<AppSettings> {
     write_settings(&app, &state, |settings| {
         settings.grid_tile_size = size.clamp(GRID_TILE_MIN, GRID_TILE_MAX);
+    })
+}
+
+/// Clamped, never refused, for `set_grid_tile_size`'s reason: a rejected
+/// ceiling would leave the settings screen disagreeing with the slider that
+/// set it.
+#[tauri::command]
+pub fn set_click_zoom_ceiling_percent<R: Runtime>(
+    percent: u32,
+    app: AppHandle<R>,
+    state: State<'_, AppState>,
+) -> Result<AppSettings> {
+    write_settings(&app, &state, |settings| {
+        settings.click_zoom_ceiling_percent =
+            percent.clamp(CLICK_ZOOM_CEILING_MIN, CLICK_ZOOM_CEILING_MAX);
     })
 }
 
@@ -1330,7 +1345,8 @@ mod tests {
     use super::*;
     use crate::http::test_support::{ask_for_status, free_port, nothing_answers_on, png_bytes};
     use crate::model::{
-        GRID_TILE_DEFAULT, GroupBy, ImportProgress, ImportStatus, ParsedTagSearch, SearchView, Sort,
+        CLICK_ZOOM_CEILING_DEFAULT, GRID_TILE_DEFAULT, GroupBy, ImportProgress, ImportStatus,
+        ParsedTagSearch, SearchView, Sort,
     };
     use crate::test_support::mock_app;
 
@@ -1510,6 +1526,10 @@ mod tests {
 
         assert_eq!(settings.theme, Theme::System);
         assert_eq!(settings.grid_tile_size, GRID_TILE_DEFAULT);
+        assert_eq!(
+            settings.click_zoom_ceiling_percent,
+            CLICK_ZOOM_CEILING_DEFAULT
+        );
     }
 
     #[test]
@@ -1535,6 +1555,25 @@ mod tests {
         let large = set_grid_tile_size(10_000, app.handle().clone(), app.state()).unwrap();
         assert_eq!(large.grid_tile_size, GRID_TILE_MAX);
         assert_eq!(settings::load(app.handle()).grid_tile_size, GRID_TILE_MAX);
+    }
+
+    /// Same rule as the tile size's: a slider that sent 10 000 must leave the
+    /// viewer and the setting agreeing, so the ceiling is clamped rather than
+    /// refused.
+    #[test]
+    fn a_click_zoom_ceiling_past_the_range_is_clamped_rather_than_refused() {
+        let app = mock_app();
+
+        let small = set_click_zoom_ceiling_percent(1, app.handle().clone(), app.state()).unwrap();
+        assert_eq!(small.click_zoom_ceiling_percent, CLICK_ZOOM_CEILING_MIN);
+
+        let large =
+            set_click_zoom_ceiling_percent(10_000, app.handle().clone(), app.state()).unwrap();
+        assert_eq!(large.click_zoom_ceiling_percent, CLICK_ZOOM_CEILING_MAX);
+        assert_eq!(
+            settings::load(app.handle()).click_zoom_ceiling_percent,
+            CLICK_ZOOM_CEILING_MAX
+        );
     }
 
     /// The `library-switching` spec's "Two libraries seen": the list is what
