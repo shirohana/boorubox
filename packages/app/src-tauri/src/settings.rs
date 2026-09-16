@@ -23,6 +23,7 @@ const THEME: &str = "theme";
 const GRID_TILE_SIZE: &str = "gridTileSize";
 const RECENT_LIBRARIES: &str = "recentLibraries";
 const NOTES_COLLAPSED: &str = "notesCollapsed";
+const COLLECTIONS_COLLAPSED: &str = "collectionsCollapsed";
 const OPEN_LAST_ON_LAUNCH: &str = "openLastOnLaunch";
 
 /// How many folders the recent list keeps (design D4). A bound, not a
@@ -42,6 +43,9 @@ pub struct Settings {
     /// A machine's display preference, so it belongs here rather than in the
     /// library the note's own text lives in.
     pub notes_collapsed: bool,
+    /// Whether the sidebar's collections section is folded away
+    /// (`browse-feedback` design D4), copied from `notes_collapsed`'s line.
+    pub collections_collapsed: bool,
     /// Whether `setup` reopens `library_path` automatically at launch
     /// (`launch-screen` design D3). On by default so an existing settings
     /// file, which has never written this key, keeps today's behaviour.
@@ -60,6 +64,7 @@ impl Default for Settings {
             // Expanded: a panel nobody asked to hide is a panel the user has
             // not seen yet.
             notes_collapsed: false,
+            collections_collapsed: false,
             open_last_on_launch: true,
         }
     }
@@ -88,6 +93,7 @@ impl From<&Settings> for crate::model::AppSettings {
             theme: settings.theme,
             grid_tile_size: settings.grid_tile_size,
             notes_collapsed: settings.notes_collapsed,
+            collections_collapsed: settings.collections_collapsed,
             open_last_on_launch: settings.open_last_on_launch,
         }
     }
@@ -156,6 +162,11 @@ fn load_from<R: Runtime>(app: &AppHandle<R>, file: &str) -> Settings {
             .as_ref()
             .and_then(JsonValue::as_bool)
             .unwrap_or(defaults.notes_collapsed),
+        collections_collapsed: store
+            .get(COLLECTIONS_COLLAPSED)
+            .as_ref()
+            .and_then(JsonValue::as_bool)
+            .unwrap_or(defaults.collections_collapsed),
         open_last_on_launch: store
             .get(OPEN_LAST_ON_LAUNCH)
             .as_ref()
@@ -188,6 +199,7 @@ fn save_to<R: Runtime>(app: &AppHandle<R>, file: &str, settings: &Settings) -> R
         .collect::<Result<Vec<&str>>>()?;
     store.set(RECENT_LIBRARIES, recent);
     store.set(NOTES_COLLAPSED, settings.notes_collapsed);
+    store.set(COLLECTIONS_COLLAPSED, settings.collections_collapsed);
     store.save().map_err(from_tauri)
 }
 
@@ -223,6 +235,7 @@ mod tests {
                 PathBuf::from("/tmp/older"),
             ],
             notes_collapsed: true,
+            collections_collapsed: true,
             open_last_on_launch: false,
         };
 
@@ -334,6 +347,21 @@ mod tests {
         store.save().unwrap();
 
         assert!(!load_from(mock_app().handle(), file).notes_collapsed);
+    }
+
+    /// The section nobody asked to hide is the expanded one, the same
+    /// reasoning as the notes panel's own default.
+    #[test]
+    fn a_file_without_the_collections_key_reads_as_expanded() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("settings.json");
+        let file = file.to_str().unwrap();
+        let writer = mock_app();
+        let store = writer.handle().store(file).unwrap();
+        store.set(GRID_TILE_SIZE, GRID_TILE_DEFAULT);
+        store.save().unwrap();
+
+        assert!(!load_from(mock_app().handle(), file).collections_collapsed);
     }
 
     /// `launch-screen` design D3: a settings file written before this setting

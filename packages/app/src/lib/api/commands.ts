@@ -96,6 +96,14 @@ export function setNotesCollapsed(collapsed: boolean): Promise<AppSettings> {
   return invoke('set_notes_collapsed', { collapsed })
 }
 
+/**
+ * Folds the sidebar's collections section away, or unfolds it
+ * (`browse-feedback` design D4), copied from {@link setNotesCollapsed}.
+ */
+export function setCollectionsCollapsed(collapsed: boolean): Promise<AppSettings> {
+  return invoke('set_collections_collapsed', { collapsed })
+}
+
 /** Clamped by Rust to `GRID_TILE_MIN`…`GRID_TILE_MAX`, never refused. */
 export function setGridTileSize(size: number): Promise<AppSettings> {
   return invoke('set_grid_tile_size', { size })

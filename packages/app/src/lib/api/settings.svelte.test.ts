@@ -14,6 +14,7 @@ const stored: AppSettings = {
   theme: 'system',
   gridTileSize: GRID_TILE_DEFAULT,
   notesCollapsed: false,
+  collectionsCollapsed: false,
   openLastOnLaunch: true,
 }
 
@@ -38,6 +39,7 @@ it('keeps what the write answered, not what it was asked for', async () => {
         theme: 'dark',
         gridTileSize: GRID_TILE_MAX,
         notesCollapsed: true,
+        collectionsCollapsed: true,
         openLastOnLaunch: true,
       }) satisfies AppSettings,
   )
@@ -52,6 +54,9 @@ it('keeps what the write answered, not what it was asked for', async () => {
 
   await settings.setNotesCollapsed(true)
   expect(settings.current?.notesCollapsed).toBe(true)
+
+  await settings.setCollectionsCollapsed(true)
+  expect(settings.current?.collectionsCollapsed).toBe(true)
 
   await settings.setOpenLastOnLaunch(false)
   expect(settings.current?.openLastOnLaunch).toBe(true)

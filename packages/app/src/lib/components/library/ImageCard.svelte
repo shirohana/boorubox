@@ -1,10 +1,11 @@
 <script lang="ts">
   import type { ImageRecord, Rating } from '@boorubox/shared'
   import ArchiveRestoreIcon from '@lucide/svelte/icons/archive-restore'
+  import BookmarkIcon from '@lucide/svelte/icons/bookmark'
   import CloudUploadIcon from '@lucide/svelte/icons/cloud-upload'
   import Trash2Icon from '@lucide/svelte/icons/trash-2'
   import type { ClickModifiers, Selection } from '$lib/api'
-  import { booruSites } from '$lib/api'
+  import { booruSites, collections } from '$lib/api'
   import { postedNames } from '$lib/components/booru/posted'
   import { RATING_COLOUR, RATINGS } from '$lib/components/tags/ratings'
   import { Button } from '$lib/components/ui/button'
@@ -114,6 +115,15 @@
 
   /** This tile's own collections, for the submenu's checkmark (design D8). */
   const collectionMemberships = $derived(image ? new Set(image.collections) : null)
+
+  /**
+   * Names for the tile's mark (`browse-feedback` design D6): a membership
+   * whose collection is gone — a placeholder in a rebuilt library — shows as
+   * its bare id rather than dropping out of the title silently.
+   */
+  const collectionNames = $derived(
+    image ? image.collections.map((id) => collections.byId(id)?.name ?? id) : [],
+  )
 
   /**
    * Ids: the selection's when the tile is in it, else this image's alone
@@ -280,7 +290,7 @@
         noise on the majority of a fresh library. The colour is what is read at
         a glance; the letter is for anyone who cannot tell them apart.
       -->
-            {#if image.rating || posted.length > 0}
+            {#if image.rating || posted.length > 0 || collectionNames.length > 0}
               <span class="absolute top-1 left-1 flex gap-1">
                 {#if image.rating}
                   <span
@@ -304,6 +314,22 @@
                   >
                     <CloudUploadIcon class="size-3.5" />
                     <span class="sr-only">{postedTitle}</span>
+                  </span>
+                {/if}
+
+                {#if collectionNames.length > 0}
+                  <!--
+                    The mark says the image is in at least one collection
+                    (`browse-feedback` design D6); the count is the inspector's.
+                  -->
+                  <span
+                    class="
+                      flex size-5 items-center justify-center rounded-md bg-background/80 shadow-sm
+                    "
+                    title={collectionNames.join(', ')}
+                  >
+                    <BookmarkIcon class="size-3.5" />
+                    <span class="sr-only">{collectionNames.join(', ')}</span>
                   </span>
                 {/if}
               </span>
@@ -390,21 +416,28 @@
 
   <!-- The menu acts on this tile's image, whatever the inspector is showing. -->
   <ContextMenu.Content>
-    <ContextMenu.GroupHeading>Rating</ContextMenu.GroupHeading>
-    {#each RATINGS as rating (rating)}
-      <ContextMenu.Item disabled={!image} onSelect={() => onrate(rating)}>
-        {rating} · {ratingLabel(rating)}
+    <!--
+      `ContextMenu.GroupHeading` reads a `Menu.Group` context and throws
+      without one (bits-ui 2.19) — the group is what makes the heading, and so
+      this whole menu, openable at all.
+    -->
+    <ContextMenu.Group>
+      <ContextMenu.GroupHeading>Rating</ContextMenu.GroupHeading>
+      {#each RATINGS as rating (rating)}
+        <ContextMenu.Item disabled={!image} onSelect={() => onrate(rating)}>
+          {rating} · {ratingLabel(rating)}
+        </ContextMenu.Item>
+      {/each}
+      <ContextMenu.Item disabled={!image} onSelect={() => onrate(null)}>
+        none · unrated
       </ContextMenu.Item>
-    {/each}
-    <ContextMenu.Item disabled={!image} onSelect={() => onrate(null)}>
-      none · unrated
-    </ContextMenu.Item>
+    </ContextMenu.Group>
 
     <!-- The collection submenu (`collections` design D8). -->
     <ContextMenu.Separator />
     <ContextMenu.Sub>
       <ContextMenu.SubTrigger disabled={!image}>Collections</ContextMenu.SubTrigger>
-      <ContextMenu.SubContent>
+      <ContextMenu.SubContent class="max-h-(--bits-floating-available-height) overflow-y-auto">
         <CollectionMenuItems
           target={collectionTarget}
           onnew={() => onnewcollection(collectionTarget)}

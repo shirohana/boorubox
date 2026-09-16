@@ -50,13 +50,17 @@
 
 <!--
   The sidebar's one flexible section (`sidebar-layout` design D1): it takes
-  whatever height Search, Rating and Filter leave and scrolls on its own.
+  whatever height the other sections leave and scrolls on its own. `min-h-32`
+  is its floor (`browse-feedback`): the collections box below has a height of
+  its own, and without a floor here a short window gave the tag list nothing
+  at all — past the floor it is the whole sidebar that scrolls, which reads
+  as "too short" rather than "no tags".
   `data-sidebar="tags"` is the hook app.css scrolls it by — its rules sit
   beside the copy-in content wrapper's, which cannot be reached from a class
   here. Dropping the attribute drops the scrollbar gutter and the
   sideways-scroll clip with it.
 -->
-<section data-sidebar="tags" class="min-h-0 flex-1 overflow-y-auto p-2">
+<section data-sidebar="tags" class="min-h-32 flex-1 overflow-y-auto p-2">
   <h2 class="px-1 pb-1 text-xs font-medium text-muted-foreground">Tags</h2>
 
   {#if listed && listed.length === 0}

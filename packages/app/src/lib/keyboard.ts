@@ -90,6 +90,19 @@ export const KEYBOARD_MAP: KeyBinding[] = [
   { where: 'Viewer', keys: ['Esc', 'Space'], action: 'Close, focusing the image shown last' },
 ]
 
+/**
+ * The map's way out of a text field: blurs it and swallows the key, so the
+ * screen-wide bindings are live again the moment it fires. Shared by both
+ * search fields (`browse-feedback` design D3) — before this it was
+ * `SearchBar`'s own `leaveOnEscape`, and the toolbar's free-text field would
+ * otherwise have needed a second copy of the same three lines.
+ */
+export function blurOnEscape(event: KeyboardEvent): void {
+  if (event.key !== KEY_ESCAPE) return
+  event.preventDefault()
+  if (event.currentTarget instanceof HTMLElement) event.currentTarget.blur()
+}
+
 const TYPING_TAGS = new Set(['INPUT', 'TEXTAREA', 'SELECT'])
 
 /**

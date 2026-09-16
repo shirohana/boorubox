@@ -675,7 +675,9 @@
               <Button size="xs" variant="outline" class="mt-2" {...props}>Add to…</Button>
             {/snippet}
           </DropdownMenu.Trigger>
-          <DropdownMenu.Content align="start">
+          <DropdownMenu.Content align="start" class="
+            max-h-(--bits-floating-available-height) overflow-y-auto
+          ">
             <CollectionMenuItems
               target={collectionTarget}
               onnew={() => (creatingCollection = true)}

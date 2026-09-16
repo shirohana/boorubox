@@ -1,17 +1,27 @@
 <script lang="ts">
   // Slot Sidebar · filters (design D17), the Collections section (`collections`
-  // design D8): every collection with its count in the current result, active
-  // first (spec "The sidebar lists the collections with counts"). Counts ride
-  // on `results.counts.collections`, the same round trip the tag list already
-  // gets (design D7) — nothing here counts a membership of its own.
-  import type { CollectionCount } from '@boorubox/shared'
-  import EllipsisIcon from '@lucide/svelte/icons/ellipsis'
+  // design D8, `browse-feedback` design D4): every collection with its count in
+  // the current result, in name order (spec "The sidebar lists the collections
+  // with counts" — an active collection is marked where it is, never moved).
+  // Counts ride on `results.counts.collections`, the same round trip the tag
+  // list already gets (design D7) — nothing here counts a membership of its
+  // own. The rows, though, are the store's list, not the counts: the counts
+  // are `null` for the length of every search, and rows drawn from them
+  // unmount and remount on each click, which throws the box's scroll
+  // position away — the row the user just clicked scrolled out of view. The
+  // store's list is stable across searches, and a count that has not arrived
+  // is a blank (design D8's honest blank), not a missing row. The fold and
+  // the list's height are the note's own pattern (`NotesPanel.svelte`): a
+  // stored preference and a `resize-y` box.
+  import type { Collection, CollectionCount } from '@boorubox/shared'
+  import ChevronDownIcon from '@lucide/svelte/icons/chevron-down'
   import PlusIcon from '@lucide/svelte/icons/plus'
-  import { collectionDelete, collections, errorText } from '$lib/api'
+  import { collectionDelete, collections, errorText, settings } from '$lib/api'
   import CollectionNameDialog from '$lib/components/common/CollectionNameDialog.svelte'
   import ConfirmDialog from '$lib/components/common/ConfirmDialog.svelte'
   import { Button } from '$lib/components/ui/button'
-  import * as DropdownMenu from '$lib/components/ui/dropdown-menu'
+  import * as Collapsible from '$lib/components/ui/collapsible'
+  import * as ContextMenu from '$lib/components/ui/context-menu'
   import { activeTerms, toggleCollectionInQuery } from '$lib/domain/tag-utils'
 
   interface Props {
@@ -29,26 +39,20 @@
 
   let { counts, tagQuery, onquery, onchanged }: Props = $props()
 
+  // The fold is a stored preference, not local state (`browse-feedback`
+  // design D4), the same reasoning as the notes panel's own fold.
+  const expanded = $derived(!(settings.current?.collectionsCollapsed ?? false))
+
   // Design D3: the one reader for "is this term active", shared with the tag
   // sidebar and the inspector's badges.
   const terms = $derived(activeTerms(tagQuery))
 
-  /**
-   * Rust already orders `counts` by name (design D7); the only thing computed
-   * here is which half a row falls in — a stable sort keeps each half in that
-   * order, so this only ever moves the search's own collections in front
-   * (spec: "with the collections the search names first").
-   */
-  const listed = $derived.by(() => {
-    if (!counts) return null
-    const isActive = (slug: string) =>
-      terms.collections.has(slug) || terms.excludedCollections.has(slug)
-    return [...counts].sort((a, b) => Number(isActive(b.slug)) - Number(isActive(a.slug)))
-  })
+  /** This search's count per collection id; empty while a search runs. */
+  const countById = $derived(new Map((counts ?? []).map((count) => [count.id, count.count])))
 
   let creating = $state(false)
-  let renaming = $state<CollectionCount | null>(null)
-  let deleting = $state<CollectionCount | null>(null)
+  let renaming = $state<Collection | null>(null)
+  let deleting = $state<Collection | null>(null)
   let error = $state<string | null>(null)
 
   const nameDialogOpen = $derived(creating || renaming !== null)
@@ -82,7 +86,7 @@
    * implying the other one.
    */
   const deleteDescription = $derived([
-    `${deleting?.count ?? 0} of the images this search matches are in it.`,
+    `${(deleting && countById.get(deleting.id)) ?? 0} of the images this search matches are in it.`,
     'Deleting it takes it off every image in it and changes nothing else about them.',
   ].join(' '))
 
@@ -99,9 +103,21 @@
   }
 </script>
 
-<section class="p-2">
+<Collapsible.Root
+  open={expanded}
+  onOpenChange={(open) => void settings.setCollectionsCollapsed(!open)}
+  class="flex flex-col gap-1 p-2"
+>
   <div class="flex items-center justify-between px-1 pb-1">
-    <h2 class="text-xs font-medium text-muted-foreground">Collections</h2>
+    <Collapsible.Trigger
+      class="
+        flex items-center gap-1 rounded-md py-0.5 text-xs font-medium text-muted-foreground
+        hover:bg-sidebar-accent
+      "
+    >
+      <ChevronDownIcon class="size-3 transition-transform {expanded ? '' : '-rotate-90'}" />
+      Collections
+    </Collapsible.Trigger>
     <Button
       size="icon"
       variant="ghost"
@@ -114,62 +130,74 @@
     </Button>
   </div>
 
-  {#if listed && listed.length === 0}
-    <p class="px-1 text-xs text-muted-foreground">No collections</p>
-  {:else if listed}
-    <ul class="flex flex-col gap-0.5">
-      {#each listed as collection (collection.id)}
-        {@const active = terms.collections.has(collection.slug)}
-        {@const excluded = terms.excludedCollections.has(collection.slug)}
-        <li
-          class="
-            flex items-center gap-1 rounded-md px-1 text-xs
-            hover:bg-sidebar-accent
-            {active ? 'bg-emerald-500/15 font-medium text-emerald-700 dark:text-emerald-300' : ''}
-            {excluded ? 'bg-destructive/10 text-destructive line-through' : ''}
-          "
-        >
-          <!-- Clicking an active collection takes it out again (spec "Filter from the list"). -->
-          <button
-            type="button"
-            class="min-w-0 flex-1 truncate py-1 text-left"
-            onclick={() => onquery(toggleCollectionInQuery(tagQuery, collection.slug))}
-          >
-            {collection.name}
-          </button>
-          <span class="shrink-0 text-muted-foreground tabular-nums">{collection.count}</span>
+  <Collapsible.Content class="flex flex-col gap-1">
+    <!--
+      `h-32`, not more: at an 800px window the sidebar's fixed parts already
+      take most of the height, and a taller default here starved the tag list
+      to nothing on the first run. The user drags the corner for more.
+    -->
+    <div class="
+      h-32 max-h-[50vh] min-h-10 resize-y overflow-y-auto rounded-md border border-border
+    ">
+      {#if collections.list.length === 0}
+        <p class="p-1 text-xs text-muted-foreground">No collections</p>
+      {:else}
+        <ul class="flex flex-col gap-0.5 p-0.5">
+          {#each collections.list as collection (collection.id)}
+            {@const active = terms.collections.has(collection.slug)}
+            {@const excluded = terms.excludedCollections.has(collection.slug)}
+            <li>
+              <ContextMenu.Root>
+                <ContextMenu.Trigger>
+                  {#snippet child({ props })}
+                    <div
+                      {...props}
+                      class="
+                        flex items-center gap-1 rounded-md px-1 text-xs
+                        hover:bg-sidebar-accent
+                        {active
+                          ? `bg-emerald-500/15 font-medium text-emerald-700 dark:text-emerald-300`
+                          : ''}
+                        {excluded ? 'bg-destructive/10 text-destructive line-through' : ''}
+                      "
+                    >
+                      <!--
+                        Clicking an active collection takes it out again
+                        (spec "Filter from the list").
+                      -->
+                      <button
+                        type="button"
+                        class="min-w-0 flex-1 truncate py-1 text-left"
+                        onclick={() => onquery(toggleCollectionInQuery(tagQuery, collection.slug))}
+                      >
+                        {collection.name}
+                      </button>
+                      <span class="shrink-0 text-muted-foreground tabular-nums">
+                        {countById.get(collection.id) ?? ''}
+                      </span>
+                    </div>
+                  {/snippet}
+                </ContextMenu.Trigger>
+                <ContextMenu.Content>
+                  <ContextMenu.Item onSelect={() => (renaming = collection)}>
+                    Rename…
+                  </ContextMenu.Item>
+                  <ContextMenu.Item variant="destructive" onSelect={() => (deleting = collection)}>
+                    Delete…
+                  </ContextMenu.Item>
+                </ContextMenu.Content>
+              </ContextMenu.Root>
+            </li>
+          {/each}
+        </ul>
+      {/if}
+    </div>
 
-          <DropdownMenu.Root>
-            <DropdownMenu.Trigger>
-              {#snippet child({ props })}
-                <button
-                  type="button"
-                  class="shrink-0 rounded-sm p-0.5 text-muted-foreground hover:text-foreground"
-                  aria-label="{collection.name} menu"
-                  {...props}
-                >
-                  <EllipsisIcon class="size-3" />
-                </button>
-              {/snippet}
-            </DropdownMenu.Trigger>
-            <DropdownMenu.Content align="end">
-              <DropdownMenu.Item onSelect={() => (renaming = collection)}>
-                Rename…
-              </DropdownMenu.Item>
-              <DropdownMenu.Item variant="destructive" onSelect={() => (deleting = collection)}>
-                Delete…
-              </DropdownMenu.Item>
-            </DropdownMenu.Content>
-          </DropdownMenu.Root>
-        </li>
-      {/each}
-    </ul>
-  {/if}
-
-  {#if error}
-    <p class="px-1 pt-1 text-xs text-destructive">{error}</p>
-  {/if}
-</section>
+    {#if error}
+      <p class="px-1 pt-1 text-xs text-destructive">{error}</p>
+    {/if}
+  </Collapsible.Content>
+</Collapsible.Root>
 
 <CollectionNameDialog
   collection={renaming}

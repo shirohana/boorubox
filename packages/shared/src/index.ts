@@ -449,6 +449,12 @@ export interface AppSettings {
    */
   notesCollapsed: boolean
   /**
+   * Whether the sidebar's collections section is folded away
+   * (`browse-feedback` design D4), the same kind of preference as
+   * `notesCollapsed` and copied from its line.
+   */
+  collectionsCollapsed: boolean
+  /**
    * Whether the app reopens `LibraryStatus.libraryPath`'s remembered folder
    * automatically at launch, or waits on the start screen for the user to
    * pick one (`launch-screen` design D3). Takes effect at the next launch,

@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest'
 import {
   activeTerms,
+  addAccountToQuery,
   addTagToQuery,
+  excludeAccountFromQuery,
   excludeTagFromQuery,
   parseTagSearch,
   removeTagFromQuery,
@@ -112,6 +114,54 @@ describe('excludeTagFromQuery', () => {
     const parsed = parseTagSearch(query)
     expect(parsed.includeTags).toEqual(['dog'])
     expect(parsed.excludeTags).toEqual(['cat'])
+  })
+})
+
+describe('addAccountToQuery', () => {
+  it('starts a query', () => {
+    expect(addAccountToQuery('', 'alice')).toBe('account:alice')
+  })
+
+  it('leaves an account the query already includes alone', () => {
+    expect(addAccountToQuery('account:alice', 'alice')).toBe('account:alice')
+  })
+
+  it('stops excluding an account it is asked to include', () => {
+    const query = addAccountToQuery('-account:alice', 'alice')
+    expect(query).toBe('account:alice')
+    expect(parseTagSearch(query).excludeAccounts).toEqual([])
+  })
+
+  it('leaves the rest of the query intact', () => {
+    const query = addAccountToQuery('cat rating:s', 'alice')
+    const parsed = parseTagSearch(query)
+    expect(parsed.includeTags).toEqual(['cat'])
+    expect(parsed.ratings).toEqual(['s'])
+    expect(parsed.accounts).toEqual(['alice'])
+  })
+})
+
+describe('excludeAccountFromQuery', () => {
+  it('starts a query', () => {
+    expect(excludeAccountFromQuery('', 'bob')).toBe('-account:bob')
+  })
+
+  it('leaves an account the query already excludes alone', () => {
+    expect(excludeAccountFromQuery('-account:bob', 'bob')).toBe('-account:bob')
+  })
+
+  it('stops including an account it is asked to exclude', () => {
+    const query = excludeAccountFromQuery('account:bob', 'bob')
+    expect(query).toBe('-account:bob')
+    expect(parseTagSearch(query).accounts).toEqual([])
+  })
+
+  it('leaves the rest of the query intact', () => {
+    const query = excludeAccountFromQuery('cat rating:s', 'bob')
+    const parsed = parseTagSearch(query)
+    expect(parsed.includeTags).toEqual(['cat'])
+    expect(parsed.ratings).toEqual(['s'])
+    expect(parsed.excludeAccounts).toEqual(['bob'])
   })
 })
 

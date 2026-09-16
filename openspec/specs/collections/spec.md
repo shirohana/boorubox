@@ -58,6 +58,12 @@ to none. Creating a new collection SHALL be offered from the same places. The in
 show the collections the described image is in, each acting as a search term with the same
 marking the tag list uses.
 
+Every one of those menus SHALL stay within the window when the library has more collections
+than fit below it, scrolling its list rather than extending off screen.
+
+A tile SHALL carry a mark when its image is in at least one collection, naming them on
+hover, and no mark otherwise, so an image in no collection is told apart at a glance.
+
 #### Scenario: From the tile
 - **WHEN** the user right-clicks a tile that is not selected and adds it to `Favorites`
 - **THEN** that one image is in `Favorites`, and the selection is unchanged
@@ -78,13 +84,27 @@ marking the tag list uses.
 - **WHEN** the user removes the described image from `Queue` in the panel
 - **THEN** the image is no longer in `Queue` and is still in `Favorites`
 
+#### Scenario: A long menu
+- **WHEN** the library has forty collections and the user opens the inspector's add menu near the bottom of the window
+- **THEN** the menu ends inside the window and scrolls to the collections that did not fit
+
+#### Scenario: The mark
+- **WHEN** one image is in `Favorites` and `Queue` and another is in no collection
+- **THEN** the first tile carries the mark, naming both on hover, and the second carries none
+
 ### Requirement: The sidebar lists the collections with counts
 Beside the results the app SHALL list every collection in the library with the number of
-images of the current result in it, in name order, with the collections the search names
-first. Each entry SHALL filter the search by that collection on activation and take the term
-out again when it is already there, and SHALL offer rename and delete on its menu; deleting
-SHALL ask first, naming the collection and how many images are in it. The section SHALL offer
-creating a collection.
+images of the current result in it, in name order; the collections the search names SHALL be
+marked where they are and SHALL NOT move to the front. Each entry SHALL filter the search by
+that collection on activation and take the term out again when it is already there, and SHALL
+offer rename and delete on its context menu; deleting SHALL ask first, naming the collection
+and how many images are in it. The section SHALL offer creating a collection.
+
+The section SHALL fold away and unfold on request, and whether it is folded SHALL be kept
+with the app's other preferences, so the choice survives a restart. Unfolded, its list SHALL
+occupy a height the user can change by dragging, kept for the session, and SHALL scroll inside
+that height: a library with many collections SHALL NOT push the tag list or the controls
+below out of their room.
 
 #### Scenario: Counts follow the search
 - **WHEN** `Favorites` holds 300 images and the search is `cat`, matching 40 of them
@@ -94,9 +114,25 @@ creating a collection.
 - **WHEN** the user activates `Favorites` in the list
 - **THEN** the search reads `collection:favorites`, and activating it again removes the term
 
+#### Scenario: An active collection stays in place
+- **WHEN** the list reads `Art`, `Favorites`, `Queue` and the user activates `Queue`
+- **THEN** `Queue` is marked active and the list still reads `Art`, `Favorites`, `Queue`
+
+#### Scenario: Rename from the row
+- **WHEN** the user opens the context menu of `Queue` and chooses rename
+- **THEN** a dialog offers the new name, and no other control for it is drawn on the row
+
 #### Scenario: Delete from the list
 - **WHEN** the user chooses delete on `Queue`, holding 12 images
-- **THEN** the app asks first, naming `Queue` and 12, and deletes only on confirmation
+- **THEN** the app asks, naming `Queue` and 12, and only on confirmation deletes it
+
+#### Scenario: Many collections
+- **WHEN** the library has thirty collections
+- **THEN** the section shows as many as fit the height it has, scrolls to the rest, and the tag list keeps its height
+
+#### Scenario: Folded across a restart
+- **WHEN** the user folds the section and restarts the app
+- **THEN** the section is folded
 
 ### Requirement: A collection survives a rebuild by its id
 An image's describing file SHALL carry the ids of the collections it is in; the library-level

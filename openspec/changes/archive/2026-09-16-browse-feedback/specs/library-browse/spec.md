@@ -1,78 +1,4 @@
-# library-browse Specification
-
-## Purpose
-The user browses the library as a grid, narrows it with Danbooru-style tag search, and views
-images full size, with counts that make a migration verifiable.
-
-## Requirements
-
-### Requirement: Grid shows the library
-The library UI SHALL show non-deleted images as a grid of thumbnails, in the order and the
-grouping the user has chosen — newest capture first, ungrouped, until one is chosen — and
-SHALL stay responsive with ten thousand images. A grouping that admits only some of the
-matching images SHALL be reflected in the grid and in the number of results it reports, so
-that what is counted is what is shown. Each thumbnail SHALL be shown whole, scaled to fit its
-tile without cropping, and the image SHALL be the tile: any text about it SHALL appear only
-while the tile is hovered or focused. The tile the keyboard is on SHALL be marked as the
-current tile in a way that is visible at a glance across the grid and distinct from the text
-overlay, so that the current tile can be told from a hovered one. The tile size SHALL be
-adjustable from the toolbar, and the setting SHALL survive a restart.
-
-#### Scenario: Open library
-- **WHEN** a library with images is opened
-- **THEN** thumbnails render in capture-time order, newest first, without loading every full image
-
-#### Scenario: A chosen order
-- **WHEN** the user chooses a different order for the results
-- **THEN** the grid redraws in that order from the first tile, still without loading every full image
-
-#### Scenario: Mixed shapes
-- **WHEN** the library holds both a tall and a wide image
-- **THEN** both are shown complete inside equally sized tiles, neither cropped nor stretched
-
-#### Scenario: Hovering a tile
-- **WHEN** the pointer rests on a tile, or the tile is focused with the keyboard
-- **THEN** its title, source and capture date appear over the image and disappear when it is left
-
-#### Scenario: Finding the current tile
-- **WHEN** the keyboard focus is on a tile somewhere in a full screen of thumbnails
-- **THEN** that tile is marked so it can be found without hunting, and the marking is not the hover overlay
-
-#### Scenario: Changing the tile size
-- **WHEN** the user moves the thumbnail size control
-- **THEN** the grid re-flows to the new size, keeps the images uncropped, still renders only the tiles near the viewport, and opens at that size after a restart
-
-### Requirement: Tag search uses the legacy query language
-A search box SHALL accept the legacy extension's query syntax: space-separated tags are AND,
-`a or b` is OR, `-tag` excludes, and the metatags `rating:`, `is:`, `tagcount:` and `account:`
-filter as they do in the legacy viewer. Free text in `page title` and URLs SHALL be searchable.
-The metatag `collection:<name>` SHALL match images in the collection whose name, lower-cased
-with spaces as underscores, is `<name>`; `-collection:<name>` SHALL exclude them; a name no
-collection has SHALL match nothing.
-
-#### Scenario: AND and NOT
-- **WHEN** the query is `cat -dog`
-- **THEN** only images tagged `cat` and not tagged `dog` are shown
-
-#### Scenario: OR group
-- **WHEN** the query is `cat or dog`
-- **THEN** images tagged either `cat` or `dog` are shown
-
-#### Scenario: Rating metatag
-- **WHEN** the query is `rating:s,q`
-- **THEN** only images rated `s` or `q` are shown
-
-#### Scenario: Empty result
-- **WHEN** no image matches
-- **THEN** the grid shows an empty state naming the query, not a blank page
-
-#### Scenario: Collection metatag
-- **WHEN** the query is `cat collection:my_favorites`
-- **THEN** only images tagged `cat` that are in the collection named `My favorites` are shown
-
-#### Scenario: Excluding a collection
-- **WHEN** the query is `-collection:queue`
-- **THEN** images in `Queue` are not shown and every other image is
+## MODIFIED Requirements
 
 ### Requirement: Lightbox
 Activating a thumbnail — by double click, Enter, Space, or a single click on the thumbnail
@@ -231,23 +157,7 @@ opened from when it was not moved.
 - **WHEN** the image is zoomed and the user presses the right arrow
 - **THEN** the next image is shown at the fit
 
-### Requirement: Per-source counts
-The UI SHALL show the total image count and the count per source (`extension`, `local`,
-`legacy-bundle`) for the whole library, independent of the current search. The per-source
-counts SHALL live on a screen the user reaches from the library without running a search, and
-SHALL NOT occupy the browsing screen; the total SHALL remain visible while browsing.
-
-#### Scenario: Counts after mixed ingest
-- **WHEN** the library holds 3 extension captures and 2 local imports
-- **THEN** the counts show total 5, extension 3, local 2, legacy-bundle 0
-
-#### Scenario: Counts do not follow the search
-- **WHEN** a search is narrowing the grid to one image
-- **THEN** the total shown while browsing and the per-source counts still describe the whole library
-
-#### Scenario: Reaching the counts
-- **WHEN** the user wants to reconcile the library against another source of the same images
-- **THEN** the per-source counts are two clicks away from the grid, with no search involved
+## ADDED Requirements
 
 ### Requirement: The library screen keeps its search across screens
 The tag query, the free-text query and the result they produced SHALL survive leaving the

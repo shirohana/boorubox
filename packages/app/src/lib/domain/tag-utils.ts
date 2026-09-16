@@ -392,6 +392,29 @@ export function toggleAccountInQuery(query: string, handle: string): string {
 }
 
 /**
+ * Adds `handle` as an included account, dropping the exclusion it would
+ * contradict — `addTagToQuery`'s rule (design D9), applied to `account:`.
+ */
+export function addAccountToQuery(query: string, handle: string): string {
+  const parsed = parseTagSearch(query)
+  if (parsed.accounts.includes(handle)) return query
+  const base = parsed.excludeAccounts.includes(handle)
+    ? rewriteMetatagList(query, '-account:', parsed.excludeAccounts.filter((value) => value !== handle))
+    : query
+  return rewriteMetatagList(base, 'account:', [...parsed.accounts, handle])
+}
+
+/** The mirror of {@link addAccountToQuery}, for `-account:`. */
+export function excludeAccountFromQuery(query: string, handle: string): string {
+  const parsed = parseTagSearch(query)
+  if (parsed.excludeAccounts.includes(handle)) return query
+  const base = parsed.accounts.includes(handle)
+    ? rewriteMetatagList(query, 'account:', parsed.accounts.filter((value) => value !== handle))
+    : query
+  return rewriteMetatagList(base, '-account:', [...parsed.excludeAccounts, handle])
+}
+
+/**
  * Adds or removes `slug` from the collection list, leaving the rest of the
  * query — `toggleAccountInQuery`'s rule for `account:` (design D4), applied
  * to `collection:` (design D6): a collection the query excludes stops being

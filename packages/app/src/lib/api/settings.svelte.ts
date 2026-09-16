@@ -1,6 +1,7 @@
 import type { AppSettings, Theme } from '@boorubox/shared'
 import {
   appSettings,
+  setCollectionsCollapsed,
   setGridTileSize,
   setNotesCollapsed,
   setOpenLastOnLaunch,
@@ -44,6 +45,14 @@ class Settings {
   /** Folds the sidebar's notes panel away, or unfolds it (`notes` design D13). */
   async setNotesCollapsed(collapsed: boolean): Promise<void> {
     this.current = await setNotesCollapsed(collapsed)
+  }
+
+  /**
+   * Folds the sidebar's collections section away, or unfolds it
+   * (`browse-feedback` design D4).
+   */
+  async setCollectionsCollapsed(collapsed: boolean): Promise<void> {
+    this.current = await setCollectionsCollapsed(collapsed)
   }
 
   /**

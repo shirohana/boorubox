@@ -10,6 +10,7 @@
   import PanelRightIcon from '@lucide/svelte/icons/panel-right'
   import {
     booruSites,
+    browseSession,
     buildSearchRequest,
     bulkSetRating,
     deleteForever,
@@ -22,7 +23,6 @@
     restoreImages,
     searchIds,
     searchPosition,
-    SearchResults,
     settings,
     trash,
     trashImages,
@@ -44,23 +44,36 @@
   import Lightbox from './Lightbox.svelte'
   import PendingBand from './PendingBand.svelte'
   import SearchBar from './SearchBar.svelte'
+  import AccountRail from './AccountRail.svelte'
   import type { ConfirmPrompt, PendingWrite } from './pending-write'
   import { confirmPrompt, needsConfirmation } from './pending-write'
   import SelectionToolbar from './SelectionToolbar.svelte'
   import type { TrashActions } from './trash-actions'
   import ViewControls from './ViewControls.svelte'
   import { Button } from '$lib/components/ui/button'
+  import { Input } from '$lib/components/ui/input'
   import { Slider } from '$lib/components/ui/slider'
   import { useSidebar } from '$lib/components/ui/sidebar'
-  import { isInDialog, isTypingTarget, KEY_ESCAPE, KEY_SEARCH, KEY_SELECT_ALL } from '$lib/keyboard'
+  import {
+    blurOnEscape,
+    isInDialog,
+    isTypingTarget,
+    KEY_ENTER,
+    KEY_ESCAPE,
+    KEY_SEARCH,
+    KEY_SELECT_ALL,
+  } from '$lib/keyboard'
 
   let { view }: { view: 'library' | 'trash' } = $props()
 
-  // Read once on purpose: the view is fixed for this screen's life (design D1).
-  // The two routes are two mounts of this component, never one that switches
-  // between them — `SearchResults` says the same thing about its own field.
+  // The route's result set, kept by `browseSession` rather than owned here
+  // (`browse-feedback` design D1): a route remount — leaving for the trash,
+  // the import screen or settings and coming back — must not lose it. The two
+  // routes still never share one; only the lifetime moved out of this
+  // component, to the app's whole run. Read once on purpose: `view` is fixed
+  // for this screen's life, exactly as `SearchResults.view` says of itself.
   // svelte-ignore state_referenced_locally
-  const results = new SearchResults(view)
+  const results = browseSession.resultsFor(view)
 
   // The `/` shortcut's way to expand a collapsed sidebar before it focuses the
   // tag query (`sidebar-layout` design D4). Read once, during initialisation,
@@ -86,27 +99,37 @@
     ),
   )
 
-  const noQuery: SearchInputs = { tagQuery: '', text: '' }
   // The query lives here, not in the search bar: the sidebar, the rating pills
   // and the inspector rewrite it too (design D14), and the field has to show
-  // what ran.
-  let tagQuery = $state('')
-  let text = $state('')
+  // what ran. Seeded from `results.inputs` rather than empty (`browse-feedback`
+  // design D1): on a route remount that is the query the screen left with.
+  let tagQuery = $state(results.inputs.tagQuery)
+  let text = $state(results.inputs.text)
   const inputs = $derived<SearchInputs>({ tagQuery, text })
-  /** Session state, not a setting (design D9 / Non-Goals): open until hidden. */
-  let inspectorOpen = $state(true)
+  // The 250 ms typing pause for both fields, one timer (`browse-feedback`
+  // design D3): the sidebar's tag field and the toolbar's free-text field sit
+  // in two different regions of the frame now, so a pause owned by either one
+  // would leave the other without it.
+  const TYPING_PAUSE_MS = 250
+  let searchTimer: ReturnType<typeof setTimeout> | undefined
+
+  function searchNow() {
+    clearTimeout(searchTimer)
+    runSearch({ tagQuery, text })
+  }
+
+  function searchAfterPause() {
+    clearTimeout(searchTimer)
+    searchTimer = setTimeout(searchNow, TYPING_PAUSE_MS)
+  }
+
+  $effect(() => () => clearTimeout(searchTimer))
+
   // The grid follows the drag; only the release writes the setting (design D11),
   // so this is the live edge and `gridTileSize` is where it comes back from.
   let tile = $state(settings.current?.gridTileSize ?? GRID_TILE_DEFAULT)
   let lightboxIndex = $state(0)
   let lightboxOpen = $state(false)
-  /**
-   * The viewer's mode is session state like `inspectorOpen`, and it is held here
-   * rather than in the dialog because the user who opened the panel wants the
-   * panel: closing a picture is not a statement about it (design D6). The grid's
-   * inspector column keeps its own flag — opening the viewer must not move it.
-   */
-  let lightboxMode = $state<'gallery' | 'inspect'>('gallery')
   /** Written by the grid, read by the viewer's row step (design D9). */
   let columns = $state(1)
   let grid = $state<LibraryGrid | null>(null)
@@ -429,8 +452,9 @@
       // (`group-data-[collapsible=icon]:hidden`), so the sidebar has to expand
       // first; `tick` waits for that state change to reach the DOM before the
       // focus call can land on a field that is still hidden (design D4). The
-      // sidebar's tag field is a textarea (`multiline`, design D2), unlike the
-      // inspector's — either element type is a valid focus target.
+      // sidebar's tag field is an `Input` again (`browse-feedback` design D3);
+      // the `instanceof` check still accepts a textarea too, since `TagInput`
+      // renders one there for the inspector's own multiline editor.
       sidebarState.setOpen(true)
       void tick().then(() => {
         const field = document.getElementById('tag-query')
@@ -473,12 +497,74 @@
     }
   })
 
-  void results.run(noQuery)
+  void results.run(results.inputs)
 </script>
 
 <svelte:window onkeydown={screenKeys} />
 
 {#snippet toolbar()}
+  <!--
+    Design D2: the free-text field sits at the left, beside the sidebar
+    toggle `TopBar` renders before this snippet. There is no form and no
+    Search button around it, as there never was one here (the query runs
+    after a typing pause and on Enter): `TagInput` in the sidebar submits
+    itself the same way, and a bare `Input` needs its own Enter handling
+    since it has no such rule of its own.
+  -->
+  <Input
+    id="text-query"
+    class="h-7 w-56 shrink text-xs"
+    aria-label="Page title or URL"
+    bind:value={text}
+    oninput={searchAfterPause}
+    onkeydown={(event) => {
+      blurOnEscape(event)
+      if (event.key === KEY_ENTER) searchNow()
+    }}
+    placeholder="Title or URL"
+    autocomplete="off"
+    autocorrect="off"
+    spellcheck={false}
+  />
+
+  <div class="flex-1"></div>
+
+  {#if selection.count > 0}
+    <SelectionToolbar
+      {selection}
+      {results}
+      {actions}
+      rate={rateSelection}
+      onerror={(message) => (actionError = message)}
+      onexported={(report) => (exportReport = report)}
+    />
+  {/if}
+
+  <div class="flex-1"></div>
+
+  <!--
+    Design D2: this group — the screen's own action, the tile size and the
+    inspector toggle — holds the right edge on every platform, selection or
+    not (spec `app-frame`, "the controls at both edges are where they were
+    before the selection"): the two spacers above collapse to one gap when
+    there is nothing to put in the middle, and expand to make room for the
+    selection toolbar without moving anything at either edge. The screen's
+    own action still yields to a selection (`selection-and-bulk` design D6):
+    the group at this edge only shortens, it does not move.
+  -->
+  {#if selection.count > 0}
+    <!-- The selection toolbar above is this row's action while it lasts. -->
+  {:else if view === 'trash' && trash.count > 0}
+    <!--
+      `trash` design D13: importing into the trash is meaningless, so on that
+      screen this row offers the one action it actually has. An empty trash
+      offers nothing here rather than a button that would do nothing (D7).
+    -->
+    <Button size="sm" variant="outline" onclick={askEmptyTrash}>Empty trash…</Button>
+  {:else if view === 'library'}
+    <ImportMenu />
+  {/if}
+
   <Slider
     type="single"
     class="w-24 shrink-0"
@@ -495,53 +581,33 @@
   <!-- The variant, not just `aria-pressed`: the state has to be visible. -->
   <Button
     size="icon-sm"
-    variant={inspectorOpen ? 'secondary' : 'ghost'}
+    variant={browseSession.inspectorOpen ? 'secondary' : 'ghost'}
     aria-label="Show or hide the inspector"
-    aria-pressed={inspectorOpen}
-    onclick={() => (inspectorOpen = !inspectorOpen)}
+    aria-pressed={browseSession.inspectorOpen}
+    onclick={() => (browseSession.inspectorOpen = !browseSession.inspectorOpen)}
   >
     <PanelRightIcon />
   </Button>
-
-  <!--
-    Design D6: the selection replaces this row's actions and nothing else. The
-    tile size and the inspector toggle above stay where they are — the search
-    and the order controls moved out to the sidebar (`sidebar-layout` design
-    D5), which is the room this row now has for a selection at a narrow window.
-  -->
-  {#if selection.count > 0}
-    <SelectionToolbar
-      {selection}
-      {results}
-      {actions}
-      rate={rateSelection}
-      onerror={(message) => (actionError = message)}
-      onexported={(report) => (exportReport = report)}
-    />
-  {:else if view === 'trash' && trash.count > 0}
-    <!--
-      `trash` design D13: importing into the trash is meaningless, so on that
-      screen this row offers the one action it actually has. An empty trash
-      offers nothing here rather than a button that would do nothing (D7).
-    -->
-    <Button size="sm" variant="outline" onclick={askEmptyTrash}>Empty trash…</Button>
-  {:else if view === 'library'}
-    <ImportMenu />
-  {/if}
 {/snippet}
 
 {#snippet sidebar()}
   <!--
-    Slot Sidebar · sidebar (`sidebar-layout` design D1, D5): Search, Rating,
-    Tags, Filter, top to bottom. The panels stay mounted while a search runs:
+    Slot Sidebar · sidebar (`sidebar-layout` design D1, D5; order per
+    `browse-feedback` design D4): Search, Rating, Tags, Collections, Order and
+    grouping, top to bottom. The panels stay mounted while a search runs:
     unmounting them flickers the whole region on every click. Blank counts
     (`null`) are still honest (design D8) — the last query's numbers never
     show, only their own headings do until the new counts arrive.
   -->
-  <SearchBar bind:tagQuery bind:text onsearch={runSearch} />
+  <SearchBar bind:tagQuery oninput={searchAfterPause} onsubmit={searchNow} />
 
   <RatingPills
     counts={results.counts?.ratings ?? null}
+    {tagQuery}
+    onquery={(next) => void searchKeeping(next, focused?.id)}
+  />
+  <TagSidebar
+    tags={results.counts?.tags ?? null}
     {tagQuery}
     onquery={(next) => void searchKeeping(next, focused?.id)}
   />
@@ -550,11 +616,6 @@
     {tagQuery}
     onquery={(next) => void searchKeeping(next, focused?.id)}
     onchanged={() => void results.refresh()}
-  />
-  <TagSidebar
-    tags={results.counts?.tags ?? null}
-    {tagQuery}
-    onquery={(next) => void searchKeeping(next, focused?.id)}
   />
 
   <ViewControls
@@ -623,14 +684,29 @@
           bind:columns
           onactivate={openViewer}
           onrate={rate}
-          ontoggleinspector={() => (inspectorOpen = !inspectorOpen)}
+          ontoggleinspector={() => (browseSession.inspectorOpen = !browseSession.inspectorOpen)}
           onerror={(message) => (actionError = message)}
         />
       {/if}
     </div>
   </div>
 
-  {#if inspectorOpen}
+  <!--
+    Slot Grid · rail (`browse-feedback` design D9): the accounts of the result,
+    only while it is grouped by them. Between the grid and the inspector, and
+    the grid gives up the width — the inspector's own stays as it is.
+  -->
+  {#if results.group === 'x-account'}
+    <aside class="w-48 shrink-0 overflow-y-auto border-s border-border">
+      <AccountRail
+        groups={results.groups}
+        {tagQuery}
+        onquery={(next) => void searchKeeping(next, focused?.id)}
+      />
+    </aside>
+  {/if}
+
+  {#if browseSession.inspectorOpen}
     <aside class="w-80 shrink-0 border-s border-border">
       <Inspector
         image={focused}
@@ -654,7 +730,7 @@
     {actions}
     {tagQuery}
     onquery={searchKeeping}
-    bind:mode={lightboxMode}
+    bind:mode={browseSession.lightboxMode}
     bind:index={lightboxIndex}
     onmove={(index) => grid?.scrollIntoView(index)}
     onclose={() => {

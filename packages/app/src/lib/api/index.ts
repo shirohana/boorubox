@@ -1,6 +1,7 @@
 export * from './assets'
 export * from './booru'
 export { booruSites } from './booru.svelte'
+export { browseSession, BrowseSession } from './browse-session.svelte'
 export { bundlePick, BundlePick } from './bundle-pick.svelte'
 export { collections } from './collections.svelte'
 export * from './commands'

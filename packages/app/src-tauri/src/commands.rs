@@ -335,6 +335,19 @@ pub fn set_notes_collapsed<R: Runtime>(
     })
 }
 
+/// Whether the sidebar's collections section is folded away (`browse-feedback`
+/// design D4), copied from `set_notes_collapsed`'s line.
+#[tauri::command]
+pub fn set_collections_collapsed<R: Runtime>(
+    collapsed: bool,
+    app: AppHandle<R>,
+    state: State<'_, AppState>,
+) -> Result<AppSettings> {
+    write_settings(&app, &state, |settings| {
+        settings.collections_collapsed = collapsed;
+    })
+}
+
 /// Whether `setup` reopens the remembered library automatically at the next
 /// launch (`launch-screen` design D3). Takes effect next launch: this launch
 /// already decided whether to open before the webview could call it.
@@ -2756,6 +2769,19 @@ mod tests {
         assert!(answered.notes_collapsed);
         assert!(app_settings(app.state()).notes_collapsed);
         assert!(settings::load(app.handle()).notes_collapsed);
+    }
+
+    /// The collections section's fold is a preference, so it has to survive
+    /// the process too, the same as the notes panel's own test.
+    #[test]
+    fn the_collections_fold_reaches_the_state_and_the_store() {
+        let app = mock_app();
+
+        let answered = set_collections_collapsed(true, app.handle().clone(), app.state()).unwrap();
+
+        assert!(answered.collections_collapsed);
+        assert!(app_settings(app.state()).collections_collapsed);
+        assert!(settings::load(app.handle()).collections_collapsed);
     }
 
     // ---- damage, the backfill and the rebuild (`library-sidecars` tasks

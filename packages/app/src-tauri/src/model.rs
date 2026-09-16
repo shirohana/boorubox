@@ -593,6 +593,9 @@ pub struct AppSettings {
     /// of `settings.json` — D13 records why that reading was right until a
     /// panel big enough to write in sat in the sidebar.
     pub notes_collapsed: bool,
+    /// Whether the sidebar's collections section is folded away
+    /// (`browse-feedback` design D4), copied from `notes_collapsed`'s line.
+    pub collections_collapsed: bool,
     /// Whether the app reopens `LibraryStatus.libraryPath`'s remembered
     /// folder automatically at launch, or waits on the start screen for the
     /// user to pick one (`launch-screen` design D3). Takes effect at the
@@ -928,6 +931,7 @@ mod tests {
             theme: Theme::Dark,
             grid_tile_size: GRID_TILE_DEFAULT,
             notes_collapsed: true,
+            collections_collapsed: true,
             open_last_on_launch: false,
         };
 
@@ -937,6 +941,7 @@ mod tests {
                 "theme": "dark",
                 "gridTileSize": 180,
                 "notesCollapsed": true,
+                "collectionsCollapsed": true,
                 "openLastOnLaunch": false,
             }),
         );

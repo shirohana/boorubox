@@ -94,10 +94,16 @@
       (`sidebar-layout` design D1): search, rating and filter sections are
       natural height, and only `TagSidebar`'s own section — the one that can
       outgrow the panel — scrolls, via the `data-sidebar="tags"` hook in
-      app.css.
+      app.css. `overflow-y-auto` on the column is for a window too short for
+      even that (`browse-feedback`): the tag list keeps a floor and the
+      collections box a height of its own, so past a point the column itself
+      has to scroll — without it the filter section was painted under the
+      navigation below.
     -->
     {#if frame.sidebar}
-      <div class="flex min-h-0 flex-1 flex-col group-data-[collapsible=icon]:hidden">
+      <div
+        class="flex min-h-0 flex-1 flex-col overflow-y-auto group-data-[collapsible=icon]:hidden"
+      >
         {@render frame.sidebar()}
       </div>
       <Sidebar.Separator class="my-2 group-data-[collapsible=icon]:hidden" />

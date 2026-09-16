@@ -84,8 +84,11 @@ export function pageOf(index: number): number {
 export class SearchResults {
   /**
    * Which set of images this instance searches, fixed for its lifetime
-   * (`trash` design D1): `LibraryScreen` makes one `SearchResults` per route,
-   * so the library and the trash never share one and never need to switch.
+   * (`trash` design D1, `browse-feedback` design D1 amended): `browseSession`
+   * makes one `SearchResults` per view, created on first ask and kept for the
+   * app's run rather than per route mount, so the library and the trash still
+   * never share one and never need to switch — only how long each one lives
+   * has changed.
    */
   readonly view: 'library' | 'trash'
 

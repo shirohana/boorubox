@@ -1,11 +1,31 @@
 // @vitest-environment jsdom
 
 import { expect, it } from 'vitest'
-import { isInDialog, isTrashKey, isTypingTarget, KEY_BACKSPACE, KEY_DELETE } from './keyboard'
+import {
+  blurOnEscape,
+  isInDialog,
+  isTrashKey,
+  isTypingTarget,
+  KEY_BACKSPACE,
+  KEY_DELETE,
+  KEY_ESCAPE,
+} from './keyboard'
 
 /** The guard reads `event.target`, so every case has to dispatch a real event. */
 function keydownOn(element: Element, key = 'i'): KeyboardEvent {
   const event = new KeyboardEvent('keydown', { key, bubbles: true })
+  element.dispatchEvent(event)
+  return event
+}
+
+/**
+ * `blurOnEscape` reads `event.currentTarget`, which only holds a value while a
+ * listener bound with `addEventListener` is running — unlike `keydownOn`'s
+ * dispatch, which no handler observes.
+ */
+function keydownWithBlurOnEscape(element: HTMLElement, key: string): KeyboardEvent {
+  element.addEventListener('keydown', blurOnEscape)
+  const event = new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true })
   element.dispatchEvent(event)
   return event
 }
@@ -97,4 +117,24 @@ it('is not in a dialog on the screen behind one', () => {
 
 it('is not any other key', () => {
   expect(isTrashKey(keydownOn(mounted(document.createElement('div'))), 'library')).toBe(false)
+})
+
+it('blurs the field on Escape and prevents default', () => {
+  const field = mounted(document.createElement('input'))
+  field.focus()
+
+  const event = keydownWithBlurOnEscape(field, KEY_ESCAPE)
+
+  expect(document.activeElement).not.toBe(field)
+  expect(event.defaultPrevented).toBe(true)
+})
+
+it('does neither on another key', () => {
+  const field = mounted(document.createElement('input'))
+  field.focus()
+
+  const event = keydownWithBlurOnEscape(field, 'a')
+
+  expect(document.activeElement).toBe(field)
+  expect(event.defaultPrevented).toBe(false)
 })

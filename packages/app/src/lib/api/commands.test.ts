@@ -53,6 +53,7 @@ import {
   search,
   searchIds,
   selectionTagCounts,
+  setCollectionsCollapsed,
   setGridTileSize,
   setListenerPort,
   setNotesCollapsed,
@@ -147,6 +148,7 @@ it('app_settings takes no arguments', async () => {
     theme: 'system',
     gridTileSize: GRID_TILE_DEFAULT,
     notesCollapsed: false,
+    collectionsCollapsed: false,
     openLastOnLaunch: true,
   }
   const calls = spyIPC(settings)
@@ -159,6 +161,7 @@ it('set_theme passes the theme and returns the settings', async () => {
     theme: 'dark',
     gridTileSize: GRID_TILE_DEFAULT,
     notesCollapsed: false,
+    collectionsCollapsed: false,
     openLastOnLaunch: true,
   }
   const calls = spyIPC(settings)
@@ -171,6 +174,7 @@ it('set_grid_tile_size passes the size', async () => {
     theme: 'system',
     gridTileSize: GRID_TILE_MAX,
     notesCollapsed: false,
+    collectionsCollapsed: false,
     openLastOnLaunch: true,
   })
   await setGridTileSize(10_000)
@@ -182,6 +186,7 @@ it('set_notes_collapsed passes the flag and returns the settings', async () => {
     theme: 'system',
     gridTileSize: GRID_TILE_DEFAULT,
     notesCollapsed: true,
+    collectionsCollapsed: false,
     openLastOnLaunch: true,
   }
   const calls = spyIPC(settings)
@@ -189,11 +194,25 @@ it('set_notes_collapsed passes the flag and returns the settings', async () => {
   expect(calls).toHaveBeenCalledWith('set_notes_collapsed', { collapsed: true })
 })
 
+it('set_collections_collapsed passes the flag and returns the settings', async () => {
+  const settings: AppSettings = {
+    theme: 'system',
+    gridTileSize: GRID_TILE_DEFAULT,
+    notesCollapsed: false,
+    collectionsCollapsed: true,
+    openLastOnLaunch: true,
+  }
+  const calls = spyIPC(settings)
+  await expect(setCollectionsCollapsed(true)).resolves.toEqual(settings)
+  expect(calls).toHaveBeenCalledWith('set_collections_collapsed', { collapsed: true })
+})
+
 it('set_open_last_on_launch passes the flag and returns the settings', async () => {
   const settings: AppSettings = {
     theme: 'system',
     gridTileSize: GRID_TILE_DEFAULT,
     notesCollapsed: false,
+    collectionsCollapsed: false,
     openLastOnLaunch: false,
   }
   const calls = spyIPC(settings)
