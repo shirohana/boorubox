@@ -80,10 +80,11 @@
   /** The image is fitted into this; the empty space around it closes the viewer (design D4). */
   let stage = $state<HTMLDivElement | null>(null)
   /**
-   * The inset box the image is fitted into and panned inside (design D4). Its
-   * measured size, not the stage's, is what `fitScale`/`clickTarget`/`panOffset`
-   * see, so the margin around the image (Tailwind's `inset-6`, 24px — `design
-   * D4`'s `PAN_MARGIN_PX`) is never itself part of the picture.
+   * The box the image is fitted into and panned inside (design D4), the whole
+   * of the stage: its measured size is what `fitScale`/`clickTarget`/
+   * `panOffset` see. No margin (`viewer-edge-to-edge` D1): a strip of dark
+   * around a covering image made it read as contained, hiding that the edge
+   * was cutting it.
    */
   let viewport = $state<HTMLDivElement | null>(null)
 
@@ -391,11 +392,11 @@
     // later, so without this the tile's own double click closes it again.
     if (event.detail > 1) return
     // Design D4: the dark region is the `::backdrop`, whose clicks target the
-    // `<dialog>`; the margin between the stage's edge and the viewport box;
-    // and, inside the viewport box, the space beside a centred image that is
-    // not zoomed to fill it — the box forwards those the same way, because a
-    // click there lands on the box itself, not the image. A click on the
-    // image or the inspector lands on a descendant and stays there.
+    // `<dialog>`, and, inside the viewport box, the space beside a centred
+    // image that is not zoomed to fill it — a click there lands on the box
+    // itself, not the image. A click on the image or the inspector lands on
+    // a descendant and stays there. A covering image leaves nothing to click
+    // (`viewer-edge-to-edge`): Escape and Space are the way out then.
     const target = event.target
     if (target === dialog || target === stage || target === viewport) dialog?.close()
   }
@@ -407,7 +408,7 @@
   {onkeydown}
   {onclick}
   class="
-    m-auto h-[96vh] max-h-none w-[96vw] max-w-none border-0 bg-transparent p-0
+    m-auto h-screen max-h-none w-screen max-w-none border-0 bg-transparent p-0
     backdrop:bg-black/85
   "
 >
@@ -420,10 +421,10 @@
     <div class="flex min-w-0 flex-1 flex-col">
       <div bind:this={stage} class="relative flex min-h-0 min-w-0 flex-1">
         <!--
-          The inset box the image is fitted into and panned inside; the strip
-          between this and the stage's edge is the margin (design D4). A click
-          that lands on this box itself — not the image — closes the viewer,
-          same as a click on the stage (`onclick` above).
+          The box the image is fitted into and panned inside, edge to edge
+          (`viewer-edge-to-edge` D1). A click that lands on this box itself —
+          not the image — closes the viewer, same as a click on the stage
+          (`onclick` above).
         -->
         <!--
           Wheel, pointer position and the WebKit pinch are mouse/trackpad-only
@@ -437,7 +438,7 @@
           bind:clientHeight={viewportHeight}
           onwheel={onviewportwheel}
           onpointermove={onviewportpointermove}
-          class="absolute inset-6 flex items-center justify-center overflow-hidden"
+          class="absolute inset-0 flex items-center justify-center overflow-hidden"
         >
           {#if src}
             <!--
