@@ -102,14 +102,20 @@ pub fn store_image(library: &Library, input: IngestInput) -> Result<Ingested> {
     let path = library.paths.image_path(input.id, decoded.ext);
     write_through_inbox(library, input.id, input.bytes, &path)?;
 
-    let ingested = match insert_rows(library, &input, &decoded) {
-        Ok(ingested) => ingested,
+    let (ingested, categorised) = match insert_rows(library, &input, &decoded) {
+        Ok(outcome) => outcome,
         Err(error) => {
             let _ = std::fs::remove_file(&path);
             return Err(error);
         }
     };
     write_sidecar(library, ingested.record())?;
+    // Only when a categorised row was born (`tag-vocabulary` design D2): a
+    // capture whose tags name no new category costs nothing more than it
+    // already did.
+    if categorised {
+        crate::sidecar::write_library(&library.paths, &library.conn)?;
+    }
     Ok(ingested)
 }
 
@@ -164,7 +170,11 @@ fn write_through_inbox(library: &Library, id: &str, bytes: &[u8], dest: &Path) -
     })
 }
 
-fn insert_rows(library: &Library, input: &IngestInput, decoded: &Decoded) -> Result<Ingested> {
+fn insert_rows(
+    library: &Library,
+    input: &IngestInput,
+    decoded: &Decoded,
+) -> Result<(Ingested, bool)> {
     // `unchecked_transaction` because `store_image` takes `&Library`: the
     // exclusive access rusqlite normally wants is provided one level up, by the
     // mutex around the single connection (design D1).
@@ -177,7 +187,11 @@ fn insert_rows(library: &Library, input: &IngestInput, decoded: &Decoded) -> Res
         .map_err(|error| {
             AppError::BadRequest(format!("adapter record cannot be stored: {error}"))
         })?;
-    let (final_tags, final_rating) = resolve_tags_and_rating(&tx, input)?;
+    let text = resolve_tag_text(&tx, input)?;
+    let final_rating = input
+        .rating
+        .map(str::to_string)
+        .or_else(|| text.rating.clone());
     let inserted = tx.execute(
         "INSERT INTO images (id, ext, mime, size, width, height, source, source_ref, image_url,
                              page_url, page_title, adapter_json, rating, captured_at, created_at,
@@ -211,15 +225,22 @@ fn insert_rows(library: &Library, input: &IngestInput, decoded: &Decoded) -> Res
         // one mutex-guarded connection means nobody inserted in between. Give a
         // second writer here and it also orphans the file just renamed in.
         drop(tx);
-        return Ok(Ingested::Existing(require_record(&library.conn, input.id)?));
+        return Ok((
+            Ingested::Existing(require_record(&library.conn, input.id)?),
+            false,
+        ));
     }
 
-    for tag in &final_tags {
-        tags::link_tag(&tx, input.id, tag)?;
-    }
+    // `Conflict::Keep` (`tag-vocabulary` design D4): a rule's tags never
+    // refuse a capture over a category disagreement — the auto-tag rules'
+    // own promise is that they never block the save.
+    let categorised = tags::link_tags(&tx, input.id, &text, tags::Conflict::Keep)?;
     tx.commit()?;
 
-    Ok(Ingested::Created(require_record(&library.conn, input.id)?))
+    Ok((
+        Ingested::Created(require_record(&library.conn, input.id)?),
+        categorised,
+    ))
 }
 
 /// What actually gets stored: `input.tags` unioned with the enabled rules'
@@ -228,29 +249,26 @@ fn insert_rows(library: &Library, input: &IngestInput, decoded: &Decoded) -> Res
 /// "whatever the bundle carries is what is stored", and re-deriving tags for
 /// images that already carry the old library's would fight that and
 /// double-apply a rule that has since changed. The combined list then goes
-/// through `tags::split_rating` unconditionally, the same rule the tag editor
-/// applies (design D8), so a `rating:e` a rule names — or one a caller simply
-/// hands in through `input.tags` — never becomes a literal tag either way.
-/// `input.rating`, what the source itself supplied, wins over anything a rule
-/// extracted (design D8's "a rule SHALL NOT overwrite a rating the source
-/// supplied").
-fn resolve_tags_and_rating(
-    conn: &Connection,
-    input: &IngestInput,
-) -> Result<(Vec<String>, Option<String>)> {
+/// through `tags::read_metatags` unconditionally, the same reader the tag
+/// editor uses (design D8, `tag-vocabulary` design D4): a `rating:e` a rule
+/// names — or one a caller simply hands in through `input.tags` — never
+/// becomes a literal tag either way, and an `artist:` prefix a rule names
+/// creates the tag under that category the same way the editor's does.
+/// `insert_rows` merges `input.rating`, what the source itself supplied, over
+/// whatever this extracted (design D8's "a rule SHALL NOT overwrite a rating
+/// the source supplied").
+fn resolve_tag_text(conn: &Connection, input: &IngestInput) -> Result<tags::TagText> {
     let mut candidate: Vec<String> = input.tags.to_vec();
     if input.source != ImageSource::LegacyBundle {
         let enabled = rules::enabled_rules(conn)?;
         let haystacks = rules::haystacks(input.page_title, input.adapter);
-        // Appended, not unioned: `split_rating` below is the one deduper of
+        // Appended, not unioned: `read_metatags` below is the one deduper of
         // this list, and it drops repeats keeping the first occurrence — so a
         // tag the source supplied and a rule also names is stored once, in the
         // source's position, without a second dedupe spelling it here.
         candidate.extend(rules::auto_tags(&enabled, &haystacks));
     }
-    let (final_tags, extracted_rating) = tags::split_rating(&candidate);
-    let final_rating = input.rating.map(str::to_string).or(extracted_rating);
-    Ok((final_tags, final_rating))
+    Ok(tags::read_metatags(&candidate))
 }
 
 /// Map a row selected with [`IMAGE_COLUMNS`]. `tags` comes back empty: tags are

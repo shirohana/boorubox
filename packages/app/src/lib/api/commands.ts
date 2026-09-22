@@ -29,8 +29,10 @@ import type {
   RulesRunReport,
   SearchRequest,
   SearchResult,
+  TagCategory,
   TagCount,
   TagCounts,
+  TagEntry,
   Theme,
 } from '@boorubox/shared'
 import { invoke } from '@tauri-apps/api/core'
@@ -284,10 +286,43 @@ export function bulkSetRating(ids: string[], rating: Rating | null): Promise<voi
 
 /**
  * The `limit` tags most common among `ids`, with their counts — the bulk tag
- * dialog's quick-remove pills (design D9).
+ * dialog's quick-remove pills (design D9). `names`, when given, asks for the
+ * counts of exactly those tags instead of the top `limit` by frequency
+ * (`tag-vocabulary` design D8, the pinned chips' tri-state read): a name the
+ * selection carries zero times is simply absent from the answer, not a
+ * zero-count entry. Omitted, Tauri resolves the argument to `None` on the
+ * Rust side, so the bulk dialog's own call above is unchanged.
  */
-export function selectionTagCounts(ids: string[], limit: number): Promise<TagCount[]> {
-  return invoke('selection_tag_counts', { ids, limit })
+export function selectionTagCounts(
+  ids: string[],
+  limit: number,
+  names?: string[],
+): Promise<TagCount[]> {
+  return invoke('selection_tag_counts', { ids, limit, names })
+}
+
+/**
+ * The vocabulary's exceptions (design D2): every tag that is not
+ * `(general, unpinned)`, sorted by name — what `api/vocabulary.svelte.ts`
+ * reads on refresh.
+ */
+export function tagVocabulary(): Promise<TagEntry[]> {
+  return invoke('tag_vocabulary')
+}
+
+/**
+ * Sets `name`'s category from its context menu (design D9), never from typed
+ * text (design D4's deliberate rule). Refused when `name` is not a tag at
+ * all. Answers the vocabulary as it now stands, the cheapest way for the
+ * store to stay in step with a write it did not read back itself.
+ */
+export function setTagCategory(name: string, category: TagCategory): Promise<TagEntry[]> {
+  return invoke('set_tag_category', { name, category })
+}
+
+/** Pins or unpins `name`; same refusal, same answer shape as {@link setTagCategory}. */
+export function setTagPinned(name: string, pinned: boolean): Promise<TagEntry[]> {
+  return invoke('set_tag_pinned', { name, pinned })
 }
 
 /**

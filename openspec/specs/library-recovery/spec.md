@@ -46,10 +46,11 @@ changed produces the same bytes.
 ### Requirement: The library's own settings are described by one file
 The app SHALL keep one file in the library folder describing the library-level state a
 rebuild would otherwise lose: the auto-tag rules, the configured booru sites, the library
-note, and the collections with their ids and names. It SHALL be rewritten whenever any of
-those change. It SHALL NOT contain any API key or
-other credential; those live in the operating system's credential store (`booru-sites`) and
-SHALL NOT be written into the library folder.
+note, the collections with their ids and names, and the tag vocabulary — every tag that is
+not general or is pinned, with its category and its pin. It SHALL be rewritten whenever any
+of those change. It SHALL NOT contain any API key or other credential; those live in the
+operating system's credential store (`booru-sites`) and SHALL NOT be written into the
+library folder.
 
 #### Scenario: A rule is saved
 - **WHEN** the user creates, edits, deletes or imports an auto-tag rule
@@ -66,6 +67,10 @@ SHALL NOT be written into the library folder.
 #### Scenario: A collection is renamed
 - **WHEN** the user creates, renames or deletes a collection
 - **THEN** the library's own file lists the collections as they now stand, by id and name
+
+#### Scenario: A tag is categorised or pinned
+- **WHEN** the user creates a tag under a category, changes a tag's category, or pins or unpins a tag
+- **THEN** the library's own file lists the vocabulary as it now stands, and a general unpinned tag is not in it
 
 ### Requirement: A write that cannot be mirrored is a failed write
 A write that stores the row but cannot write the file describing it SHALL be reported as a
@@ -130,8 +135,8 @@ read it.
 The app SHALL be able to build a working library database from the files in the folder alone:
 every image whose describing file can be read SHALL come back with its tags, rating, trash
 state, times, source, posts and collections, and searchable exactly as before; the auto-tag
-rules, the booru sites, the note and the collections SHALL come back from the library-level
-file.
+rules, the booru sites, the note, the collections and the tag vocabulary SHALL come back from
+the library-level file, a vocabulary tag with no carrier included.
 
 Rebuilding SHALL NOT read, decode or rewrite any image or thumbnail — an image's dimensions
 come from its describing file — and SHALL NOT remove any file under the folder. A describing
@@ -168,6 +173,14 @@ if it is interrupted.
 #### Scenario: Collections come back
 - **WHEN** a library whose images are in collections is rebuilt
 - **THEN** every collection is back by its id and name, and every image is in the collections it was in
+
+#### Scenario: The vocabulary comes back
+- **WHEN** a library is rebuilt whose file lists `kantoku` as an artist, `tagme` as pinned, and `azur_lane` as a copyright carried by no image
+- **THEN** `kantoku` is an artist tag, `tagme` is pinned, and `azur_lane` is a copyright tag that the editor suggests
+
+#### Scenario: A file from before the vocabulary
+- **WHEN** a library is rebuilt whose file has no vocabulary key
+- **THEN** every tag comes back general and unpinned
 
 ### Requirement: A rebuild is offered where the damage is met, and only on request
 The app SHALL offer to rebuild a library from the start screen when that library will not

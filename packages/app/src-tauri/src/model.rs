@@ -102,6 +102,90 @@ impl rusqlite::types::FromSql for ImageSource {
     }
 }
 
+/// The five kinds of tag `tag-vocabulary` design D1 fixes. A tag belongs to
+/// exactly one, general unless given another; the five names here are both
+/// the storage form (`tags.category`) and the wire form, the same shape
+/// `ImageSource` already uses for a column with the same job: `as_str` and
+/// `FromStr` back the serde, `ToSql` and `FromSql` impls below.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub enum TagCategory {
+    Artist,
+    Copyright,
+    Character,
+    Meta,
+    #[default]
+    General,
+}
+
+impl TagCategory {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            TagCategory::Artist => "artist",
+            TagCategory::Copyright => "copyright",
+            TagCategory::Character => "character",
+            TagCategory::Meta => "meta",
+            TagCategory::General => "general",
+        }
+    }
+}
+
+impl FromStr for TagCategory {
+    type Err = AppError;
+
+    fn from_str(raw: &str) -> Result<Self, Self::Err> {
+        match raw {
+            "artist" => Ok(TagCategory::Artist),
+            "copyright" => Ok(TagCategory::Copyright),
+            "character" => Ok(TagCategory::Character),
+            "meta" => Ok(TagCategory::Meta),
+            "general" => Ok(TagCategory::General),
+            other => Err(AppError::BadRequest(format!(
+                "unknown tag category {other:?}"
+            ))),
+        }
+    }
+}
+
+impl Serialize for TagCategory {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(self.as_str())
+    }
+}
+
+impl<'de> Deserialize<'de> for TagCategory {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let raw = String::deserialize(deserializer)?;
+        raw.parse().map_err(serde::de::Error::custom)
+    }
+}
+
+impl rusqlite::ToSql for TagCategory {
+    fn to_sql(&self) -> rusqlite::Result<rusqlite::types::ToSqlOutput<'_>> {
+        Ok(rusqlite::types::ToSqlOutput::from(self.as_str()))
+    }
+}
+
+impl rusqlite::types::FromSql for TagCategory {
+    fn column_result(value: rusqlite::types::ValueRef<'_>) -> rusqlite::types::FromSqlResult<Self> {
+        value
+            .as_str()?
+            .parse()
+            .map_err(|e| rusqlite::types::FromSqlError::Other(Box::new(e)))
+    }
+}
+
+/// One tag outside the `(general, unpinned)` default: its name, its category
+/// and whether it is pinned — the vocabulary's own row (`tag-vocabulary`
+/// design D2). What `tag_vocabulary` answers with, what `library.json`'s
+/// `tags` key lists, and what a rebuild restores onto the row verbatim.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TagEntry {
+    pub name: String,
+    pub category: TagCategory,
+    pub pinned: bool,
+}
+
 /// What a site adapter extracted, verbatim. `fields` stays untyped JSON: the
 /// extension owns extraction, and rejecting a capture over an adapter field
 /// shape the app does not read yet would lose the image.
@@ -973,6 +1057,36 @@ mod tests {
                 "openLastOnLaunch": false,
             }),
         );
+    }
+
+    /// `tag-vocabulary` task 1.2: the wire spelling a hand-mirrored rename
+    /// would silently break — camelCase keys, and every category its own
+    /// lower-case name in both directions.
+    #[test]
+    fn a_tag_entry_crosses_the_wire_in_camel_case_with_lowercase_categories() {
+        let entry = TagEntry {
+            name: "kantoku".to_string(),
+            category: TagCategory::Artist,
+            pinned: true,
+        };
+        assert_eq!(
+            serde_json::to_value(&entry).unwrap(),
+            serde_json::json!({ "name": "kantoku", "category": "artist", "pinned": true }),
+        );
+
+        for (category, name) in [
+            (TagCategory::Artist, "artist"),
+            (TagCategory::Copyright, "copyright"),
+            (TagCategory::Character, "character"),
+            (TagCategory::Meta, "meta"),
+            (TagCategory::General, "general"),
+        ] {
+            assert_eq!(serde_json::to_value(category).unwrap(), name);
+            assert_eq!(
+                serde_json::from_value::<TagCategory>(serde_json::json!(name)).unwrap(),
+                category,
+            );
+        }
     }
 
     fn bare_image(id: &str) -> ImageRecord {

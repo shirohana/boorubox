@@ -73,9 +73,24 @@ export class Selection {
   readonly #resolve: IdResolver
   readonly #matches: MatchResolver
 
+  /**
+   * Bumped by every `#state` reassignment (`#setState` below) — a cheap,
+   * synchronous stand-in for "which selection is this", for a reader that
+   * must not call `ids()` or `peekIds()` on every re-render just to learn
+   * whether the selection actually changed (the inspector's pinned-chip
+   * effect, `tag-vocabulary` design D8).
+   */
+  generation = $state(0)
+
   constructor(resolve: IdResolver, matches: MatchResolver) {
     this.#resolve = resolve
     this.#matches = matches
+  }
+
+  /** The one place `#state` is written, so `generation` cannot drift from it. */
+  #setState(next: SelectionState): void {
+    this.#state = next
+    this.generation++
   }
 
   /** Exact in both representations, whatever the app has loaded (design D2). */
@@ -161,7 +176,7 @@ export class Selection {
     // Design D1: a plain click only focuses, so looking at an image never
     // starts a selection and never replaces the toolbar's action row.
     this.focusAt(index)
-    this.#state = noSelection()
+    this.#setState(noSelection())
   }
 
   /**
@@ -179,11 +194,11 @@ export class Selection {
     const anchor = this.anchor < 0 ? index : this.anchor
     this.anchor = anchor
     this.focus = index
-    this.#state = {
+    this.#setState({
       kind: 'range',
       start: Math.min(anchor, index),
       end: Math.max(anchor, index) + 1,
-    }
+    })
   }
 
   /**
@@ -194,7 +209,7 @@ export class Selection {
   selectAll(total: number): void {
     if (total <= 0) return
     this.anchor = this.focus < 0 ? 0 : this.focus
-    this.#state = { kind: 'range', start: 0, end: total }
+    this.#setState({ kind: 'range', start: 0, end: total })
   }
 
   /**
@@ -251,12 +266,12 @@ export class Selection {
     // which is the one other state a resolve may leave behind.
     const after = this.#state
     if (after !== before && after !== this.#promoted) return
-    this.#state = { kind: 'ids', ids }
+    this.#setState({ kind: 'ids', ids })
   }
 
   /** Leaves the focus alone: `Esc` must not lose the card the arrows move. */
   clear(): void {
-    this.#state = noSelection()
+    this.#setState(noSelection())
   }
 
   /** A new query: the old indices name different images, and so does the focus. */
@@ -290,6 +305,10 @@ export class Selection {
    * the store in id mode: ids are what survives the refresh an action ends with
    * (design D4), where an index range would silently re-point at whatever moved
    * into those rows.
+   *
+   * This is the one call that writes state — a reader that must not (the
+   * inspector's pinned-chip fill, `tag-vocabulary` design D8) uses `peekIds()`
+   * below instead.
    */
   async ids(): Promise<string[]> {
     const state = this.#state
@@ -299,7 +318,7 @@ export class Selection {
     // A gesture during the round trip owns the selection now; the action that
     // asked still gets the ids it asked about.
     if (this.#state === state) {
-      this.#state = { kind: 'ids', ids: new SvelteSet(resolved) }
+      this.#setState({ kind: 'ids', ids: new SvelteSet(resolved) })
       // Read back, never the literal: the webview's `$state` hands out a proxy
       // of what was assigned, so only two reads of the field compare equal.
       // Vitest compiles runes for the server, where there is no proxy, which
@@ -307,5 +326,23 @@ export class Selection {
       this.#promoted = this.#state
     }
     return resolved
+  }
+
+  /**
+   * The ids, without moving the store into id mode: a read for display only
+   * (the inspector's pinned-chip fill, `tag-vocabulary` design D8), never for
+   * an action. `ids()` promotes a range to id mode as a side effect of
+   * resolving it, which is right for an action but wrong for a read made
+   * inside a tracking scope: the promotion reassigns `#state`, which
+   * invalidates that same scope's own dependency on it and reruns it — and it
+   * would resolve a plain select-all's ids the moment its chips draw, which
+   * is exactly what `selection-and-bulk` D3 restricts to "only when an action
+   * needs ids". `peekIds()` resolves the same range and stops there.
+   */
+  async peekIds(): Promise<string[]> {
+    const state = this.#state
+    if (state.kind === 'ids') return [...state.ids]
+
+    return this.#resolve(state.start, state.end - state.start)
   }
 }

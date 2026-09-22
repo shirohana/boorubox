@@ -1,3 +1,4 @@
+import type { TagCategory } from '@boorubox/shared'
 import { describe, expect, it } from 'vitest'
 import {
   applySuggestion,
@@ -54,6 +55,19 @@ describe('suggestionPrefix', () => {
     expect(suggestionPrefix('tagcount:2', 10)).toBeNull()
     expect(suggestionPrefix('account:foo', 11)).toBeNull()
     expect(suggestionPrefix('collection:favorites', 21)).toBeNull()
+  })
+
+  // `tag-vocabulary` design D6: the same nine tokens `tags.rs` reads.
+  it('is null behind a category prefix, long form or short', () => {
+    expect(suggestionPrefix('artist:kan', 10)).toBeNull()
+    expect(suggestionPrefix('art:kan', 7)).toBeNull()
+    expect(suggestionPrefix('copyright:azur', 14)).toBeNull()
+    expect(suggestionPrefix('copy:azur', 9)).toBeNull()
+    expect(suggestionPrefix('character:tash', 14)).toBeNull()
+    expect(suggestionPrefix('char:tash', 9)).toBeNull()
+    expect(suggestionPrefix('meta:high', 9)).toBeNull()
+    expect(suggestionPrefix('general:bench', 13)).toBeNull()
+    expect(suggestionPrefix('gen:bench', 9)).toBeNull()
   })
 
   it('is null on the or operator and the o it starts as', () => {
@@ -200,11 +214,32 @@ describe('confirmAction', () => {
 })
 
 describe('editorText', () => {
+  const categoryOf = (name: string): TagCategory => {
+    if (name === 'kantoku') return 'artist'
+    if (name === 'azur_lane') return 'copyright'
+    if (name === 'tashkent') return 'character'
+    if (name === 'highres') return 'meta'
+    return 'general'
+  }
+
   it('leaves a space after the last tag, so a click at the end starts a new one', () => {
-    expect(editorText(['cat', 'dog'])).toBe('cat dog ')
+    expect(editorText(['cat', 'dog'], categoryOf)).toBe('cat dog ')
   })
 
   it('is empty for an image with no tags', () => {
-    expect(editorText([])).toBe('')
+    expect(editorText([], categoryOf)).toBe('')
+  })
+
+  it('is one general tag with a trailing space', () => {
+    expect(editorText(['tag'], categoryOf)).toBe('tag ')
+  })
+
+  // spec `tag-editing`, "One line per category" — one tag per category, so
+  // every line of the five is exercised, not four of the five.
+  it('reads one line per category, in CATEGORY_ORDER, alphabetical within a line', () => {
+    expect(editorText(
+      ['1girl', 'kantoku', 'azur_lane', 'tashkent', 'highres', 'solo'],
+      categoryOf,
+    )).toBe('kantoku\nazur_lane\ntashkent\nhighres\n1girl solo ')
   })
 })

@@ -1,10 +1,4 @@
-# tag-editing Specification
-
-## Purpose
-Giving one image its tags: an editor beside the image that suggests what the library already
-uses, keeps the set clean and sorted, and turns any tag on screen into a search term.
-
-## Requirements
+## MODIFIED Requirements
 
 ### Requirement: The tags of one image can be edited
 The app SHALL let the user change the tags of the image currently shown in the inspector,
@@ -63,19 +57,6 @@ space. The space is not a change: a save trims.
 - **WHEN** an edit is submitted for an image that is no longer in the library
 - **THEN** the edit is refused with a reason and nothing else in the library changes
 
-### Requirement: A rating written as a tag sets the rating
-A tag of the form `rating:g`, `rating:s`, `rating:q` or `rating:e` SHALL set the image's
-rating rather than being stored as a tag, matching what the legacy library did with the same
-text. Any other tag beginning with `rating:` SHALL be stored as an ordinary tag.
-
-#### Scenario: Rating typed among the tags
-- **WHEN** the user saves the tags `cat rating:s`
-- **THEN** the image carries the tag `cat`, no tag named `rating:s`, and its rating is `s`
-
-#### Scenario: Not a rating
-- **WHEN** the user saves a tag `rating:unknown`
-- **THEN** it is stored as a tag and the image's rating is unchanged
-
 ### Requirement: The editor suggests tags the library already uses
 While a tag is being typed the app SHALL offer tags already used in the library that begin
 with what has been typed, most used first, excluding tags already present in the input, each
@@ -103,34 +84,6 @@ when the token has one.
 #### Scenario: Accepting into an exclusion
 - **WHEN** the token being typed is `-cathe` and the suggestion `cathedral` is accepted
 - **THEN** the token becomes `-cathedral`
-
-### Requirement: Confirming a tag takes two steps
-Confirming SHALL first act on what is pending, then submit: while a suggestion is highlighted
-the first confirmation SHALL accept it and finish the token — a space after the tag, or none
-if one is already there — leaving the input ready for the next tag; with an unfinished token
-and no highlighted suggestion the first confirmation SHALL finish that token the same way;
-with nothing pending it SHALL submit the input. Dismissing the suggestions SHALL leave the
-typed text untouched.
-
-#### Scenario: Accept, then submit
-- **WHEN** the user types a prefix that highlights a suggestion and confirms twice without typing anything else
-- **THEN** the first confirmation inserts the suggested tag followed by a space, and the second submits the input
-
-#### Scenario: A tag the library does not have
-- **WHEN** the user types a tag no image carries and confirms twice
-- **THEN** the typed tag is kept as written and the input is submitted
-
-#### Scenario: Dismissing
-- **WHEN** suggestions are showing and the user dismisses them
-- **THEN** the list closes, the typed text is unchanged, and the next confirmation submits
-
-### Requirement: A tag can be removed without retyping the set
-The app SHALL offer a remove action on each tag shown for an image, and SHALL apply it to
-that image alone.
-
-#### Scenario: Remove one tag
-- **WHEN** the user removes one tag of an image carrying three
-- **THEN** that image carries the other two, no other image changes, and the image's last-changed time is now
 
 ### Requirement: Tags on screen are search terms
 Every tag shown for an image SHALL be usable as a search term: acting on it SHALL add it to
@@ -179,29 +132,3 @@ screen fall back to no current image.
 #### Scenario: The inspected image leaves the result
 - **WHEN** the panel describes an image tagged `cat` and the user excludes `cat`
 - **THEN** the search reads `-cat` and no image is current
-
-### Requirement: An X account on screen is a search term
-For an image whose page address names an X account, the inspector SHALL show that account's
-handle as the first entry under the tag editor, marked apart from the tags (blue), on its own
-row above them. Acting on it SHALL add `account:<handle>` to the tag search, and acting on it
-while the search already names that account SHALL take the term out again; it SHALL show
-whether the search includes or excludes it the way a tag does. The handle shown SHALL be the
-one the search matches: derived by the same rule from the same page address, so the entry
-never names an account the search cannot find. The entry SHALL be absent for an image whose
-page address names no X account, and SHALL never be stored as a tag.
-
-#### Scenario: Finding the same artist
-- **WHEN** the panel shows an image captured from `https://x.com/alice/status/1` and the user acts on the account entry
-- **THEN** the tag search reads `account:alice`, the result is every image whose page address names `alice`, and this image is still current
-
-#### Scenario: Toggling off
-- **WHEN** the search reads `cat account:alice` and the user acts on `alice`'s entry
-- **THEN** the search reads `cat`
-
-#### Scenario: Not an X page
-- **WHEN** the panel shows an image captured from a Pixiv page or imported from a file
-- **THEN** no account entry is shown
-
-#### Scenario: X's own pages
-- **WHEN** the panel shows an image whose page address is `https://x.com/home`
-- **THEN** no account entry is shown

@@ -301,6 +301,24 @@ export interface TagCount {
 }
 
 /**
+ * The five kinds of tag `tag-vocabulary` design D1 fixes. A tag belongs to
+ * exactly one, general unless given another.
+ */
+export type TagCategory = 'artist' | 'copyright' | 'character' | 'meta' | 'general'
+
+/**
+ * One tag outside the `(general, unpinned)` default: its name, its category
+ * and whether it is pinned — the vocabulary's own row (design D2). What
+ * `tagVocabulary` answers with, what `library.json`'s `tags` key lists, and
+ * what a rebuild restores onto the row verbatim.
+ */
+export interface TagEntry {
+  name: string
+  category: TagCategory
+  pinned: boolean
+}
+
+/**
  * What `exportZip` answers with (`selection-and-bulk` design D11): how many of
  * the selection made it into the archive, and which ids did not because their
  * file was gone from `images/` by the time it was copied.

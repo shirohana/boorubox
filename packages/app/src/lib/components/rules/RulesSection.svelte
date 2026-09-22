@@ -15,6 +15,7 @@
     rulesImport,
     rulesList,
     rulesRun,
+    vocabulary,
   } from '$lib/api'
   import { Button } from '$lib/components/ui/button'
   import { Progress } from '$lib/components/ui/progress'
@@ -103,6 +104,10 @@
       try {
         report = await rulesRun()
         await load()
+        // `tag-vocabulary` design D5: a rule's tags can create an artist over
+        // every image it matches, and this run is the only place that
+        // happens outside a single save.
+        void vocabulary.refresh()
       } finally {
         running = false
         progress = null

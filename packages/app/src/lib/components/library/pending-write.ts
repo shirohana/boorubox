@@ -12,13 +12,19 @@ import { ratingLabel } from '$lib/domain/format'
  * The two irreversible acts have always been here (design D7); `trash` joined
  * them for the multi-image case only (design D12, amended), and `rate` for
  * the same reason (`bulk-confirm` design D1): a bulk rating write replaces
- * ratings that cannot be recovered afterwards.
+ * ratings that cannot be recovered afterwards. `edit` is the pinned chip's
+ * write over a selection (`tag-vocabulary` design D8): one activation adds
+ * `add` or removes `remove` — a click only ever fills one of the two — across
+ * every id in `ids`. Introduced here with just the two fields this change
+ * needs; the later `stamps` change widens the same kind for collections and
+ * rating.
  */
 export type PendingWrite
   = | { kind: 'trash', ids: string[] }
     | { kind: 'delete', ids: string[] }
     | { kind: 'empty' }
     | { kind: 'rate', ids: string[], rating: Rating | null }
+    | { kind: 'edit', ids: string[], add: string[], remove: string[] }
 
 /**
  * Design D12, amended: trashing is reversible, so one image goes without a
@@ -79,6 +85,20 @@ export function confirmPrompt(pending: PendingWrite, trashCount: number): Confir
       description: 'Their current ratings are replaced. There is no undo.',
       confirmLabel: pending.rating === null ? 'Clear rating' : 'Set rating',
       destructive: true,
+    }
+  }
+  if (pending.kind === 'edit') {
+    // D8: exactly one of `add`/`remove` is filled per activation, so the tag
+    // named is whichever list is not empty.
+    const adding = pending.add.length > 0
+    const tag = adding ? pending.add[0] : pending.remove[0]
+    return {
+      title: adding
+        ? `Add “${tag}” to ${images(count)}?`
+        : `Remove “${tag}” from ${images(count)}?`,
+      description: 'Every other tag each image carries is left as it is.',
+      confirmLabel: adding ? 'Add tag' : 'Remove tag',
+      destructive: false,
     }
   }
   return {

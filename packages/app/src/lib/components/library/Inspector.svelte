@@ -3,22 +3,25 @@
   // and the lightbox's inspect mode. Both edit — the tag editor and the rating
   // control are the same instances in both, which is the point of there being
   // one component (slots Inspector · tags and Inspector · rating, design D17).
-  import type { ImageRecord, Rating } from '@boorubox/shared'
+  import type { ImageRecord, Rating, TagCount } from '@boorubox/shared'
   import type { SearchResults, Selection } from '$lib/api'
-  import { collectionRemove, collections, errorText } from '$lib/api'
+  import { collectionRemove, collections, errorText, selectionTagCounts, vocabulary } from '$lib/api'
   import PostedLabel from '$lib/components/booru/PostedLabel.svelte'
   import UploadAction from '$lib/components/booru/UploadAction.svelte'
   import PencilIcon from '@lucide/svelte/icons/pencil'
   import CollectionNameDialog from '$lib/components/common/CollectionNameDialog.svelte'
   import ExternalLink from '$lib/components/common/ExternalLink.svelte'
   import RatingControl from '$lib/components/tags/RatingControl.svelte'
+  import { CATEGORY_TEXT_CLASS } from '$lib/components/tags/categories'
   import TagInput from '$lib/components/tags/TagInput.svelte'
+  import TagVocabularyMenuItems from '$lib/components/tags/TagVocabularyMenuItems.svelte'
   import { Badge } from '$lib/components/ui/badge'
   import { Button } from '$lib/components/ui/button'
   import * as ContextMenu from '$lib/components/ui/context-menu'
   import * as DropdownMenu from '$lib/components/ui/dropdown-menu'
   import { Input } from '$lib/components/ui/input'
   import { formatBytes, formatTimestamp } from '$lib/domain/format'
+  import { CATEGORY_ORDER } from '$lib/domain/tag-categories'
   import { editorText } from '$lib/domain/tag-input'
   import {
     activeTerms,
@@ -34,6 +37,7 @@
   import type { CollectionTarget } from './collection-actions'
   import { addToCreated } from './collection-actions'
   import CollectionMenuItems from './CollectionMenuItems.svelte'
+  import { fillState, type FillState, toggledSelection, toggledTag } from './pinned-state'
   import SelectionThumbs from './SelectionThumbs.svelte'
   import type { TrashActions } from './trash-actions'
 
@@ -90,6 +94,13 @@
      * which is already showing an image.
      */
     onactivate?: (index: number) => void
+    /**
+     * A pinned chip activated over a selection (`tag-vocabulary` design D8):
+     * the screen's `editSelectionTags`, which asks first past one image. The
+     * one-image chip never calls this — it writes through `results.saveTags`
+     * directly, the same path the tag editor's own save uses.
+     */
+    onedit?: (ids: string[], add: string[], remove: string[]) => void
   }
 
   let {
@@ -101,6 +112,7 @@
     onquery,
     onrelease,
     onactivate,
+    onedit,
   }: Props = $props()
 
   /**
@@ -159,7 +171,15 @@
   )
   /** `sortTags` is the only tag order, applied at render (design D4). */
   const tags = $derived(image ? sortTags(image.tags) : [])
-  const saved = $derived(tags.join(' '))
+  /**
+   * The read-mode badge list's own order (design D7): `CATEGORY_ORDER`, then
+   * `sortTags` within a group — the same grouping `editorText` lines the
+   * editor with, over the badges instead of a string.
+   */
+  const groupedTags = $derived(
+    CATEGORY_ORDER.flatMap((category) =>
+      sortTags(tags.filter((tag) => vocabulary.categoryOf(tag) === category))),
+  )
   /** Design D3: the same reader the sidebar uses, so a tag's marking agrees. */
   const terms = $derived(activeTerms(tagQuery))
 
@@ -183,19 +203,49 @@
   let draft = $state('')
   let saving = $state(false)
   let error = $state<string | null>(null)
-  const dirty = $derived(draft.trim() !== saved)
+
+  // Read-first (design D7): the tag area opens on the badge list, and the
+  // field appears only once Edit is used — the facts form's own pattern.
+  let editingTags = $state(false)
 
   // The editor follows the record: another image, or the same one after a write.
   // `updatedAt` is what a save moves, so the text comes back sorted from the row
-  // that was stored rather than from what was typed (design D4).
+  // that was stored rather than from what was typed (design D4). Gated on
+  // `editingTags` so a capture arriving mid-edit does not overwrite the typed
+  // text (design D7) — the field's own draft is seeded fresh by `startEditTags`
+  // on every open instead, which reads the current tags regardless of `shown`.
   let shown = ''
   $effect(() => {
+    if (editingTags) return
     const key = image ? `${image.id}:${image.updatedAt}` : ''
     if (key === shown) return
     shown = key
-    draft = editorText(tags)
+    draft = editorText(tags, vocabulary.categoryOf)
     error = null
   })
+
+  function startEditTags() {
+    if (!image) return
+    draft = editorText(tags, vocabulary.categoryOf)
+    error = null
+    editingTags = true
+  }
+
+  function cancelEditTags() {
+    editingTags = false
+    error = null
+  }
+
+  /**
+   * `Escape` with the suggestion list already closed (`TagInput`'s own
+   * `onescape`): the facts form's own rule, `preventDefault` and
+   * `stopPropagation` for the same reason (`onFactsKeydown`'s doc comment).
+   */
+  function onTagsEscape(event: KeyboardEvent) {
+    event.preventDefault()
+    event.stopPropagation()
+    cancelEditTags()
+  }
 
   // The facts form (design D3): editing state, one field per row. Kept apart
   // from the tag editor's `draft` above — a facts save does not touch tags and
@@ -277,10 +327,10 @@
   }
 
   /**
-   * A tag save or removal, from the editor or the context menu. `onrelease`
-   * fires only on success (design D1): a failed save leaves the focus in the
-   * editor so the text can be fixed, which is `submitFromEditor`'s own
-   * conditional blur below.
+   * A tag save or removal, from the editor, the badge menu or a pinned chip.
+   * `onrelease` fires only on success (design D1): a failed save leaves the
+   * editor open with the reason (design D7) rather than closing over it —
+   * `submitFromEditor`'s own conditional blur below reads the same success.
    */
   async function write(tags: string[]) {
     if (!image || saving) return
@@ -288,6 +338,7 @@
     error = null
     try {
       await results.saveTags(image.id, tags)
+      editingTags = false
       onrelease?.()
     } catch (cause) {
       error = errorText(cause)
@@ -368,6 +419,118 @@
   const remove = (tag: string) => write(tags.filter((other) => other !== tag))
 
   /**
+   * A pinned chip over one image (design D8): the same whole-set write the
+   * editor's save makes, so the badge list, the sidebar and `updatedAt`
+   * follow exactly as they do for a save.
+   */
+  const togglePinned = (tag: string) => write(toggledTag(tags, tag))
+
+  /**
+   * The chip's tri-state over a selection (design D8), read from
+   * `selectionTagCounts` asked for exactly the pinned names — the bulk
+   * dialog's own command, narrowed by the `names` filter it gained for this.
+   *
+   * Reads `selection.peekIds()`, never `selection.ids()`: `ids()` promotes a
+   * range to id mode as a side effect, which reassigns the state this effect
+   * tracks and reruns it mid-flight — twice the fetch per gesture — and would
+   * resolve a plain select-all's ids at selection time, which is exactly what
+   * `selection-and-bulk` D3 restricts to "only when an action needs ids".
+   * `peekIds()` resolves the same range and does not write anything back.
+   *
+   * FIXME: the fetch itself is still the cost D3 warns against — resolving a
+   * range through `search_ids` just to draw a chip. The honest fix is a Rust
+   * `selection_tag_counts` that takes the search request plus a row range and
+   * counts over the plan's rows directly, so no ids cross the wire for
+   * something that is only ever drawn, not acted on, until it is clicked. Not
+   * built in this pass: a Rust unit was in flight on the same files
+   * (`tags.rs`, `commands.rs`).
+   *
+   * `pinnedCounts` is cleared, and `pinnedCountsKnown` set false, the moment
+   * the effect decides to refetch — not left holding the outgoing
+   * selection's answer. While unknown every chip draws `none`
+   * (`fillState`'s own empty-counts fallback) and `toggleSelectionPinned`
+   * ignores a click, rather than sending `add`/`remove` over images the
+   * counts never described.
+   *
+   * `vocabulary.pinned` is a fresh array identity on every vocabulary
+   * refresh even when the names themselves are unchanged, so depending on it
+   * directly would refetch on every refresh; `pinnedKey` is the names'
+   * stable text, and `selection.generation` — bumped by every selection
+   * write — is the cheap synchronous stand-in for "the selection changed"
+   * that does not require resolving anything to answer. The effect bails
+   * without a round trip when none of the key, the selection's generation or
+   * `results.generation` moved since the last run.
+   */
+  let pinnedCounts = $state<TagCount[]>([])
+  let pinnedCountsError = $state<string | null>(null)
+  let pinnedCountsKnown = $state(false)
+
+  let lastPinnedKey: string | undefined
+  let lastSelectionGeneration: number | undefined
+  let lastResultsGeneration: number | undefined
+
+  $effect(() => {
+    const names = vocabulary.pinned
+    const pinnedKey = names.join('\n')
+
+    if (!selection || !multi || names.length === 0) {
+      pinnedCounts = []
+      pinnedCountsKnown = false
+      return
+    }
+
+    const selectionGeneration = selection.generation
+    const resultsGeneration = results.generation
+    if (
+      pinnedKey === lastPinnedKey
+      && selectionGeneration === lastSelectionGeneration
+      && resultsGeneration === lastResultsGeneration
+    ) {
+      return
+    }
+    lastPinnedKey = pinnedKey
+    lastSelectionGeneration = selectionGeneration
+    lastResultsGeneration = resultsGeneration
+
+    pinnedCounts = []
+    pinnedCountsKnown = false
+
+    let current = true
+    selection.peekIds()
+      .then((ids) => selectionTagCounts(ids, 0, names))
+      .then((counts) => {
+        if (!current) return
+        pinnedCounts = counts
+        pinnedCountsKnown = true
+        pinnedCountsError = null
+      })
+      .catch((cause) => {
+        if (current) pinnedCountsError = errorText(cause)
+      })
+    return () => {
+      current = false
+    }
+  })
+
+  /**
+   * A pinned chip's activation over a selection (design D8): add unless every
+   * selected image already carries the tag, else remove it from all of them —
+   * `onedit` is the screen's `editSelectionTags`, which asks first past one
+   * image (`pending-write.ts`'s `edit` kind). Ignored while `pinnedCounts` is
+   * unknown (the fetch above is mid-flight or has not started): a click that
+   * lands then would otherwise act on counts left over from a different
+   * selection.
+   */
+  async function toggleSelectionPinned(tag: string) {
+    if (!selection || !pinnedCountsKnown) return
+    const { add, remove: removeTag } = toggledSelection(
+      fillState(tag, pinnedCounts, selection.count),
+      tag,
+    )
+    onedit?.(await selection.ids(), add, removeTag)
+  }
+
+  /**
    * A keyboard confirmation in the editor saves and then, once the write has
    * gone through, blurs it so the grid's keyboard map is live again. The blur is
    * conditional on success: a failed save keeps the focus so the text can be
@@ -378,6 +541,53 @@
     if (!error) tagInput?.blur()
   }
 </script>
+
+<!--
+  A pinned tag's chip (design D8), one image's membership or a selection's
+  tri-state alike — `state` is `'all' | 'some' | 'none'` either way, `'some'`
+  only ever reached from a selection. Always drawn `secondary`: `default`'s
+  `bg-primary` is near-white in dark mode, and `CATEGORY_TEXT_CLASS`'s
+  amber/violet/red/green text loses its contrast against it. The fill state
+  is a solid ring (`all`) or a dashed outline (`some`, Tailwind's `ring-*`
+  utilities have no dashed style, so `some` uses `outline-*` instead) rather
+  than a background, so it never competes with the category colour, which
+  stays the text's alone on the muted background either way. `aria-pressed`
+  carries the same tri-state for assistive tech, since a plain boolean
+  cannot say "some". Its menu is
+  `TagVocabularyMenuItems` unchanged: a pinned chip's tag reads
+  `vocabulary.isPinned` true by construction, so only Unpin renders, never a
+  second Pin item to suppress.
+-->
+{#snippet pinnedChip(tag: string, state: FillState, onactivate: () => void)}
+  <li>
+    <ContextMenu.Root>
+      <ContextMenu.Trigger>
+        {#snippet child({ props })}
+          <button
+            type="button"
+            {...props}
+            aria-pressed={state === 'all' ? 'true' : state === 'some' ? 'mixed' : 'false'}
+            onclick={onactivate}
+          >
+            <Badge
+              variant="secondary"
+              class="
+                {state === 'all' ? 'ring-1 ring-foreground/40' : ''}
+                {state === 'some' ? 'outline-1 outline-foreground/40 outline-dashed' : ''}
+                {CATEGORY_TEXT_CLASS[vocabulary.categoryOf(tag)]}
+              "
+            >
+              {tag}
+            </Badge>
+          </button>
+        {/snippet}
+      </ContextMenu.Trigger>
+      <ContextMenu.Content portalProps={{ to: portalTo }}>
+        <TagVocabularyMenuItems name={tag} />
+      </ContextMenu.Content>
+    </ContextMenu.Root>
+  </li>
+{/snippet}
 
 <div bind:this={root} class="flex h-full flex-col overflow-y-auto">
   {#if multi}
@@ -393,6 +603,32 @@
         onremove={(id) => void selection?.remove(id)}
       />
     </section>
+
+    <!--
+      Design D8: the same chip row the single-image panel draws, tri-state
+      over the selection instead of one image's membership. Absent along with
+      its heading while nothing is pinned, same as the single-image panel.
+    -->
+    {#if vocabulary.pinned.length > 0}
+      <section class="border-t border-border px-4 py-3">
+        <h3 class="mb-2 text-xs font-medium text-muted-foreground">Tags</h3>
+        <ul class="flex flex-wrap gap-1">
+          {#each vocabulary.pinned as tag (tag)}
+            {@render pinnedChip(
+              tag,
+              fillState(tag, pinnedCounts, selection?.count ?? 0),
+              () => void toggleSelectionPinned(tag),
+            )}
+          {/each}
+        </ul>
+        {#if pinnedCountsError}
+          <p class="mt-1 text-xs text-destructive">{pinnedCountsError}</p>
+        {/if}
+        {#if vocabulary.error}
+          <p class="mt-1 text-xs text-destructive">{vocabulary.error}</p>
+        {/if}
+      </section>
+    {/if}
   {:else if !image}
     <p class="p-4 text-sm text-muted-foreground">No image selected</p>
   {:else}
@@ -517,34 +753,70 @@
     </section>
 
     <section class="border-t border-border px-4 py-3">
-      <h3 class="mb-2 text-xs font-medium text-muted-foreground">
-        Tags {#if tags.length > 0}({tags.length}){/if}
-      </h3>
-
-      <!--
-        A textarea, capped so a heavily tagged image does not push the rest of
-        the panel off screen; past the cap it scrolls. Save sits under it, not
-        beside: beside a field that grows it would hang in the margin.
-      -->
-      <div class="flex flex-col gap-2">
-        <TagInput
-          bind:this={tagInput}
-          bind:value={draft}
-          multiline
-          label="Tags of this image"
-          placeholder="Tags, separated by spaces"
-          class="max-h-64 min-h-16 min-w-0"
-          onsubmit={submitFromEditor}
-        />
-        {#if dirty}
-          <div class="flex justify-end">
-            <Button size="xs" disabled={saving} onclick={save}>Save</Button>
-          </div>
+      <div class="flex items-center justify-between gap-2">
+        <h3 class="text-xs font-medium text-muted-foreground">
+          Tags {#if tags.length > 0}({tags.length}){/if}
+        </h3>
+        {#if !editingTags}
+          <Button
+            type="button"
+            size="icon-xs"
+            variant="ghost"
+            class="shrink-0"
+            aria-label="Edit tags"
+            title="Edit tags"
+            onclick={startEditTags}
+          >
+            <PencilIcon class="size-3" />
+          </Button>
         {/if}
       </div>
 
+      {#if editingTags}
+        <!--
+          A textarea, capped so a heavily tagged image does not push the rest
+          of the panel off screen; past the cap it scrolls. Save and Cancel
+          sit under it, not beside: beside a field that grows they would hang
+          in the margin (design D7, the facts form's own layout).
+        -->
+        <div class="mt-2 flex flex-col gap-2">
+          <TagInput
+            bind:this={tagInput}
+            bind:value={draft}
+            multiline
+            label="Tags of this image"
+            placeholder="Tags, separated by spaces"
+            class="max-h-64 min-h-16 min-w-0"
+            onsubmit={submitFromEditor}
+            onescape={onTagsEscape}
+          />
+          <div class="flex justify-end gap-2">
+            <Button size="xs" variant="outline" disabled={saving} onclick={cancelEditTags}>
+              Cancel
+            </Button>
+            <Button size="xs" disabled={saving} onclick={save}>Save</Button>
+          </div>
+        </div>
+      {:else if vocabulary.pinned.length > 0}
+        <!--
+          Design D8: one activation writes the whole toggled set through
+          `write`, the same path the editor's own save makes — so the badge
+          list, the sidebar and `updatedAt` follow exactly as they do for a
+          save. Only in read mode: a chip write mid-edit would fight the
+          open draft, replacing tags the field has not saved yet.
+        -->
+        <ul class="mt-2 flex flex-wrap gap-1">
+          {#each vocabulary.pinned as tag (tag)}
+            {@render pinnedChip(tag, tags.includes(tag) ? 'all' : 'none', () => togglePinned(tag))}
+          {/each}
+        </ul>
+      {/if}
+
       {#if error}
         <p class="mt-2 text-xs text-destructive">{error}</p>
+      {/if}
+      {#if vocabulary.error}
+        <p class="mt-2 text-xs text-destructive">{vocabulary.error}</p>
       {/if}
 
       {#if image.account}
@@ -571,55 +843,66 @@
         </button>
       {/if}
 
-      {#if tags.length === 0}
-        <p class="mt-2 text-xs text-muted-foreground">No tags</p>
-      {:else}
-        <!--
-          Every tag on screen is a search term (spec `tag-editing`): a click puts
-          it in the query or takes it out, and the menu offers the other two
-          things one can do to a tag. The marking is `activeTerms`' (design D3),
-          the sidebar's own colours.
-        -->
-        <ul class="mt-2 flex flex-wrap gap-1">
-          {#each tags as tag (tag)}
-            <li>
-              <ContextMenu.Root>
-                <ContextMenu.Trigger>
-                  {#snippet child({ props })}
-                    <button
-                      type="button"
-                      {...props}
-                      onclick={() => query(toggleTagInQuery(tagQuery, tag))}
-                    >
-                      <Badge
-                        variant="secondary"
-                        class={terms.included.has(tag)
-                          ? 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-300'
-                          : terms.excluded.has(tag)
-                          ? 'bg-destructive/10 text-destructive line-through'
-                          : ''}
+      {#if !editingTags}
+        {#if tags.length === 0}
+          <p class="mt-2 text-xs text-muted-foreground">No tags</p>
+        {:else}
+          <!--
+            Every tag on screen is a search term (spec `tag-editing`): a click
+            puts it in the query or takes it out, and the menu offers the
+            other two things one can do to a tag, plus the vocabulary group
+            (`tag-vocabulary` design D9). The search marking is `activeTerms`'
+            (design D3), the sidebar's own colours, on the background only —
+            the text is the tag's category colour either way (design D6), so
+            the two stay visible together on a coloured tag. Grouped by
+            category (design D7): `groupedTags` above.
+          -->
+          <ul class="mt-2 flex flex-wrap gap-1">
+            {#each groupedTags as tag (tag)}
+              <li>
+                <ContextMenu.Root>
+                  <ContextMenu.Trigger>
+                    {#snippet child({ props })}
+                      <button
+                        type="button"
+                        {...props}
+                        onclick={() => query(toggleTagInQuery(tagQuery, tag))}
                       >
-                        {tag}
-                      </Badge>
-                    </button>
-                  {/snippet}
-                </ContextMenu.Trigger>
-                <ContextMenu.Content portalProps={{ to: portalTo }}>
-                  <ContextMenu.Item onSelect={() => query(toggleTagInQuery(tagQuery, tag))}>
-                    Search for this tag
-                  </ContextMenu.Item>
-                  <ContextMenu.Item onSelect={() => query(excludeTagFromQuery(tagQuery, tag))}>
-                    Exclude from the search
-                  </ContextMenu.Item>
-                  <ContextMenu.Separator />
-                  <ContextMenu.Item variant="destructive" onSelect={() => remove(tag)}>
-                    Remove from this image
-                  </ContextMenu.Item>
-                </ContextMenu.Content>
-              </ContextMenu.Root>
-            </li>
-          {/each}
-        </ul>
+                        <Badge
+                          variant="secondary"
+                          class="
+                            {terms.included.has(tag)
+                              ? 'bg-emerald-500/15'
+                              : terms.excluded.has(tag)
+                              ? 'bg-destructive/10 line-through'
+                              : ''}
+                            {CATEGORY_TEXT_CLASS[vocabulary.categoryOf(tag)]}
+                          "
+                        >
+                          {tag}
+                        </Badge>
+                      </button>
+                    {/snippet}
+                  </ContextMenu.Trigger>
+                  <ContextMenu.Content portalProps={{ to: portalTo }}>
+                    <ContextMenu.Item onSelect={() => query(toggleTagInQuery(tagQuery, tag))}>
+                      Search for this tag
+                    </ContextMenu.Item>
+                    <ContextMenu.Item onSelect={() => query(excludeTagFromQuery(tagQuery, tag))}>
+                      Exclude from the search
+                    </ContextMenu.Item>
+                    <ContextMenu.Separator />
+                    <ContextMenu.Item variant="destructive" onSelect={() => remove(tag)}>
+                      Remove from this image
+                    </ContextMenu.Item>
+                    <ContextMenu.Separator />
+                    <TagVocabularyMenuItems name={tag} />
+                  </ContextMenu.Content>
+                </ContextMenu.Root>
+              </li>
+            {/each}
+          </ul>
+        {/if}
       {/if}
     </section>
 

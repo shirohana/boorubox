@@ -22,7 +22,7 @@ use crate::model::{
     ExportReport, FactsEdit, GRID_TILE_MAX, GRID_TILE_MIN, ImageCounts, ImageRecord, ImportReport,
     LibraryStatus, ListenerStatus, Note, PostRef, RebuildProgress, RebuildReport, RecentLibrary,
     Rule, RuleInput, RuleListEntry, RulesImportReport, RulesRunReport, SearchRequest, SearchResult,
-    SidecarsProgress, TagCount, TagCounts, Theme,
+    SidecarsProgress, TagCategory, TagCount, TagCounts, TagEntry, Theme,
 };
 use crate::settings::Settings;
 use crate::{
@@ -568,15 +568,55 @@ pub async fn bulk_set_rating(
 }
 
 /// The `limit` tags most common among `ids`, with their counts — the bulk tag
-/// dialog's quick-remove pills (design D9).
+/// dialog's quick-remove pills (design D9), and, with `names` given, the
+/// pinned chips' tri-state over a selection (`tag-vocabulary` design D8): the
+/// counts of exactly the pinned tags, `limit` ignored since `names` is
+/// already the bound. `names` absent is the bulk dialog's call, unchanged.
 #[tauri::command]
 pub async fn selection_tag_counts(
     ids: Vec<String>,
     limit: i64,
+    names: Option<Vec<String>>,
     state: State<'_, AppState>,
 ) -> Result<Vec<TagCount>> {
     with_library_off_main_thread(&state.library, move |library| {
-        tags::selection_tag_counts(&library.conn, &ids, limit)
+        tags::selection_tag_counts(&library.conn, &ids, limit, names.as_deref())
+    })
+    .await
+}
+
+/// The tag vocabulary's exceptions (`tag-vocabulary` design D2): every tag
+/// that is not `(general, unpinned)`.
+#[tauri::command]
+pub async fn tag_vocabulary(state: State<'_, AppState>) -> Result<Vec<TagEntry>> {
+    with_library_off_main_thread(&state.library, |library| tags::vocabulary(&library.conn)).await
+}
+
+/// Change a tag's category everywhere it is shown, without touching any
+/// image's tag set (`tag-vocabulary` design D4); answers with the vocabulary
+/// as it now stands.
+#[tauri::command]
+pub async fn set_tag_category(
+    name: String,
+    category: TagCategory,
+    state: State<'_, AppState>,
+) -> Result<Vec<TagEntry>> {
+    with_library_off_main_thread(&state.library, move |library| {
+        tags::set_category(library, &name, category)
+    })
+    .await
+}
+
+/// Pin or unpin a tag (`tag-vocabulary` design D8); answers with the
+/// vocabulary as it now stands.
+#[tauri::command]
+pub async fn set_tag_pinned(
+    name: String,
+    pinned: bool,
+    state: State<'_, AppState>,
+) -> Result<Vec<TagEntry>> {
+    with_library_off_main_thread(&state.library, move |library| {
+        tags::set_pinned(library, &name, pinned)
     })
     .await
 }
@@ -2214,6 +2254,14 @@ mod tests {
             now(set_rating("a".to_string(), None, app.state())).unwrap_err(),
             now(tag_suggestions("cat".to_string(), 8, app.state())).unwrap_err(),
             now(tag_counts(everything(), app.state())).unwrap_err(),
+            now(tag_vocabulary(app.state())).unwrap_err(),
+            now(set_tag_category(
+                "a".to_string(),
+                TagCategory::Artist,
+                app.state(),
+            ))
+            .unwrap_err(),
+            now(set_tag_pinned("a".to_string(), true, app.state())).unwrap_err(),
         ];
 
         for error in errors {
@@ -2335,7 +2383,7 @@ mod tests {
         tag(&app, &ids[0], &["cat"]);
         tag(&app, &ids[1], &["cat"]);
 
-        let counts = now(selection_tag_counts(ids, 10, app.state())).unwrap();
+        let counts = now(selection_tag_counts(ids, 10, None, app.state())).unwrap();
 
         assert_eq!(
             counts.first().map(|tag| (tag.name.as_str(), tag.count)),
@@ -2442,7 +2490,13 @@ mod tests {
             ))
             .unwrap_err(),
             now(bulk_set_rating(vec!["a".to_string()], None, app.state())).unwrap_err(),
-            now(selection_tag_counts(vec!["a".to_string()], 10, app.state())).unwrap_err(),
+            now(selection_tag_counts(
+                vec!["a".to_string()],
+                10,
+                None,
+                app.state(),
+            ))
+            .unwrap_err(),
             now(export_zip(
                 vec!["a".to_string()],
                 "/tmp/export.zip".to_string(),
@@ -2752,6 +2806,59 @@ mod tests {
 
         now(collection_delete(created.id, app.state())).unwrap();
         assert_eq!(now(collection_list(app.state())).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn tag_vocabulary_starts_empty_and_lists_a_categorised_tag_through_the_command() {
+        let (_library, app) = app_with_library();
+        import(&app, &folder_of_images(1));
+        let ids = ids_in_library(&app);
+
+        assert!(now(tag_vocabulary(app.state())).unwrap().is_empty());
+
+        tag(&app, &ids[0], &["artist:kantoku"]);
+
+        let entries = now(tag_vocabulary(app.state())).unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].name, "kantoku");
+        assert_eq!(entries[0].category, TagCategory::Artist);
+    }
+
+    #[test]
+    fn set_tag_category_and_set_tag_pinned_reach_the_open_library_through_the_commands() {
+        let (_library, app) = app_with_library();
+        import(&app, &folder_of_images(1));
+        let ids = ids_in_library(&app);
+        tag(&app, &ids[0], &["azur_lane"]);
+
+        let entries = now(set_tag_category(
+            "azur_lane".to_string(),
+            TagCategory::Copyright,
+            app.state(),
+        ))
+        .unwrap();
+        assert_eq!(entries[0].category, TagCategory::Copyright);
+
+        let entries = now(set_tag_pinned("azur_lane".to_string(), true, app.state())).unwrap();
+        assert!(entries[0].pinned);
+
+        let entries = now(set_tag_pinned("azur_lane".to_string(), false, app.state())).unwrap();
+        assert_eq!(entries[0].category, TagCategory::Copyright);
+        assert!(!entries[0].pinned);
+    }
+
+    #[test]
+    fn set_tag_category_for_an_unknown_tag_is_refused_through_the_command() {
+        let (_library, app) = app_with_library();
+
+        let error = now(set_tag_category(
+            "nobody".to_string(),
+            TagCategory::Artist,
+            app.state(),
+        ))
+        .unwrap_err();
+
+        assert!(matches!(error, AppError::NotFound(_)), "{error:?}");
     }
 
     #[test]

@@ -3,7 +3,9 @@
 // this repo has no component-test harness, so anything left inside the
 // component is untested by construction.
 
-import { parseTagSearch } from './tag-utils'
+import type { TagCategory } from '@boorubox/shared'
+import { parseTagSearch, sortTags } from './tag-utils'
+import { CATEGORY_ORDER } from './tag-categories'
 
 /** Rows the popover offers at once — the legacy viewer showed eight. */
 export const SUGGESTION_LIMIT = 8
@@ -19,10 +21,26 @@ export const SUGGESTION_FETCH = SUGGESTION_LIMIT * 3
 const EXCLUSION = '-'
 
 /**
- * The metatags of the query language (`tag-utils`'s parser). A token that has
- * begun one is not a tag being typed, so the list stays shut.
+ * The nine category prefixes (`tag-vocabulary` design D4, D6): long form
+ * first, Danbooru's own short forms beside it, copied from `tags.rs`'s
+ * `CATEGORY_PREFIXES` rather than re-derived — nothing checks the two lists
+ * against each other, so a token added to one and not the other would drift
+ * silently; the tests below are what would catch it.
  */
-const METATAG = /^(rating|is|tagcount|account|collection):/i
+const CATEGORY_PREFIXES = [
+  'artist', 'art', 'copyright', 'copy', 'character', 'char', 'meta', 'general', 'gen',
+]
+
+/**
+ * The metatags of the query language (`tag-utils`'s parser), plus the tag
+ * editor's own category prefixes above. A token that has begun one is not a
+ * tag being typed, so the list stays shut behind it exactly as behind a
+ * `rating:`.
+ */
+const METATAG = new RegExp(
+  `^(rating|is|tagcount|account|collection|${CATEGORY_PREFIXES.join('|')}):`,
+  'i',
+)
 
 /** Value and caret after a rule rewrote the input. */
 export interface TagInputText {
@@ -129,16 +147,25 @@ export function completeToken(value: string, caret: number): TagInputText {
 }
 
 /**
- * The text an image's tag editor opens with: the tags joined, and a space after
- * the last one so the caret a click puts at the end is already on a new token.
- * Without it the first thing typed glued itself to the last tag and the owner
- * had to type the space by hand on every edit — and a click into the editor
- * means a tag is about to be added. A save trims, so the space never counts
- * as a change. Nothing for an image with no tags: the caret is on a new token
- * already.
+ * The text an image's tag editor opens with (`tag-vocabulary` design D6, D7):
+ * one line per category that has any tag, in `CATEGORY_ORDER`, `sortTags`
+ * within a line, and a space after the very last tag so the caret a click
+ * puts at the end is already on a new token. Without it the first thing
+ * typed glued itself to the last tag and the owner had to type the space by
+ * hand on every edit — and a click into the editor means a tag is about to
+ * be added. A save trims, so the space never counts as a change, and a line
+ * break counts as one too (`tagList` already splits on any whitespace).
+ * Nothing for an image with no tags: the caret is on a new token already.
+ * The lines are presentation only — `categoryOf` is read once, here, and the
+ * stored set stays unordered.
  */
-export function editorText(tags: string[]): string {
-  return tags.length === 0 ? '' : `${tags.join(' ')} `
+export function editorText(tags: string[], categoryOf: (name: string) => TagCategory): string {
+  if (tags.length === 0) return ''
+  const lines = CATEGORY_ORDER
+    .map((category) => sortTags(tags.filter((tag) => categoryOf(tag) === category)))
+    .filter((line) => line.length > 0)
+    .map((line) => line.join(' '))
+  return `${lines.join('\n')} `
 }
 
 /** What one press of the confirm key means, in the order of design D13. */

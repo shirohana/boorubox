@@ -22,6 +22,7 @@ import type {
 import { parseTagSearch } from '$lib/domain/tag-utils'
 import { search, setRating, tagCounts, updateFacts, updateTags } from './commands'
 import { errorText } from './errors'
+import { vocabulary } from './vocabulary.svelte'
 
 /** Records per `search` call. */
 export const PAGE_SIZE = 200
@@ -193,10 +194,19 @@ export class SearchResults {
     void this.#loadCounts(this.generation)
   }
 
-  /** Writes the whole tag set of one image and redraws it (design D2, D10). */
+  /**
+   * Writes the whole tag set of one image and redraws it (design D2, D10).
+   * Refreshes the vocabulary here, not at a call site (`tag-vocabulary`
+   * design D5): every placement that saves tags — the editor, the badge
+   * menu, a pinned chip, in both the grid and the lightbox — goes through
+   * this one write, so this is the one place a prefix that created a
+   * categorised tag is guaranteed to be seen, without each placement's own
+   * release hook needing to remember it.
+   */
   async saveTags(id: string, tags: string[]): Promise<ImageRecord> {
     const record = await updateTags(id, tags)
     this.replace(record)
+    void vocabulary.refresh()
     return record
   }
 

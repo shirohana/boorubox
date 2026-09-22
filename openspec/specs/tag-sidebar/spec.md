@@ -35,7 +35,8 @@ undone from where it is shown.
 Each listed tag SHALL offer including it in the search and excluding it from the search, and
 SHALL show which of the two the current search does. Acting on a tag that is already included
 or excluded SHALL remove it from the search. Neither action SHALL disturb the rest of the
-query.
+query. Each listed tag SHALL be drawn in its category's colour, and SHALL offer on its context
+menu pinning or unpinning it and choosing its category, as `tag-vocabulary` describes.
 
 #### Scenario: Include
 - **WHEN** the user includes `cat` from the list
@@ -48,6 +49,14 @@ query.
 #### Scenario: Undo from the list
 - **WHEN** the user acts on a tag the search already includes
 - **THEN** that tag leaves the search and the rest of the query is unchanged
+
+#### Scenario: Coloured rows
+- **WHEN** the result carries `kantoku` (artist) and `1girl`
+- **THEN** `kantoku` is listed in the artist colour and `1girl` in the ordinary text colour
+
+#### Scenario: The row's menu
+- **WHEN** the user right-clicks `kantoku` in the list
+- **THEN** the menu offers Pin (or Unpin) and the five categories with Artist marked
 
 ### Requirement: Rating pills show what each rating would give
 The app SHALL show one control per rating — `g`, `s`, `q`, `e` and unrated — each carrying the

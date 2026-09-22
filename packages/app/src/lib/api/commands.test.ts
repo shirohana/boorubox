@@ -14,6 +14,7 @@ import type {
   RulesRunReport,
   SearchRequest,
   TagCounts,
+  TagEntry,
 } from '@boorubox/shared'
 import {
   CLICK_ZOOM_CEILING_DEFAULT,
@@ -66,9 +67,12 @@ import {
   setNotesCollapsed,
   setOpenLastOnLaunch,
   setRating,
+  setTagCategory,
+  setTagPinned,
   setTheme,
   tagCounts,
   tagSuggestions,
+  tagVocabulary,
   thumbnailPath,
   trashCount,
   trashImages,
@@ -407,11 +411,43 @@ it('bulk_set_rating passes the ids and the rating, and null to clear it', async 
   expect(calls).toHaveBeenCalledWith('bulk_set_rating', { ids: ['a', 'b'], rating: null })
 })
 
-it('selection_tag_counts passes the ids and the limit', async () => {
+it('selection_tag_counts passes the ids and the limit, names omitted', async () => {
   const counts = [{ name: 'cat', count: 2 }]
   const calls = spyIPC(counts)
   await expect(selectionTagCounts(['a', 'b'], 10)).resolves.toEqual(counts)
   expect(calls).toHaveBeenCalledWith('selection_tag_counts', { ids: ['a', 'b'], limit: 10 })
+})
+
+it('selection_tag_counts passes the optional names filter when given', async () => {
+  const counts = [{ name: 'tagme', count: 4 }]
+  const calls = spyIPC(counts)
+  await expect(selectionTagCounts(['a', 'b'], 50, ['tagme'])).resolves.toEqual(counts)
+  expect(calls).toHaveBeenCalledWith('selection_tag_counts', {
+    ids: ['a', 'b'],
+    limit: 50,
+    names: ['tagme'],
+  })
+})
+
+it('tag_vocabulary takes no arguments and returns the exceptions list', async () => {
+  const vocabulary: TagEntry[] = [{ name: 'kantoku', category: 'artist', pinned: false }]
+  const calls = spyIPC(vocabulary)
+  await expect(tagVocabulary()).resolves.toEqual(vocabulary)
+  expect(calls).toHaveBeenCalledWith('tag_vocabulary', {})
+})
+
+it('set_tag_category passes the name and the category and returns the vocabulary', async () => {
+  const vocabulary: TagEntry[] = [{ name: 'cat', category: 'artist', pinned: false }]
+  const calls = spyIPC(vocabulary)
+  await expect(setTagCategory('cat', 'artist')).resolves.toEqual(vocabulary)
+  expect(calls).toHaveBeenCalledWith('set_tag_category', { name: 'cat', category: 'artist' })
+})
+
+it('set_tag_pinned passes the name and the flag and returns the vocabulary', async () => {
+  const vocabulary: TagEntry[] = [{ name: 'tagme', category: 'general', pinned: true }]
+  const calls = spyIPC(vocabulary)
+  await expect(setTagPinned('tagme', true)).resolves.toEqual(vocabulary)
+  expect(calls).toHaveBeenCalledWith('set_tag_pinned', { name: 'tagme', pinned: true })
 })
 
 it('export_zip passes the ids, the path and this zone\'s offset, and returns the report', async () => {

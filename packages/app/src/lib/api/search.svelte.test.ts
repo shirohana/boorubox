@@ -341,6 +341,7 @@ it('leaves an image on screen after the tag it was found by is removed', async (
     if (cmd === 'update_tags') {
       return img({ id: (args as { id: string }).id, tags: (args as { tags: string[] }).tags })
     }
+    if (cmd === 'tag_vocabulary') return []
     return pagedLibrary(3)(0)
   })
   const results = new SearchResults()
@@ -350,6 +351,29 @@ it('leaves an image on screen after the tag it was found by is removed', async (
 
   expect(results.at(1)?.tags).toEqual(['dog'])
   expect(results.total).toBe(3)
+})
+
+// `tag-vocabulary` design D5: a tag save is the one write every placement —
+// the editor, the badge menu, a pinned chip, in the grid or the lightbox —
+// goes through, so the refresh belongs here and not at each call site.
+it('refreshes the vocabulary after a tag save', async () => {
+  const vocabularyCalls = vi.fn()
+  mockIPC((cmd, args) => {
+    if (cmd === 'tag_counts') return noCounts
+    if (cmd === 'update_tags') {
+      return img({ id: (args as { id: string }).id, tags: (args as { tags: string[] }).tags })
+    }
+    if (cmd === 'tag_vocabulary') {
+      vocabularyCalls()
+      return []
+    }
+    return pagedLibrary(3)(0)
+  })
+  const results = new SearchResults()
+  await results.run({ tagQuery: '', text: '' })
+
+  await results.saveTags('image-1', ['dog'])
+  await vi.waitFor(() => expect(vocabularyCalls).toHaveBeenCalledTimes(1))
 })
 
 it('replaces the record a rating change returns', async () => {

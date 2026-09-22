@@ -202,10 +202,27 @@ VALUES ('favorites', 'Favorites', 'favorites',
         CAST(strftime('%s','now') AS INTEGER) * 1000);
 ";
 
+/// Schema v7 (`tag-vocabulary` design D1): a tag's category and whether it is
+/// pinned, properties of the tag itself rather than of any one image's use of
+/// it — `library.json`'s vocabulary exceptions list is the same two facts,
+/// restored onto these columns on a rebuild (`sidecar.rs`, `recover.rs`). The
+/// five names are both the storage form and the wire form (`TagCategory` in
+/// `model.rs`); the `CHECK` is what keeps a hand-edited `library.json` replayed
+/// through `set_category` from ever writing a sixth one in. `pinned` sits on
+/// the same row for the same reason, and because the orphan rule
+/// (`tags::collect_orphans`) reads both together. Both default to the plain
+/// tag every row already was, so an upgraded database's existing tags all read
+/// back general and unpinned (task 1.1).
+const SCHEMA_V7: &str = r"
+ALTER TABLE tags ADD COLUMN category TEXT NOT NULL DEFAULT 'general'
+    CHECK (category IN ('artist', 'copyright', 'character', 'meta', 'general'));
+ALTER TABLE tags ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0;
+";
+
 /// One entry per schema version, applied in order. Appending is the only way to
 /// change the schema: `user_version` counts how many of these have run.
 const MIGRATIONS: &[&str] = &[
-    SCHEMA_V1, SCHEMA_V2, SCHEMA_V3, SCHEMA_V4, SCHEMA_V5, SCHEMA_V6,
+    SCHEMA_V1, SCHEMA_V2, SCHEMA_V3, SCHEMA_V4, SCHEMA_V5, SCHEMA_V6, SCHEMA_V7,
 ];
 
 /// Open (creating if needed) the library database with the pragmas D2 fixes,
@@ -539,6 +556,70 @@ mod tests {
             "an upgraded library has exactly one collection, the seed"
         );
         assert_eq!(fts_matches(&conn, "kyoto"), vec!["a".to_string()]);
+    }
+
+    /// A library written after `collections` shipped (v6, no `category` or
+    /// `pinned` columns on `tags`) has to reach v7 with its rows intact and
+    /// every existing tag reading back general and unpinned (task 1.1) — the
+    /// upgrade only gives a default to a fact no older build ever captured.
+    #[test]
+    fn a_v6_library_migrates_to_v7_reading_every_existing_tag_general_and_unpinned() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("library.sqlite");
+
+        let conn = Connection::open(&path).unwrap();
+        conn.execute_batch(SCHEMA_V1).unwrap();
+        conn.execute_batch(SCHEMA_V2).unwrap();
+        conn.execute_batch(SCHEMA_V3).unwrap();
+        conn.execute_batch(SCHEMA_V4).unwrap();
+        conn.execute_batch(SCHEMA_V5).unwrap();
+        conn.execute_batch(SCHEMA_V6).unwrap();
+        conn.pragma_update(None, "user_version", 6i64).unwrap();
+        insert_bare_image(&conn, "a", "sunset over kyoto");
+        conn.execute("INSERT INTO tags (name) VALUES ('cat')", [])
+            .unwrap();
+        drop(conn);
+
+        let conn = open(&path).unwrap();
+
+        let version: i64 = conn
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, MIGRATIONS.len() as i64);
+        assert!(column_names(&conn, "tags").contains(&"category".to_string()));
+        assert!(column_names(&conn, "tags").contains(&"pinned".to_string()));
+        let (category, pinned): (String, bool) = conn
+            .query_row(
+                "SELECT category, pinned FROM tags WHERE name = 'cat'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(category, "general");
+        assert!(!pinned);
+        assert_eq!(fts_matches(&conn, "kyoto"), vec!["a".to_string()]);
+    }
+
+    /// The `CHECK` design D1 adds (task 1.1's "why the CHECK"): a category
+    /// outside the five names is refused rather than silently stored, the same
+    /// guard `a_second_row_in_notes_is_refused` pins for `notes`.
+    #[test]
+    fn an_unknown_category_is_refused_by_the_check() {
+        let (_dir, conn) = temp_db();
+        conn.execute("INSERT INTO tags (name) VALUES ('cat')", [])
+            .unwrap();
+
+        let error = conn
+            .execute(
+                "UPDATE tags SET category = 'legendary' WHERE name = 'cat'",
+                [],
+            )
+            .unwrap_err();
+
+        assert!(
+            error.to_string().contains("CHECK"),
+            "expected a CHECK constraint failure, got {error}"
+        );
     }
 
     /// A fresh library gets the same one seeded collection a migrated one

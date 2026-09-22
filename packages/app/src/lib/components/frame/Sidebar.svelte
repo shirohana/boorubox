@@ -7,7 +7,15 @@
   import Trash2Icon from '@lucide/svelte/icons/trash-2'
   import { resolve } from '$app/paths'
   import { page } from '$app/state'
-  import { collections, imports, library, libraryCounts, sidecarsBackfill, trash } from '$lib/api'
+  import {
+    collections,
+    imports,
+    library,
+    libraryCounts,
+    sidecarsBackfill,
+    trash,
+    vocabulary,
+  } from '$lib/api'
   import LibraryMenu from '$lib/components/frame/LibraryMenu.svelte'
   import { libraryName } from '$lib/components/frame/library-name'
   import NotesPanel from '$lib/components/notes/NotesPanel.svelte'
@@ -65,6 +73,10 @@
     // list itself following a library switch, the same round trip the trash
     // and per-source counts already make here.
     void collections.refresh()
+    // `tag-vocabulary` design D5: the vocabulary is per library, like the
+    // collections just above, so it re-reads on the same path change — the
+    // badges, the sidebar's tag list and the suggestion popover all need it.
+    void vocabulary.refresh()
   })
 
   // The per-source counts also follow every import, library switch or not,

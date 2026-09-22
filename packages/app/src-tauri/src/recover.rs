@@ -13,7 +13,7 @@ use crate::collections;
 use crate::db;
 use crate::error::{AppError, Result};
 use crate::library::LibraryPaths;
-use crate::model::{BooruSite, Collection, Note, RebuildFailure, RebuildReport, Rule};
+use crate::model::{BooruSite, Collection, Note, RebuildFailure, RebuildReport, Rule, TagEntry};
 use crate::sidecar;
 use crate::tags;
 
@@ -77,10 +77,11 @@ fn building_path(paths: &LibraryPaths) -> PathBuf {
 /// Build a working `library.sqlite` from the sidecars alone (design D11):
 /// walk `images/**/*.json`, insert each row with its stored facts and
 /// `missing` computed from whether the image file is still beside it, link
-/// its tags and posts, then restore `library.json`'s rules, sites, note and
-/// collections verbatim, and every membership the sidecars name. Never opens,
-/// decodes or rewrites an image or a thumbnail — an image's dimensions come
-/// from its sidecar — and never removes a file under the folder.
+/// its tags and posts, then restore `library.json`'s rules, sites, note,
+/// collections and tag vocabulary verbatim, and every membership the sidecars
+/// name. Never opens, decodes or rewrites an image or a thumbnail — an
+/// image's dimensions come from its sidecar — and never removes a file under
+/// the folder.
 ///
 /// A stale `library.sqlite.rebuilding` left by an interrupted attempt is
 /// overwritten, not adopted: an in-progress rebuild that never reached the
@@ -115,6 +116,18 @@ pub fn rebuild(
             if let Some(from_file) = &file.collections {
                 tx.execute("DELETE FROM collections", [])?;
                 insert_collections(&tx, from_file)?;
+            }
+            // After the sidecar pass, an upsert rather than an insert
+            // (`tag-vocabulary` design D2): a tag the sidecars already linked
+            // already has a `(general, unpinned)` row that this only touches
+            // up; a tag no sidecar names — the carrier-less artist the spec
+            // asks a rebuild to bring back — is created fresh here. A file
+            // with no `tags` key at all (`file.tags: None`) says nothing
+            // about the vocabulary, so every tag from the sidecars stands
+            // general and unpinned, exactly as `db.rs`'s migration defaults
+            // them.
+            if let Some(vocabulary) = &file.tags {
+                insert_vocabulary(&tx, vocabulary)?;
             }
             tx.commit()?;
             (rules, sites)
@@ -193,6 +206,23 @@ fn insert_collections(conn: &Connection, collections: &[Collection]) -> Result<(
                 collection.created_at,
                 collection.updated_at,
             ],
+        )?;
+    }
+    Ok(())
+}
+
+/// The vocabulary's exceptions, restored onto the rows the sidecar pass
+/// already created (`tag-vocabulary` design D2): `ON CONFLICT` upserts a
+/// carrying tag's category and pin onto its existing row, and creates a
+/// carrier-less one fresh, under its own category with no image tagging it —
+/// the spec's "The vocabulary comes back" scenario.
+fn insert_vocabulary(conn: &Connection, entries: &[TagEntry]) -> Result<()> {
+    for entry in entries {
+        conn.execute(
+            "INSERT INTO tags (name, category, pinned) VALUES (?1, ?2, ?3)
+             ON CONFLICT (name) DO UPDATE SET category = excluded.category,
+                                               pinned = excluded.pinned",
+            params![entry.name, entry.category, entry.pinned],
         )?;
     }
     Ok(())
@@ -704,6 +734,60 @@ mod tests {
             .map(|collection| collection.name)
             .collect();
         assert_eq!(names, vec!["Favorites".to_string(), "Queue".to_string()]);
+    }
+
+    /// `tag-vocabulary` task 1.4, spec "The vocabulary comes back": an artist
+    /// tag carried by one image, a pinned tag on the same image, and a
+    /// copyright tag no image carries all come back after a rebuild — the
+    /// vocabulary is restored onto the rows the sidecar pass already created,
+    /// from `library.json`'s own exceptions list.
+    #[test]
+    fn rebuild_restores_the_vocabulary_including_a_tag_no_image_carries() {
+        let (_dir, library) = library();
+        store(&library, "a", &[], None);
+        crate::tags::update_tags(&library, "a", &strs(&["artist:kantoku", "tagme"])).unwrap();
+        crate::tags::set_pinned(&library, "tagme", true).unwrap();
+        store(&library, "b", &[], None);
+        crate::tags::update_tags(&library, "b", &strs(&["copyright:azur_lane"])).unwrap();
+        crate::tags::update_tags(&library, "b", &[]).unwrap();
+        let paths = library.paths.clone();
+        drop(library);
+
+        let report = rebuild(&paths, &mut |_, _| {}).unwrap();
+
+        assert!(report.failures.is_empty(), "{:?}", report.failures);
+        let rebuilt = Library::open_existing(paths.root.as_path()).unwrap();
+        assert_eq!(
+            tag_row(&rebuilt.conn, "kantoku"),
+            ("artist".to_string(), false)
+        );
+        assert_eq!(
+            tag_row(&rebuilt.conn, "tagme"),
+            ("general".to_string(), true)
+        );
+        assert_eq!(
+            tag_row(&rebuilt.conn, "azur_lane"),
+            ("copyright".to_string(), false)
+        );
+        let suggested: Vec<String> = crate::tags::suggestions(&rebuilt.conn, "azur", 8)
+            .unwrap()
+            .into_iter()
+            .map(|tag| tag.name)
+            .collect();
+        assert_eq!(suggested, vec!["azur_lane".to_string()]);
+    }
+
+    fn tag_row(conn: &Connection, name: &str) -> (String, bool) {
+        conn.query_row(
+            "SELECT category, pinned FROM tags WHERE name = ?1",
+            [name],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap()
+    }
+
+    fn strs(values: &[&str]) -> Vec<String> {
+        values.iter().map(|value| (*value).to_string()).collect()
     }
 
     /// Task 2.5: a truncated sidecar is counted and named, is left on disk,

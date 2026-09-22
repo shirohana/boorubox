@@ -22,6 +22,11 @@ describe('confirmedCount', () => {
   it('reads the trash count for an empty, which names no ids', () => {
     expect(confirmedCount({ kind: 'empty' }, 37)).toBe(37)
   })
+
+  it('counts the ids of an edit write, the same rule as every other kind', () => {
+    expect(confirmedCount({ kind: 'edit', ids: ['a', 'b', 'c'], add: ['tagme'], remove: [] }, 0))
+      .toBe(3)
+  })
 })
 
 describe('confirmPrompt', () => {
@@ -58,5 +63,19 @@ describe('confirmPrompt', () => {
     expect(prompt.title).toBe('Clear the rating of 2 images?')
     expect(prompt.confirmLabel).toBe('Clear rating')
     expect(prompt.destructive).toBe(true)
+  })
+
+  it('names the tag being added and the count, not destructive', () => {
+    const prompt = confirmPrompt({ kind: 'edit', ids: ['a', 'b'], add: ['tagme'], remove: [] }, 0)
+    expect(prompt.title).toBe('Add “tagme” to 2 images?')
+    expect(prompt.confirmLabel).toBe('Add tag')
+    expect(prompt.destructive).toBe(false)
+  })
+
+  it('names the tag being removed and the count, not destructive', () => {
+    const prompt = confirmPrompt({ kind: 'edit', ids: ['a', 'b'], add: [], remove: ['tagme'] }, 0)
+    expect(prompt.title).toBe('Remove “tagme” from 2 images?')
+    expect(prompt.confirmLabel).toBe('Remove tag')
+    expect(prompt.destructive).toBe(false)
   })
 })

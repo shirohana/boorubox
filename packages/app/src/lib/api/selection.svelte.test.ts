@@ -264,6 +264,32 @@ it('resolves a range once, with its offset and limit, and stays in id mode', asy
   expect(sel.count).toBe(5)
 })
 
+it('peekIds resolves a range without promoting it to ids', async () => {
+  const { selection: sel, resolve } = selection()
+  sel.focusAt(20)
+  sel.extendTo(24)
+
+  expect(await sel.peekIds()).toEqual([20, 21, 22, 23, 24].map(idAt))
+  expect(resolve).toHaveBeenCalledExactlyOnceWith(20, 5)
+  expect(sel.count).toBe(5)
+
+  // Still a range, not promoted to ids: a second peek resolves again rather
+  // than reading a cached id set the way a second `ids()` call would.
+  expect(await sel.peekIds()).toEqual([20, 21, 22, 23, 24].map(idAt))
+  expect(resolve).toHaveBeenCalledTimes(2)
+})
+
+it('peekIds reads a resolved selection straight, like ids does', async () => {
+  const { selection: sel, resolve } = selection()
+  await sel.click(3, idAt(3), { multi: true })
+  await sel.click(9, idAt(9), { multi: true })
+
+  const ids = await sel.peekIds()
+
+  expect(new Set(ids)).toEqual(new Set([idAt(3), idAt(9)]))
+  expect(resolve).not.toHaveBeenCalled()
+})
+
 it('resolves a live range before a multi-select-click toggles out of it', async () => {
   const { selection: sel, resolve } = selection()
   sel.focusAt(0)

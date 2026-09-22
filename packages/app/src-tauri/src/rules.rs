@@ -438,30 +438,45 @@ fn apply_rules_to_image(
     }
 
     let candidate_tags = union_tags(fired.iter().copied());
-    let (candidate_tags, extracted_rating) = tags::split_rating(&candidate_tags);
+    let text = tags::read_metatags(&candidate_tags);
 
     let tx = library.conn.unchecked_transaction()?;
     let existing = existing_tag_names(&tx, &image.id)?;
-    let written_tags: Vec<String> = candidate_tags
+    let written_tags: Vec<String> = text
+        .tags
         .into_iter()
         .filter(|tag| !existing.contains(tag))
         .collect();
     // A rating a rule names is written only where the image has none, so a
     // hand-given rating survives a run (spec: "A rating already given").
-    let written_rating = extracted_rating.filter(|_| image.rating.is_none());
+    let written_rating = text.rating.filter(|_| image.rating.is_none());
     if written_tags.is_empty() && written_rating.is_none() {
         return Ok(false);
     }
 
-    if !written_tags.is_empty() {
-        tags::add_tags(&tx, &image.id, &written_tags)?;
-    }
+    // `Conflict::Keep` (`tag-vocabulary` design D4), the same promise a
+    // capture keeps: a run over stored images must not stop, or leave an
+    // image half-tagged, over a rule's spelling disagreeing with a category
+    // the tag already has.
+    let categorised = if written_tags.is_empty() {
+        false
+    } else {
+        let to_write = tags::TagText {
+            tags: written_tags.clone(),
+            rating: None,
+            categories: text.categories,
+        };
+        tags::link_tags(&tx, &image.id, &to_write, tags::Conflict::Keep)?
+    };
     tags::stamp(&tx, &image.id, written_rating.as_deref())?;
     tx.commit()?;
 
     // After the commit, never inside it (`library-sidecars` design D4, D5):
     // one image's sidecar, per image, exactly as this run touches images.
     crate::sidecar::write_one(&library.paths, &library.conn, &image.id)?;
+    if categorised {
+        crate::sidecar::write_library(&library.paths, &library.conn)?;
+    }
 
     tally(&fired, &written_tags, written_rating.as_deref(), added_by);
     Ok(true)
@@ -480,9 +495,9 @@ fn tally(
     added_by: &mut HashMap<String, i64>,
 ) {
     for rule in fired {
-        let (tags, rating) = tags::split_rating(&rule.tags);
-        let contributed = tags.iter().any(|tag| written_tags.contains(tag))
-            || (written_rating.is_some() && rating.as_deref() == written_rating);
+        let text = tags::read_metatags(&rule.tags);
+        let contributed = text.tags.iter().any(|tag| written_tags.contains(tag))
+            || (written_rating.is_some() && text.rating.as_deref() == written_rating);
         if contributed {
             *added_by.entry(rule.id.clone()).or_insert(0) += 1;
         }

@@ -6,12 +6,16 @@
   import type { TagCount } from '@boorubox/shared'
   import MinusIcon from '@lucide/svelte/icons/minus'
   import PlusIcon from '@lucide/svelte/icons/plus'
+  import { vocabulary } from '$lib/api'
+  import * as ContextMenu from '$lib/components/ui/context-menu'
   import {
     activeTerms,
     addTagToQuery,
     excludeTagFromQuery,
     toggleTagInQuery,
   } from '$lib/domain/tag-utils'
+  import { CATEGORY_TEXT_CLASS } from './categories'
+  import TagVocabularyMenuItems from './TagVocabularyMenuItems.svelte'
 
   interface Props {
     /** `null` while a search is running (design D8): the heading stays, the list is blank. */
@@ -68,43 +72,60 @@
   {:else if listed}
     <ul class="flex flex-col gap-0.5">
       {#each listed as { name, count } (name)}
-        <li
-          class="
-            flex items-center gap-1 rounded-md px-1 text-xs
-            hover:bg-sidebar-accent
-            {included.has(name)
-              ? `bg-emerald-500/15 font-medium text-emerald-700 dark:text-emerald-300`
-              : ''}
-            {excluded.has(name) ? 'bg-destructive/10 text-destructive line-through' : ''}
-          "
-        >
-          <button
-            type="button"
-            class="shrink-0 rounded-sm p-0.5 text-muted-foreground hover:text-foreground"
-            aria-label="Include {name}"
-            title="Include {name}"
-            onclick={() => onquery(addTagToQuery(tagQuery, name))}
-          >
-            <PlusIcon class="size-3" />
-          </button>
-          <button
-            type="button"
-            class="shrink-0 rounded-sm p-0.5 text-muted-foreground hover:text-foreground"
-            aria-label="Exclude {name}"
-            title="Exclude {name}"
-            onclick={() => onquery(excludeTagFromQuery(tagQuery, name))}
-          >
-            <MinusIcon class="size-3" />
-          </button>
-          <!-- Clicking an active tag takes it out again (spec `tag-sidebar`). -->
-          <button
-            type="button"
-            class="min-w-0 flex-1 truncate py-1 text-left"
-            onclick={() => onquery(toggleTagInQuery(tagQuery, name))}
-          >
-            {name}
-          </button>
-          <span class="shrink-0 text-muted-foreground tabular-nums">{count}</span>
+        <li>
+          <ContextMenu.Root>
+            <ContextMenu.Trigger>
+              {#snippet child({ props })}
+                <div
+                  {...props}
+                  class="
+                    flex items-center gap-1 rounded-md px-1 text-xs
+                    hover:bg-sidebar-accent
+                    {included.has(name) ? 'bg-emerald-500/15 font-medium' : ''}
+                    {excluded.has(name) ? 'bg-destructive/10 line-through' : ''}
+                  "
+                >
+                  <button
+                    type="button"
+                    class="shrink-0 rounded-sm p-0.5 text-muted-foreground hover:text-foreground"
+                    aria-label="Include {name}"
+                    title="Include {name}"
+                    onclick={() => onquery(addTagToQuery(tagQuery, name))}
+                  >
+                    <PlusIcon class="size-3" />
+                  </button>
+                  <button
+                    type="button"
+                    class="shrink-0 rounded-sm p-0.5 text-muted-foreground hover:text-foreground"
+                    aria-label="Exclude {name}"
+                    title="Exclude {name}"
+                    onclick={() => onquery(excludeTagFromQuery(tagQuery, name))}
+                  >
+                    <MinusIcon class="size-3" />
+                  </button>
+                  <!--
+                    Clicking an active tag takes it out again (spec `tag-sidebar`).
+                    The text colour is the vocabulary's, read fresh on every render
+                    (design D5), so a category change is seen here without a search.
+                  -->
+                  <button
+                    type="button"
+                    class="
+                      min-w-0 flex-1 truncate py-1 text-left
+                      {CATEGORY_TEXT_CLASS[vocabulary.categoryOf(name)]}
+                    "
+                    onclick={() => onquery(toggleTagInQuery(tagQuery, name))}
+                  >
+                    {name}
+                  </button>
+                  <span class="shrink-0 text-muted-foreground tabular-nums">{count}</span>
+                </div>
+              {/snippet}
+            </ContextMenu.Trigger>
+            <ContextMenu.Content>
+              <TagVocabularyMenuItems {name} />
+            </ContextMenu.Content>
+          </ContextMenu.Root>
         </li>
       {/each}
     </ul>

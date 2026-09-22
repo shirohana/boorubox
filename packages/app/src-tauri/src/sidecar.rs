@@ -18,9 +18,11 @@ use crate::ingest;
 use crate::library::LibraryPaths;
 use crate::model::{
     BooruSite, Collection, ImageRecord, ImageSource, Note, PostRef, Rule, SiteAdapterRecord,
+    TagEntry,
 };
 use crate::notes;
 use crate::rules;
+use crate::tags;
 
 /// The sidecar format's own number (design D1): what a future reader has to
 /// know to parse this file, bumped only when the shape changes in a way a v1
@@ -114,8 +116,9 @@ impl From<&ImageRecord> for Sidecar {
     }
 }
 
-/// `library.json`: the rules, the booru sites, the note and the collections —
-/// everything in the library that is not per image (design D3). Rule and site ids are the
+/// `library.json`: the rules, the booru sites, the note, the collections and
+/// the tag vocabulary's exceptions — everything in the library that is not
+/// per image (design D3). Rule and site ids are the
 /// database's own, written and restored verbatim: `posts.site` holds a site
 /// id and rule ids travel in the export format, so regenerating either on
 /// rebuild would break a reference. No API key, ever: `BooruSite` has no field
@@ -140,6 +143,14 @@ pub struct LibraryFile {
     /// seed is the better answer than an emptied table.
     #[serde(default)]
     pub collections: Option<Vec<Collection>>,
+    /// The tag vocabulary's exceptions (`tag-vocabulary` design D2): every tag
+    /// that is not `(general, unpinned)`, with its category and its pin,
+    /// sorted by name. The same `Option` reasoning as `collections` above:
+    /// `None` is a file written before this change, and every tag comes back
+    /// general and unpinned on a rebuild; `Some` — empty included — is
+    /// restored onto the rows verbatim.
+    #[serde(default)]
+    pub tags: Option<Vec<TagEntry>>,
 }
 
 /// Where `id`'s sidecar lives: the same bucket as its image, through
@@ -260,8 +271,9 @@ pub fn read_library(path: &Path) -> Result<LibraryFile> {
     Ok(file)
 }
 
-/// Write `library.json` from the rules, the booru sites and the note as they
-/// stand right now (design D3).
+/// Write `library.json` from the rules, the booru sites, the note, the
+/// collections and the tag vocabulary as they stand right now (design D3,
+/// `tag-vocabulary` design D2).
 pub fn write_library(paths: &LibraryPaths, conn: &Connection) -> Result<()> {
     let file = LibraryFile {
         version: LIBRARY_VERSION,
@@ -272,6 +284,7 @@ pub fn write_library(paths: &LibraryPaths, conn: &Connection) -> Result<()> {
         booru_sites: sites::list(conn)?,
         note: notes::get(conn)?,
         collections: Some(collections::list(conn)?),
+        tags: Some(tags::vocabulary(conn)?),
     };
     let bytes = serde_json::to_vec_pretty(&file).map_err(|error| {
         AppError::BadRequest(format!("library file cannot be encoded: {error}"))
@@ -308,7 +321,7 @@ mod tests {
     use crate::booru::credentials::InMemoryCredentials;
     use crate::ingest::{IngestInput, store_image};
     use crate::library::Library;
-    use crate::model::RuleInput;
+    use crate::model::{RuleInput, TagCategory};
 
     fn library() -> (tempfile::TempDir, Library) {
         let dir = tempfile::tempdir().unwrap();
@@ -588,6 +601,49 @@ mod tests {
         }
     }
 
+    /// The same drift guard as `every_images_column_but_missing_is_
+    /// represented_in_the_sidecar`, for the vocabulary's own row
+    /// (`tag-vocabulary` design D2): the day a migration adds a column to
+    /// `tags`, this fails the suite rather than letting the column go
+    /// unmirrored in `TagEntry` — and so unrestored by a rebuild — with the
+    /// rest of the suite green.
+    #[test]
+    fn every_tags_column_but_id_is_represented_on_tag_entry() {
+        let (_dir, library) = library();
+        let mut stmt = library
+            .conn
+            .prepare("SELECT name FROM pragma_table_info('tags')")
+            .unwrap();
+        let columns: Vec<String> = stmt
+            .query_map([], |row| row.get::<_, String>(0))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert!(!columns.is_empty(), "pragma_table_info named no column");
+
+        let entry = TagEntry {
+            name: "cat".to_string(),
+            category: TagCategory::Artist,
+            pinned: true,
+        };
+        let serialised = serde_json::to_value(&entry).unwrap();
+        let fields: Vec<&String> = serialised.as_object().unwrap().keys().collect();
+
+        for column in &columns {
+            // The internal row id: a tag is named by `name` everywhere
+            // outside this table, and `TagEntry` never carries the database
+            // id nothing else reads.
+            if column == "id" {
+                continue;
+            }
+            let field = camel_case(column);
+            assert!(
+                fields.contains(&&field),
+                "tags.{column} has no representation in TagEntry"
+            );
+        }
+    }
+
     #[test]
     fn a_library_file_round_trips_through_read_library() {
         let (_dir, library) = library();
@@ -617,6 +673,8 @@ mod tests {
         )
         .unwrap();
         notes::set(&library, "remember to tag these").unwrap();
+        store(&library, "a", &[]);
+        crate::tags::update_tags(&library, "a", &["artist:kantoku".to_string()]).unwrap();
 
         write_library(&library.paths, &library.conn).unwrap();
         let file = read_library(&library_path(&library.paths)).unwrap();
@@ -631,6 +689,34 @@ mod tests {
             "the seeded Favorites collection, by design D4"
         );
         assert_eq!(collections[0].name, "Favorites");
+        let tags = file.tags.expect("the key is always written");
+        assert_eq!(
+            tags,
+            vec![TagEntry {
+                name: "kantoku".to_string(),
+                category: TagCategory::Artist,
+                pinned: false,
+            }]
+        );
+    }
+
+    /// `tag-vocabulary` design D2: additive, so a `library.json` written
+    /// before this change — no `tags` key at all — reads as `None` rather
+    /// than failing to parse, the same rule `collections` already follows.
+    #[test]
+    fn a_library_file_from_before_the_vocabulary_with_no_tags_key_reads_as_none() {
+        let (_dir, library) = library();
+
+        write_library(&library.paths, &library.conn).unwrap();
+        let file = library_path(&library.paths);
+        let mut json: serde_json::Value =
+            serde_json::from_slice(&fs::read(&file).unwrap()).unwrap();
+        json.as_object_mut().unwrap().remove("tags");
+        fs::write(&file, serde_json::to_vec_pretty(&json).unwrap()).unwrap();
+
+        let read_back = read_library(&file).unwrap();
+
+        assert_eq!(read_back.tags, None);
     }
 
     #[test]

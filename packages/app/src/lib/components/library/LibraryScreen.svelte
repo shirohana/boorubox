@@ -18,6 +18,7 @@
     browseSession,
     buildSearchRequest,
     bulkSetRating,
+    bulkUpdateTags,
     deleteForever,
     emptyTrash,
     errorText,
@@ -32,6 +33,7 @@
     settings,
     trash,
     trashImages,
+    vocabulary,
     type SearchInputs,
   } from '$lib/api'
   import { Selection } from '$lib/api'
@@ -196,6 +198,10 @@
    * (design D4): never re-run the search under a live range.
    */
   async function refreshResults() {
+    // `tag-vocabulary` design D5: a capture or an import can land through a
+    // rule that creates an artist, and neither path writes through
+    // `results.saveTags`, so this refresh is the only hook that sees it.
+    void vocabulary.refresh()
     await selection.ids()
     await results.refresh()
   }
@@ -304,6 +310,11 @@
    * focus on `<body>` for the second one to reach nothing from.
    */
   async function afterWrite() {
+    // `tag-vocabulary` design D5: no ordering dependency on the selection
+    // prune below, so it runs alongside rather than gating it — a bulk tag
+    // edit, a rule run and every other writer that ends up here may have
+    // created or emptied a categorised tag.
+    void vocabulary.refresh()
     await selection.ids()
     await results.refresh()
     await selection.keepMatching()
@@ -350,10 +361,33 @@
     }
   }
 
+  /**
+   * The pinned chip's write over a selection (`tag-vocabulary` design D8):
+   * the same "one or many" rule as {@link rateSelection}. Exposed for the
+   * inspector to call through an `onedit` prop once `Inspector.svelte`
+   * grows one (unit W2a) — one image writes through `results.saveTags`
+   * directly and never reaches here.
+   */
+  function editSelectionTags(ids: string[], add: string[], remove: string[]): void {
+    const pending: Extract<PendingWrite, { kind: 'edit' }> = { kind: 'edit', ids, add, remove }
+    if (needsConfirmation(ids.length)) pendingWrite = pending
+    else void writeEdit(pending)
+  }
+
+  async function writeEdit(pending: Extract<PendingWrite, { kind: 'edit' }>) {
+    try {
+      await bulkUpdateTags(pending.ids, pending.add, pending.remove)
+      await afterWrite()
+    } catch (error) {
+      actionError = errorText(error)
+    }
+  }
+
   /** The confirmed half of every question the dialog asks. */
   function commit(pending: PendingWrite) {
     if (pending.kind === 'trash') void write(() => trashImages(pending.ids))
     else if (pending.kind === 'rate') void writeRating(pending.ids, pending.rating)
+    else if (pending.kind === 'edit') void writeEdit(pending)
     else void destroy(pending)
   }
 
@@ -777,8 +811,17 @@
         {actions}
         {tagQuery}
         onquery={searchKeeping}
-        onrelease={() => grid?.refocus()}
+        onrelease={() => {
+          // `tag-vocabulary` design D5: a tag save already refreshes the
+          // vocabulary from inside `results.saveTags` itself, so this hook —
+          // which also fires on a rating, a facts edit and a collection
+          // change — does not need its own call; those writes never touch
+          // the vocabulary, and asking again on every one of them cost an
+          // IPC round trip nothing needed.
+          grid?.refocus()
+        }}
         onactivate={openViewer}
+        onedit={editSelectionTags}
       />
     </aside>
   {/if}

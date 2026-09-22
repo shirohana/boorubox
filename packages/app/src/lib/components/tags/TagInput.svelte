@@ -3,7 +3,7 @@
   // inspector's tag editor. Every rule it obeys is in `$lib/domain/tag-input`,
   // tested there; what is left here is event wiring, which this repo has no
   // harness for.
-  import { tagSuggestions } from '$lib/api'
+  import { tagSuggestions, vocabulary } from '$lib/api'
   import * as Command from '$lib/components/ui/command'
   import { Input } from '$lib/components/ui/input'
   import * as Popover from '$lib/components/ui/popover'
@@ -27,6 +27,7 @@
     KEY_UP,
   } from '$lib/keyboard'
   import { portalTarget } from '$lib/portal'
+  import { CATEGORY_TEXT_CLASS } from './categories'
 
   /** The default source: the library's whole vocabulary (design D12). */
   async function libraryTags(prefix: string, limit: number): Promise<string[]> {
@@ -244,12 +245,17 @@
             that are not highlighted: a variant class outranks the plain one, so
             painting it out everywhere left the first row blank when it was the
             highlighted one.
+
+            The text colour is the vocabulary's (`tag-vocabulary` design D6),
+            same lookup as the sidebar and the badges, so a suggestion reads
+            as its category before it is even accepted.
           -->
           <Command.Item
             value={tag}
             class="
               cursor-pointer
               {index === highlight ? 'bg-muted text-foreground' : 'data-selected:bg-transparent'}
+              {CATEGORY_TEXT_CLASS[vocabulary.categoryOf(tag)]}
             "
             onSelect={() => accept(tag)}
           >
