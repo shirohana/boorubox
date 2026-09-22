@@ -2,7 +2,7 @@
   // The bulk tag edit (design D8). A dialog because the operation is two
   // multi-value fields and a confirm, which is not a toolbar's shape.
   import type { TagCount } from '@boorubox/shared'
-  import type { SearchResults, Selection } from '$lib/api'
+  import type { Selection } from '$lib/api'
   import { bulkUpdateTags, errorText, selectionTagCounts } from '$lib/api'
   import TagInput from '$lib/components/tags/TagInput.svelte'
   import { Badge } from '$lib/components/ui/badge'
@@ -20,12 +20,19 @@
 
   interface Props {
     selection: Selection
-    /** Re-read once the write lands, so the edited rows show their new tags. */
-    results: SearchResults
+    /**
+     * Called once the write lands (`browse-fixes` design D1): the screen's
+     * `afterWrite`, which re-reads the search, keeps the selection to what it
+     * still matches, and puts the focus back on a row that exists. This
+     * dialog no longer refreshes on its own — a bulk tag edit is one of
+     * several writes that have to prune the same way, and a second copy of
+     * that rule here is a second place for it to drift from the others'.
+     */
+    onapplied: () => Promise<void>
     open: boolean
   }
 
-  let { selection, results, open = $bindable() }: Props = $props()
+  let { selection, onapplied, open = $bindable() }: Props = $props()
 
   let counts = $state<TagCount[]>([])
   let add = $state('')
@@ -90,11 +97,14 @@
     try {
       await bulkUpdateTags(await selection.ids(), tagList(add), tagList(remove))
       // The edit is on rows the grid and the inspector are drawing; a refresh
-      // is the same list, so it keeps its scroll and the selection (design D4).
-      await results.refresh()
+      // is the same list, so it keeps its scroll (design D4). Closed before
+      // the await: `onapplied` prunes the selection, and a trigger that the
+      // prune unmounts must already be gone before bits-ui's close-auto-focus
+      // goes looking for it.
       add = ''
       remove = ''
       open = false
+      await onapplied()
     } catch (cause) {
       // The fields keep what was typed: the edit did not happen, and retyping
       // it is the last thing anyone wants to do after being told so.

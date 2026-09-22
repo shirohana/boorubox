@@ -48,8 +48,9 @@ pub fn placeholders(count: usize) -> String {
 /// bound-parameter limit is comfortably above this in the bundled build, but a
 /// selection spanning a whole large library still becomes one placeholder per
 /// id in one statement — a caller that builds an `IN` list over the whole
-/// selection (`bulk_set_rating`, `selection_tag_counts`, `export::export_zip`)
-/// chunks it to this size rather than trust the limit never to be reached.
+/// selection (`bulk_set_rating`, `selection_tag_counts`, `export::export_zip`,
+/// `matching_ids`) chunks it to this size rather than trust the limit never to
+/// be reached.
 pub const ID_CHUNK: usize = 900;
 
 pub fn search(conn: &Connection, req: &SearchRequest) -> Result<SearchResult> {
@@ -93,6 +94,35 @@ pub fn search_position(conn: &Connection, req: &SearchRequest, id: &str) -> Resu
     Ok(stmt
         .query_row(params_from_iter(&params), |row| row.get(0))
         .optional()?)
+}
+
+/// Which of `ids` a `search` of `req` still matches, on the same `Plan` as
+/// `search_ids` and `search_position` — what the selection prunes itself by
+/// after a write re-reads the search (`browse-fixes` design D1), so the
+/// count, the thumbnail strip and the next bulk action describe only images
+/// the result still shows. `limit`/`offset` are ignored: the question is
+/// membership in the whole result, not one page of it. Chunked to
+/// [`ID_CHUNK`] ids per `IN (…)`, for the same reason `bulk_set_rating`
+/// chunks — a selection can itself span a whole large library.
+pub fn matching_ids(conn: &Connection, req: &SearchRequest, ids: &[String]) -> Result<Vec<String>> {
+    if ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let plan = Plan::for_request(req, RatingClause::Included);
+    let mut matched = Vec::new();
+    for chunk in ids.chunks(ID_CHUNK) {
+        let mut stmt = conn.prepare(&format!(
+            "{} SELECT id FROM {} WHERE id IN ({})",
+            plan.ctes,
+            plan.rows,
+            placeholders(chunk.len())
+        ))?;
+        let mut params = plan.params.clone();
+        params.extend(text_values(chunk));
+        let rows = stmt.query_map(params_from_iter(&params), |row| row.get(0))?;
+        matched.extend(rows.collect::<rusqlite::Result<Vec<String>>>()?);
+    }
+    Ok(matched)
 }
 
 /// The sidebar's two halves for one request (design D8). Both ignore `limit`
@@ -994,6 +1024,33 @@ mod tests {
                 .collect::<Vec<_>>(),
         );
         assert_eq!(ids.len(), 2, "the limit must still apply");
+    }
+
+    /// `browse-fixes` design D1: what the selection prunes itself by after a
+    /// write re-reads the search — the subset of a candidate set of ids that
+    /// the request's `Plan` still matches.
+    #[test]
+    fn matching_ids_answers_the_subset_the_request_still_matches() {
+        let fixture = fixture();
+        let req = SearchRequest {
+            limit: 1,
+            offset: 1,
+            ..request(ParsedTagSearch {
+                include_tags: vec!["cat".into()],
+                ..Default::default()
+            })
+        };
+        let candidates = vec![
+            "cat-s".to_string(),
+            "cat-dog-q".to_string(),
+            "dog-e".to_string(),
+            "untagged".to_string(),
+        ];
+
+        let mut matched = matching_ids(&fixture.library.conn, &req, &candidates).unwrap();
+        matched.sort();
+
+        assert_eq!(matched, vec!["cat-dog-q".to_string(), "cat-s".to_string()]);
     }
 
     /// `inspector-polish` design D2: `search_position` answers the same row

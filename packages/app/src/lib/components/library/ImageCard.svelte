@@ -14,6 +14,7 @@
   import { ratingLabel } from '$lib/domain/format'
   import type { CollectionTarget } from './collection-actions'
   import CollectionMenuItems from './CollectionMenuItems.svelte'
+  import { isOrphanedFocus } from './focus-handback'
   import { cachedThumbnail, thumbnail } from './thumbnail-cache'
   import type { TilePress } from './tile-click'
   import { shouldActivate, travelled } from './tile-click'
@@ -30,6 +31,11 @@
     onfocus: () => void
     /** A click on the tile, with what it was held down with (spec `selection`). */
     onselect: (modifiers: ClickModifiers) => void
+    /**
+     * The per-tile checkbox (spec `selection`): it names exactly this image,
+     * never the card the user was standing on the way a modifier-click does.
+     */
+    ontoggle: () => void
     onactivate: () => void
     /** Slot Grid · tile: rates THIS image, not the inspector's (design D17). */
     onrate: (rating: Rating | null) => void
@@ -63,6 +69,7 @@
     selected,
     onfocus,
     onselect,
+    ontoggle,
     onactivate,
     onrate,
     view,
@@ -157,9 +164,7 @@
    * on the next land on the first again between the two.
    */
   function onmenuclose(event: Event) {
-    const active = document.activeElement
-    const orphaned = !active || active === document.body || menu?.contains(active)
-    if (!orphaned) return
+    if (!isOrphanedFocus(document.activeElement, menu)) return
     event.preventDefault()
     tile?.querySelector<HTMLElement>('[data-card-focus]')?.focus()
   }
@@ -435,7 +440,7 @@
               checked={selected}
               aria-label="Select this image"
               class="bg-background/80"
-              onCheckedChange={() => onselect({ multi: true })}
+              onCheckedChange={ontoggle}
             />
           </span>
         {/if}

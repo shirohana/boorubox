@@ -19,13 +19,19 @@
      */
     collection: Pick<Collection, 'id' | 'name'> | null
     open: boolean
+    /**
+     * Where this dialog portals (design D3 of `browse-fixes`): the caller's
+     * own `portalTarget` result, so a dialog opened from inside the viewer
+     * lands in its `<dialog>` rather than underneath it.
+     */
+    portalTo?: Element
     /** Dismissed — by the button, the overlay or `Esc`. Nothing is written. */
     onclose: () => void
     /** The collection as Rust stored it — the caller re-reads its list from this. */
     onsaved: (collection: Collection) => void
   }
 
-  let { collection, open, onclose, onsaved }: Props = $props()
+  let { collection, open, portalTo, onclose, onsaved }: Props = $props()
 
   let name = $state('')
   let saving = $state(false)
@@ -66,7 +72,7 @@
 </script>
 
 <Dialog.Root {open} onOpenChange={(next) => { if (!next) onclose() }}>
-  <Dialog.Content class="sm:max-w-sm">
+  <Dialog.Content portalProps={{ to: portalTo }} class="sm:max-w-sm">
     <Dialog.Header>
       <Dialog.Title>{collection ? `Rename “${collection.name}”` : 'New collection'}</Dialog.Title>
       <Dialog.Description>

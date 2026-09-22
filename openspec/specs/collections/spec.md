@@ -59,7 +59,10 @@ show the collections the described image is in, each acting as a search term wit
 marking the tag list uses.
 
 Every one of those menus SHALL stay within the window when the library has more collections
-than fit below it, scrolling its list rather than extending off screen.
+than fit below it, scrolling its list rather than extending off screen. Every menu and dialog
+the inspector opens — the add menu, a tag's or a collection's context menu, the new-collection
+dialog, the upload dialog — SHALL open and be usable when the inspector is shown inside the
+full-size viewer, exactly as it is beside the grid.
 
 A tile SHALL carry a mark when its image is in at least one collection, naming them on
 hover, and no mark otherwise, so an image in no collection is told apart at a glance.
@@ -87,6 +90,10 @@ hover, and no mark otherwise, so an image in no collection is told apart at a gl
 #### Scenario: A long menu
 - **WHEN** the library has forty collections and the user opens the inspector's add menu near the bottom of the window
 - **THEN** the menu ends inside the window and scrolls to the collections that did not fit
+
+#### Scenario: Adding from inside the viewer
+- **WHEN** the full-size viewer is in inspect mode and the user opens the panel's add menu and chooses `Queue`
+- **THEN** the menu opens over the viewer, the image is in `Queue`, and the viewer is still open on it
 
 #### Scenario: The mark
 - **WHEN** one image is in `Favorites` and `Queue` and another is in no collection

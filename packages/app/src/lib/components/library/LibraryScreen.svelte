@@ -23,6 +23,7 @@
     errorText,
     imports,
     library,
+    matchingIds,
     onCaptureStored,
     onFileDrop,
     restoreImages,
@@ -41,6 +42,7 @@
   import TagSidebar from '$lib/components/tags/TagSidebar.svelte'
   import DeleteReportCard from './DeleteReportCard.svelte'
   import EmptyState from './EmptyState.svelte'
+  import { isOrphanedFocus } from './focus-handback'
   import ImportMenu from './ImportMenu.svelte'
   import ExportReportCard from './ExportReportCard.svelte'
   import ImportReportCard from './ImportReportCard.svelte'
@@ -89,19 +91,18 @@
 
   /**
    * The focus, the anchor and the selection, which are one state machine
-   * (`selection-and-bulk` design D1). Its resolver is the same request the grid
-   * pages, at the range the selection covers (its design D3): row *n* of the
-   * selection and row *n* of the grid have to be the same image.
+   * (`selection-and-bulk` design D1). Its id resolver is the same request the
+   * grid pages, at the range the selection covers (its design D3): row *n* of
+   * the selection and row *n* of the grid have to be the same image. Its match
+   * resolver is the same request over `limit`/`offset` of zero — `matchingIds`
+   * ignores both (`browse-fixes` design D1) — so a write's prune reads the
+   * same search the grid is showing, never a stale one.
    */
-  const selection = new Selection((offset, limit) =>
-    searchIds(
-      buildSearchRequest(
-        results.inputs,
-        { sort: results.sort, group: results.group, view: results.view },
-        offset,
-        limit,
-      ),
-    ),
+  const currentView = () => ({ sort: results.sort, group: results.group, view: results.view })
+  const selection = new Selection(
+    (offset, limit) =>
+      searchIds(buildSearchRequest(results.inputs, currentView(), offset, limit)),
+    (ids) => matchingIds(buildSearchRequest(results.inputs, currentView(), 0, 0), ids),
   )
 
   // The query lives here, not in the search bar: the sidebar, the rating pills
@@ -279,25 +280,33 @@
   }
 
   /**
-   * What every trash write changes on this screen: the images left this result,
-   * the library's own total moved, and so did the badge. The selection goes
-   * with them — ids that are no longer in the result would keep counting
-   * towards actions on images nobody can see.
+   * What every write that re-reads the search changes on this screen
+   * (`browse-fixes` design D1): the rows, and the selection along with them —
+   * an id the re-read search no longer matches leaves it, so the count, the
+   * strip and the next bulk action never describe an image nobody can see.
+   * One path for every such write (bulk tags, bulk rating, a collection
+   * change, trash and restore) is what keeps the prune from being forgotten
+   * by the next one; `keepMatching` asks the search itself rather than
+   * trusting a list of ids the caller happened to write, which is the only
+   * way to know which of a bulk tag edit's ids left the result.
+   *
+   * A live range has to be resolved to ids before the write moves the rows
+   * out from under it, and every writer that takes ids does so itself; the
+   * resolve here is the backstop for a caller that writes without them (the
+   * sidebar's collection change), because pruning a range against rows that
+   * now name different images would drop or keep the wrong ones.
    *
    * The refresh replaces every row, so the focused card — and the element the
    * focus was on — leaves the DOM and the focus falls to `<body>`, where the
-   * next `Delete` reaches nothing. It is put back on the row the trashed image
-   * occupied, which now holds the next one: where the user was looking, and
-   * still a card the keys work on. The last row deleted leaves no such row, so
-   * the focus lands on the new last one.
+   * next `Delete` reaches nothing. The refocus runs unconditionally, not only
+   * when the old focus has run past the end: it is what lets `Delete` be
+   * pressed twice in a row, since the first press would otherwise leave the
+   * focus on `<body>` for the second one to reach nothing from.
    */
-  async function afterTrashWrite(written: string[] | 'all') {
-    // Only what was written leaves the selection: the overlay button on one
-    // tile must not throw away twenty others the user picked (design D13).
-    if (written === 'all') selection.clear()
-    else await selection.removeMany(written)
-    await Promise.all([library.refresh(), trash.refresh()])
+  async function afterWrite() {
+    await selection.ids()
     await results.refresh()
+    await selection.keepMatching()
     if (selection.focus >= 0 && results.total > 0) {
       grid?.focusCard(Math.min(selection.focus, results.total - 1))
     }
@@ -314,9 +323,9 @@
     // the user exactly what they had picked.
     trash: (ids) => {
       if (needsConfirmation(ids.length)) pendingWrite = { kind: 'trash', ids }
-      else void write(() => trashImages(ids), ids)
+      else void write(() => trashImages(ids))
     },
-    restore: (ids) => void write(() => restoreImages(ids), ids),
+    restore: (ids) => void write(() => restoreImages(ids)),
     deleteForever: (ids) => (pendingWrite = { kind: 'delete', ids }),
   }
 
@@ -335,7 +344,7 @@
   async function writeRating(ids: string[], rating: Rating | null) {
     try {
       await bulkSetRating(ids, rating)
-      await results.refresh()
+      await afterWrite()
     } catch (error) {
       actionError = errorText(error)
     }
@@ -343,18 +352,25 @@
 
   /** The confirmed half of every question the dialog asks. */
   function commit(pending: PendingWrite) {
-    if (pending.kind === 'trash') void write(() => trashImages(pending.ids), pending.ids)
+    if (pending.kind === 'trash') void write(() => trashImages(pending.ids))
     else if (pending.kind === 'rate') void writeRating(pending.ids, pending.rating)
     else void destroy(pending)
   }
 
-  async function write(run: () => Promise<void>, written: string[]) {
+  /**
+   * The trash and restore commands, which also move the library's and the
+   * trash's own totals (design D13) — a bulk tag or rating edit moves
+   * neither, which is why only this and `destroy` below (trash, restore,
+   * delete-forever, empty trash) also refresh them.
+   */
+  async function write(run: () => Promise<void>) {
     try {
       // A range is rows of the current result, and the write is about to move
       // them; resolving it now is what lets the rest of it survive the write.
       await selection.ids()
       await run()
-      await afterTrashWrite(written)
+      await Promise.all([library.refresh(), trash.refresh()])
+      await afterWrite()
     } catch (error) {
       actionError = errorText(error)
     }
@@ -366,6 +382,9 @@
    * same report and is followed by the same refresh.
    */
   async function destroy(pending: { kind: 'delete', ids: string[] } | { kind: 'empty' }) {
+    // The selection, not the pending ids: a live range must become ids before
+    // the delete moves the rows it was counted over (`afterWrite`'s note).
+    await selection.ids()
     try {
       const report = pending.kind === 'empty'
         ? await emptyTrash()
@@ -374,7 +393,8 @@
       // shows; the card exists for the paths, so it appears only when there are
       // any (design D4).
       if (report.filesLeft.length > 0) deleteReport = report
-      await afterTrashWrite(pending.kind === 'empty' ? 'all' : pending.ids)
+      await Promise.all([library.refresh(), trash.refresh()])
+      await afterWrite()
     } catch (error) {
       actionError = errorText(error)
     }
@@ -500,6 +520,30 @@
     }
   }
 
+  /**
+   * A click anywhere that leaves no control focused hands the keyboard back
+   * to the grid's current card (`browse-fixes` design D4): the panel's plain
+   * text, an address, empty space in the sidebar or the toolbar band all take
+   * the DOM focus off the card without meaning to, and every one of them is a
+   * click somewhere under this window — a window listener is what reaches
+   * the toolbar and the sidebar, which render into the frame's own regions
+   * and never into this screen's own DOM. Bound on the window beside
+   * `screenKeys`, so it runs after every target's own click handler and after
+   * `mousedown` has already moved the focus (`ImageCard`'s note on
+   * `onpointerdown`). A click inside the viewer's modal dialog leaves the
+   * dialog itself the active element, which `isOrphanedFocus` does not count,
+   * so nothing fires there.
+   */
+  function onScreenClick(event: MouseEvent) {
+    // Not from inside a dialog: the viewer's native one keeps itself active,
+    // but the bulk-tag, confirm, name and upload dialogs are plain `role`d
+    // divs, and a click on their text can leave `<body>` active — refocusing
+    // a card behind them would hand Delete and Space to a grid the user
+    // cannot see, racing the dialog's own focus trap.
+    if (isInDialog(event)) return
+    if (selection.focus >= 0 && isOrphanedFocus(document.activeElement)) grid?.refocus()
+  }
+
   // The route's controls in the frame's top bar and its sidebar region, for as
   // long as this route is mounted (see `frame.svelte.ts`). The frame's sidebar
   // slot is absent rather than empty on every other screen, which is what
@@ -516,7 +560,7 @@
   void results.run(results.inputs)
 </script>
 
-<svelte:window onkeydown={screenKeys} />
+<svelte:window onkeydown={screenKeys} onclick={onScreenClick} />
 
 {#snippet toolbar()}
   <!--
@@ -553,6 +597,7 @@
       rate={rateSelection}
       onerror={(message) => (actionError = message)}
       onexported={(report) => (exportReport = report)}
+      onapplied={afterWrite}
     />
   {/if}
 
@@ -631,7 +676,7 @@
     counts={results.counts?.collections ?? null}
     {tagQuery}
     onquery={(next) => void searchKeeping(next, focused?.id)}
-    onchanged={() => void results.refresh()}
+    onchanged={() => void afterWrite()}
   />
 
   <ViewControls

@@ -30,6 +30,7 @@
     toggleTagInQuery,
   } from '$lib/domain/tag-utils'
   import { KEY_ENTER, KEY_ESCAPE } from '$lib/keyboard'
+  import { portalTarget } from '$lib/portal'
   import type { CollectionTarget } from './collection-actions'
   import { addToCreated } from './collection-actions'
   import CollectionMenuItems from './CollectionMenuItems.svelte'
@@ -73,10 +74,13 @@
     /**
      * A completed action in this panel: a rating chosen, a tag saved or
      * removed, a tag or account acted on as a search term (`app-frame` design
-     * D1, amended from `onrated`). Each placement decides where the focus
-     * goes back to — the viewer's own surface, or the grid's current card.
-     * Never fired after a failed save; the editor keeps the focus so the text
-     * can be fixed.
+     * D1, amended from `onrated`). One case among many now that `browse-fixes`
+     * design D4 widens the rule to any click that leaves no control focused —
+     * this one still needed on its own because an action can be confirmed
+     * from the keyboard, where no click ever reaches the screen's handler.
+     * Each placement decides where the focus goes back to — the viewer's own
+     * surface, or the grid's current card. Never fired after a failed save;
+     * the editor keeps the focus so the text can be fixed.
      */
     onrelease?: () => void
     /**
@@ -98,6 +102,14 @@
     onrelease,
     onactivate,
   }: Props = $props()
+
+  /**
+   * The panel's own root, so every menu and dialog it mounts (design D3 of
+   * `browse-fixes`) portals into the viewer's dialog when it is shown there
+   * and into `<body>` beside the grid.
+   */
+  let root = $state<HTMLDivElement | null>(null)
+  const portalTo = $derived(portalTarget(root))
 
   const multi = $derived(selection !== undefined && selection.count >= 2)
   const preview = $derived(
@@ -299,7 +311,7 @@
    * Only for the writes that happen now. "Delete forever…" merely opens the
    * confirmation, and emptying the panel while it is up moves the screen under
    * a question the user may still decline; its reset comes with the write
-   * itself, from the screen's `afterTrashWrite`.
+   * itself, from the screen's `afterWrite`.
    */
   function actAndRelease(run: (ids: string[]) => void) {
     act(run)
@@ -367,7 +379,7 @@
   }
 </script>
 
-<div class="flex h-full flex-col overflow-y-auto">
+<div bind:this={root} class="flex h-full flex-col overflow-y-auto">
   {#if multi}
     <header class="border-b border-border px-4 py-3">
       <h2 class="text-sm font-medium">{selection?.count.toLocaleString()} images selected</h2>
@@ -592,7 +604,7 @@
                     </button>
                   {/snippet}
                 </ContextMenu.Trigger>
-                <ContextMenu.Content>
+                <ContextMenu.Content portalProps={{ to: portalTo }}>
                   <ContextMenu.Item onSelect={() => query(toggleTagInQuery(tagQuery, tag))}>
                     Search for this tag
                   </ContextMenu.Item>
@@ -655,7 +667,7 @@
                         </button>
                       {/snippet}
                     </ContextMenu.Trigger>
-                    <ContextMenu.Content>
+                    <ContextMenu.Content portalProps={{ to: portalTo }}>
                       <ContextMenu.Item onSelect={() => void removeFromCollection(collection.id)}>
                         Remove from this collection
                       </ContextMenu.Item>
@@ -675,9 +687,11 @@
               <Button size="xs" variant="outline" class="mt-2" {...props}>Add to…</Button>
             {/snippet}
           </DropdownMenu.Trigger>
-          <DropdownMenu.Content align="start" class="
-            max-h-(--bits-floating-available-height) overflow-y-auto
-          ">
+          <DropdownMenu.Content
+            align="start"
+            portalProps={{ to: portalTo }}
+            class="max-h-(--bits-floating-available-height) overflow-y-auto"
+          >
             <CollectionMenuItems
               target={collectionTarget}
               onnew={() => (creatingCollection = true)}
@@ -736,6 +750,7 @@
         -->
         <UploadAction
           {image}
+          {portalTo}
           onposted={(post) => results.replace({ ...image, posts: [...image.posts, post] })}
         />
       {/if}
@@ -765,6 +780,7 @@
 <CollectionNameDialog
   collection={null}
   open={creatingCollection}
+  {portalTo}
   onclose={() => (creatingCollection = false)}
   onsaved={(collection) => {
     creatingCollection = false

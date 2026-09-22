@@ -15,11 +15,18 @@
 
   interface Props {
     image: ImageRecord
+    /**
+     * Where the site menu and the upload dialog portal (design D3 of
+     * `browse-fixes`): the caller's own `portalTarget` result, so opening this
+     * from inside the viewer lands them in its `<dialog>` rather than
+     * underneath it.
+     */
+    portalTo?: Element
     /** The post Rust recorded, for the caller to put into the loaded record. */
     onposted: (post: PostRef) => void
   }
 
-  let { image, onposted }: Props = $props()
+  let { image, portalTo, onposted }: Props = $props()
 
   /** The site the form is open for; `null` when it is closed. */
   let uploading = $state<string | null>(null)
@@ -69,7 +76,7 @@
         </Button>
       {/snippet}
     </DropdownMenu.Trigger>
-    <DropdownMenu.Content align="start">
+    <DropdownMenu.Content align="start" portalProps={{ to: portalTo }}>
       {#each targets as target (target.id)}
         <DropdownMenu.Item onSelect={() => (uploading = target.id)}>
           {target.name}
@@ -84,6 +91,7 @@
     {image}
     {site}
     open={true}
+    {portalTo}
     {onposted}
     onclose={() => (uploading = null)}
   />

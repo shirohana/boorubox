@@ -148,6 +148,16 @@ export function searchIds(req: SearchRequest): Promise<string[]> {
 }
 
 /**
+ * Which of `ids` a `search` of `req` still matches (design D1) — what the
+ * selection prunes itself by after a write re-reads the search, so the
+ * count, the strip and the next bulk action describe only images the result
+ * still shows.
+ */
+export function matchingIds(req: SearchRequest, ids: string[]): Promise<string[]> {
+  return invoke('matching_ids', { req, ids })
+}
+
+/**
  * The zero-based row `id` occupies in the order a `search` of `req` would
  * page, or `null` when `id` is not in `req`'s matched set — what a
  * click-driven search rewrite asks to keep its subject current

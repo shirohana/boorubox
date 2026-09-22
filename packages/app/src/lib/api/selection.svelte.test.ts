@@ -14,7 +14,10 @@ function selection(total = 100) {
       Array.from({ length: Math.min(limit, total - offset) }, (_, i) => idAt(offset + i)),
     ),
   )
-  return { selection: new Selection(resolve), resolve }
+  // Every test that cares what it answers builds its own; the default keeps
+  // whatever it was asked about, which is a no-op prune.
+  const matches = vi.fn((ids: string[]) => Promise.resolve(ids))
+  return { selection: new Selection(resolve, matches), resolve, matches }
 }
 
 it('focuses and clears on a plain click', async () => {
@@ -42,6 +45,42 @@ it('toggles one image on a multi-select-click and leaves the rest', async () => 
   expect(sel.count).toBe(1)
   expect(sel.has(3, idAt(3))).toBe(false)
   expect(sel.has(9, idAt(9))).toBe(true)
+})
+
+// Design D2: a modifier-click over an empty selection also picks up the card
+// the user was standing on, the way shift-click already includes both ends.
+it('a multi-select-click over nothing selected also picks up the anchored card', async () => {
+  const { selection: sel, resolve } = selection()
+
+  await sel.click(10, idAt(10))
+  sel.focusEntered(13)
+  await sel.click(13, idAt(13), { multi: true })
+
+  expect(sel.count).toBe(2)
+  expect(sel.has(10, idAt(10))).toBe(true)
+  expect(sel.has(13, idAt(13))).toBe(true)
+  expect(resolve).toHaveBeenCalledExactlyOnceWith(10, 1)
+})
+
+it('a multi-select-click on the anchored card itself picks up nothing extra', async () => {
+  const { selection: sel } = selection()
+
+  await sel.click(10, idAt(10))
+  await sel.click(10, idAt(10), { multi: true })
+
+  expect(sel.count).toBe(1)
+  expect(sel.has(10, idAt(10))).toBe(true)
+})
+
+it('the checkbox toggles only its own image after a plain click elsewhere', async () => {
+  const { selection: sel } = selection()
+
+  await sel.click(10, idAt(10))
+  await sel.toggle(13, idAt(13))
+
+  expect(sel.count).toBe(1)
+  expect(sel.has(13, idAt(13))).toBe(true)
+  expect(sel.has(10, idAt(10))).toBe(false)
 })
 
 it('takes a shift-click range on either side of the anchor', async () => {
@@ -151,16 +190,54 @@ it('a clear during an edit\'s resolve wins over the edit', async () => {
   expect(sel.count).toBe(0)
 })
 
-it('drops the written ids and keeps the rest of the selection', async () => {
-  const { selection: sel } = selection()
+it('keepMatching leaves only the ids the search still matches', async () => {
+  const { selection: sel, matches } = selection()
+  matches.mockImplementation((ids: string[]) => Promise.resolve(ids.filter((id) => id === idAt(1))))
+  await sel.click(0, idAt(0), { multi: true })
+  await sel.click(1, idAt(1), { multi: true })
+  await sel.click(2, idAt(2), { multi: true })
+
+  await sel.keepMatching()
+
+  expect(sel.count).toBe(1)
+  expect(sel.has(1, idAt(1))).toBe(true)
+  expect(sel.has(0, idAt(0))).toBe(false)
+  expect(sel.has(2, idAt(2))).toBe(false)
+})
+
+it('keepMatching resolves a live range before asking what still matches', async () => {
+  const { selection: sel, resolve, matches } = selection()
   sel.focusAt(0)
-  sel.extendTo(4)
+  sel.extendTo(2)
 
-  await sel.removeMany([idAt(1), idAt(3), 'never-selected'])
+  await sel.keepMatching()
 
-  expect(sel.count).toBe(3)
-  expect(sel.has(1, idAt(1))).toBe(false)
-  expect(sel.has(4, idAt(4))).toBe(true)
+  expect(resolve).toHaveBeenCalledExactlyOnceWith(0, 3)
+  expect(matches).toHaveBeenCalledExactlyOnceWith([idAt(0), idAt(1), idAt(2)])
+})
+
+it('keepMatching makes no call over an empty selection', async () => {
+  const { selection: sel, resolve, matches } = selection()
+
+  await sel.keepMatching()
+
+  expect(resolve).not.toHaveBeenCalled()
+  expect(matches).not.toHaveBeenCalled()
+})
+
+it('a gesture during keepMatching\'s round trip wins over the prune', async () => {
+  const { selection: sel, matches } = selection()
+  await sel.click(0, idAt(0), { multi: true })
+  await sel.click(1, idAt(1), { multi: true })
+  let settle: (ids: string[]) => void = () => {}
+  matches.mockReturnValue(new Promise((resolve) => (settle = resolve)))
+
+  const pruning = sel.keepMatching()
+  sel.clear()
+  settle([idAt(1)])
+  await pruning
+
+  expect(sel.count).toBe(0)
 })
 
 it('counts a select-all without resolving anything', () => {

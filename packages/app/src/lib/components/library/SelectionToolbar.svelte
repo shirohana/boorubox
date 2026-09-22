@@ -51,9 +51,11 @@
     onerror: (message: string) => void
     /** The report outlives this row, so the page holds it (design D11). */
     onexported: (report: ExportReport) => void
+    /** Passed straight through to the bulk tag dialog (`browse-fixes` design D1). */
+    onapplied: () => Promise<void>
   }
 
-  let { selection, results, actions, rate, onerror, onexported }: Props = $props()
+  let { selection, results, actions, rate, onerror, onexported, onapplied }: Props = $props()
 
   let tagsOpen = $state(false)
 
@@ -243,7 +245,7 @@
   </Button>
 {/snippet}
 
-<BulkTagDialog {selection} {results} bind:open={tagsOpen} />
+<BulkTagDialog {selection} {onapplied} bind:open={tagsOpen} />
 
 <!--
   Outside the menu above — see `collection-actions.ts` for why a dialog cannot

@@ -182,6 +182,12 @@ or account acted on as a search term — SHALL hand the keyboard back to the reg
 sits beside: the grid's current card when the panel is beside the grid, the viewer when the
 panel is inside it. A failed save SHALL keep the focus in the editor so the text can be fixed.
 
+A click anywhere on the library screen that leaves no control focused — on the inspector's
+text or empty space, on the account rail, on the toolbar's band, on the sidebar between its
+controls — SHALL likewise leave the grid's current card focused, so the grid's keys keep
+working after it. A click that lands on a control that takes the focus (a text field, a menu, a
+dialog) SHALL leave the focus there.
+
 #### Scenario: Typing a query
 - **WHEN** the focus is in a search field and the user types `i` or presses an arrow key
 - **THEN** the character is typed or the caret moves, and no shortcut fires
@@ -217,6 +223,14 @@ panel is inside it. A failed save SHALL keep the focus in the editor so the text
 #### Scenario: F11
 - **WHEN** the library is on screen and F11 is pressed, then pressed again
 - **THEN** the window fills the screen, and then returns to its previous size and place
+
+#### Scenario: Clicking the panel's text
+- **WHEN** a card is current and the user clicks the title text, the page address text or empty space in the panel beside the grid, then presses the right arrow
+- **THEN** the grid's focus moves to the next card
+
+#### Scenario: Clicking into the editor
+- **WHEN** the user clicks into the panel's tag editor and presses the right arrow
+- **THEN** the caret moves and the grid's focus does not
 
 ### Requirement: Theme follows the system unless chosen
 The app SHALL offer three appearance settings — follow the system, light, dark — SHALL persist

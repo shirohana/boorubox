@@ -127,7 +127,7 @@
     // Reading the window makes this run again once the row it names is mounted.
     const mounted = shown.rows.length
     if (!focusWanted || selection.focus < 0 || !viewport || mounted === 0) return
-    const card = viewport.querySelector<HTMLElement>('[data-card-focus][tabindex="0"]')
+    const card = currentCard()
     if (!card) return
     card.focus()
     focusWanted = false
@@ -180,15 +180,31 @@
     showCard(index)
   }
 
+  /** The card holding the roving tab stop, or `null` while its row is not mounted. */
+  function currentCard(): HTMLElement | null {
+    return viewport?.querySelector<HTMLElement>('[data-card-focus][tabindex="0"]') ?? null
+  }
+
   /**
-   * A completed action in the inspector beside the grid hands the keyboard
-   * back here (`app-frame` design D1): only the DOM focus moved, not the
-   * selection, so this brings the focused card back into it without touching
-   * `selection.focusAt` — that would drag the anchor along behind a write that
-   * never meant to move it.
+   * Any click that leaves no control focused hands the keyboard back here
+   * (`app-frame` design D1, widened by `browse-fixes` design D4: a completed
+   * action in the inspector was the first case, and the panel's plain text,
+   * an address or empty space anywhere on the screen orphan the DOM focus the
+   * same way). Only the DOM focus moved, not the selection, so this brings
+   * the focused card back into it without touching `selection.focusAt` —
+   * that would drag the anchor along behind a write that never meant to move
+   * it. `preventScroll` while the card is mounted: a click that only orphaned
+   * the focus must not also jump the scroll. A wheel scroll never moves
+   * `selection.focus`, so the current card can have left the window
+   * (`grid-window`), and then there is nothing mounted to focus: that case
+   * goes through `showCard`, which scrolls the row in and lets the effect
+   * above focus it once it exists.
    */
   export function refocus(): void {
-    if (selection.focus >= 0) showCard(selection.focus)
+    if (selection.focus < 0 || !viewport) return
+    const card = currentCard()
+    if (card) card.focus({ preventScroll: true })
+    else showCard(selection.focus)
   }
 
   /**
@@ -197,8 +213,8 @@
    * that owns the dialog — this key handler asks for the write and nothing
    * else. The focus index is left where it is, but the card under it goes with
    * the write's refresh — the screen puts the focus back on that row afterwards
-   * (`LibraryScreen`'s `afterTrashWrite`), which is what lets `Delete` be
-   * pressed twice.
+   * (`LibraryScreen`'s `afterWrite`), which is what lets `Delete` be pressed
+   * twice.
    */
   async function trashFocused() {
     if (selection.count > 0) {
@@ -218,6 +234,10 @@
     // amended): it is about the result, not about the card the focus is on, and
     // bound here it did nothing until the grid had been clicked into.
     if (isTypingTarget(event)) return
+    // The tile checkbox handles Space/Enter itself (bits-ui prevents default
+    // without stopping propagation), so a checkbox toggle must not also open
+    // the viewer.
+    if (event.defaultPrevented) return
     const focusIndex = selection.focus
 
     if (isTrashKey(event, results.view)) {
@@ -250,6 +270,11 @@
       (event.key === KEY_ENTER || event.key === KEY_SPACE)
       && focusIndex >= 0
       && focusIndex < results.total
+      // From the card itself, not from a control on it: Enter on a tile's own
+      // button (trash, the menu) activates that button, and opening the
+      // viewer as well would be the checkbox's Space bug in another coat.
+      && event.target instanceof HTMLElement
+      && event.target.hasAttribute('data-card-focus')
     ) {
       event.preventDefault()
       onactivate(focusIndex)
@@ -307,6 +332,9 @@
               selected={selection.has(index, image?.id)}
               onfocus={() => selection.focusEntered(index)}
               onselect={(modifiers) => void selection.click(index, image?.id, modifiers)}
+              ontoggle={() => {
+                if (image) void selection.toggle(index, image.id)
+              }}
               onactivate={() => onactivate(index)}
               onrate={(rating) => {
                 if (image) onrate(image, rating)

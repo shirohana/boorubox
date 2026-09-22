@@ -41,6 +41,7 @@ import {
   importPause,
   importResume,
   libraryStatus,
+  matchingIds,
   noteGet,
   noteSet,
   openLibrary,
@@ -379,6 +380,12 @@ it('search_ids wraps the request in a `req` argument and returns just the ids', 
   const calls = spyIPC(['a', 'b'])
   await expect(searchIds(request)).resolves.toEqual(['a', 'b'])
   expect(calls).toHaveBeenCalledWith('search_ids', { req: request })
+})
+
+it('matching_ids wraps the request and the candidate ids and returns the subset matched', async () => {
+  const calls = spyIPC(['a'])
+  await expect(matchingIds(request, ['a', 'b'])).resolves.toEqual(['a'])
+  expect(calls).toHaveBeenCalledWith('matching_ids', { req: request, ids: ['a', 'b'] })
 })
 
 it('bulk_update_tags passes the ids, the tags to add and the tags to remove', async () => {

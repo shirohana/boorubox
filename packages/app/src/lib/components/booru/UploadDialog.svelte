@@ -36,12 +36,18 @@
     image: ImageRecord
     site: BooruSite
     open: boolean
+    /**
+     * Where this dialog portals (design D3 of `browse-fixes`): the caller's
+     * own `portalTarget` result, so opening it from inside the viewer lands it
+     * in its `<dialog>` rather than underneath it.
+     */
+    portalTo?: Element
     /** The post Rust recorded, for the caller to put into the loaded record. */
     onposted: (post: PostRef) => void
     onclose: () => void
   }
 
-  let { image, site, open, onposted, onclose }: Props = $props()
+  let { image, site, open, portalTo, onposted, onclose }: Props = $props()
 
   // Read once for the first paint; the effect below is what follows a later
   // image, and it is the only thing allowed to overwrite an edit in progress.
@@ -129,6 +135,7 @@
 >
   <Dialog.Content
     bind:ref={content}
+    portalProps={{ to: portalTo }}
     class="max-h-[90vh] overflow-y-auto sm:max-w-2xl"
     onOpenAutoFocus={(event) => {
       // Not the first field: the dialog is a confirmation of an image tagged

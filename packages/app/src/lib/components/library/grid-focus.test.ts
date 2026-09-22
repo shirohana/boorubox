@@ -126,7 +126,10 @@ describe('shift-arrow selection', () => {
   }
 
   it('stops at the edges instead of growing the selection past them', () => {
-    const selection = new Selection(() => Promise.resolve([]))
+    const selection = new Selection(
+      () => Promise.resolve([]),
+      () => Promise.resolve([]),
+    )
 
     selection.focusAt(total - 1)
     for (const key of [KEY_RIGHT, KEY_DOWN, KEY_END]) {
@@ -144,7 +147,10 @@ describe('shift-arrow selection', () => {
   })
 
   it('grows to the edge and no further', () => {
-    const selection = new Selection(() => Promise.resolve([]))
+    const selection = new Selection(
+      () => Promise.resolve([]),
+      () => Promise.resolve([]),
+    )
     selection.focusAt(total - 3)
 
     shiftArrow(selection, KEY_RIGHT)

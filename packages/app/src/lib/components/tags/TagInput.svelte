@@ -26,6 +26,7 @@
     KEY_TAB,
     KEY_UP,
   } from '$lib/keyboard'
+  import { portalTarget } from '$lib/portal'
 
   /** The default source: the library's whole vocabulary (design D12). */
   async function libraryTags(prefix: string, limit: number): Promise<string[]> {
@@ -75,14 +76,8 @@
 
   let field = $state<HTMLInputElement | HTMLTextAreaElement | null>(null)
 
-  /**
-   * The list is portalled to `<body>` unless the field is inside a native
-   * modal dialog. `showModal()` puts the viewer in the top layer, which sits
-   * above every z-index, so a list under `<body>` opened beneath it — visible
-   * through the backdrop and unreachable. Inside one, the list has to be a
-   * child of the dialog itself.
-   */
-  const portalTo = $derived(field?.closest('dialog') ?? undefined)
+  /** Why this portals where it does: `$lib/portal`'s `portalTarget` doc comment. */
+  const portalTo = $derived(portalTarget(field))
 
   /**
    * Lets an owner (the Inspector) take the focus off the field once a submit it

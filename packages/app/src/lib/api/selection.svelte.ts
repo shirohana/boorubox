@@ -36,8 +36,23 @@ export interface ClickModifiers {
  */
 export type IdResolver = (offset: number, limit: number) => Promise<string[]>
 
+/**
+ * Which of a candidate set of ids the current search still matches —
+ * `matchingIds` in the app, a stub in the tests. Injected beside `IdResolver`
+ * (`browse-fixes` design D1): after a write re-reads the search, this is how
+ * the selection asks which of its own ids the result still shows, without
+ * pulling the whole result down to intersect against it in the webview.
+ */
+export type MatchResolver = (ids: string[]) => Promise<string[]>
+
 function noSelection(): SelectionState {
   return { kind: 'ids', ids: new SvelteSet<string>() }
+}
+
+/** The one rule a multi-click and the checkbox share: in or out, nothing else. */
+function toggleId(ids: SvelteSet<string>, id: string): void {
+  if (ids.has(id)) ids.delete(id)
+  else ids.add(id)
 }
 
 export class Selection {
@@ -56,9 +71,11 @@ export class Selection {
   /** The id state `ids()` last moved a range into: an edit tells that write from a gesture's. */
   #promoted: SelectionState | null = null
   readonly #resolve: IdResolver
+  readonly #matches: MatchResolver
 
-  constructor(resolve: IdResolver) {
+  constructor(resolve: IdResolver, matches: MatchResolver) {
     this.#resolve = resolve
+    this.#matches = matches
   }
 
   /** Exact in both representations, whatever the app has loaded (design D2). */
@@ -123,9 +140,19 @@ export class Selection {
       // A placeholder row has no id to toggle; the range gestures are how a
       // selection reaches rows that have not loaded.
       if (id === undefined) return
-      await this.#editIds((ids) => {
-        if (ids.has(id)) ids.delete(id)
-        else ids.add(id)
+      await this.#editIds(async (ids) => {
+        // Design D2: the card the user was standing on joins a first
+        // multi-click, the way shift-click already includes both ends —
+        // once per selection, since a later multi-click finds the set no
+        // longer empty. The anchor, never the focus: `focusEntered` has
+        // already moved `focus` to the clicked card by the time this runs
+        // (see its own doc comment), so a rule on `focus` would select the
+        // clicked card twice and pick up nothing.
+        if (ids.size === 0 && this.anchor >= 0 && this.anchor !== index) {
+          const [anchorId] = await this.#resolve(this.anchor, 1)
+          if (anchorId !== undefined) ids.add(anchorId)
+        }
+        toggleId(ids, id)
       })
       this.focusAt(index)
       return
@@ -135,6 +162,16 @@ export class Selection {
     // starts a selection and never replaces the toolbar's action row.
     this.focusAt(index)
     this.#state = noSelection()
+  }
+
+  /**
+   * The per-tile checkbox (design D2): it names exactly the image it is drawn
+   * on, so — unlike a modifier-click — it never picks up the card the user
+   * was standing on.
+   */
+  async toggle(index: number, id: string): Promise<void> {
+    await this.#editIds((ids) => toggleId(ids, id))
+    this.focusAt(index)
   }
 
   /** Shift-arrow, shift-click, shift-`Home`/`End`: the range from the anchor to here. */
@@ -168,36 +205,52 @@ export class Selection {
    * (design D3).
    */
   async remove(id: string): Promise<void> {
-    await this.removeMany([id])
+    if (this.count === 0) return
+    await this.#editIds((ids) => {
+      ids.delete(id)
+    })
   }
 
   /**
-   * The same for every id a write just took off the screen: what was selected
-   * and not written stays selected. Resolve before the write, not after —
-   * `ids()` on a range asks the search, and after a trash the rows have moved.
+   * After a write that re-read the search (`browse-fixes` design D1): keep
+   * only the ids the search still matches, so the count, the strip and the
+   * next bulk action describe only images the result still shows. This asks
+   * the search itself, which is the only thing that knows which of a bulk
+   * edit's ids left the result. An empty selection makes no round trip.
    */
-  async removeMany(ids: string[]): Promise<void> {
-    if (ids.length === 0 || this.count === 0) return
-    await this.#editIds((selected) => {
-      for (const id of ids) selected.delete(id)
+  async keepMatching(): Promise<void> {
+    if (this.count === 0) return
+    await this.#editIds(async (ids) => {
+      /* eslint-disable-next-line svelte/prefer-svelte-reactivity --
+         A local index for the membership test below, built and dropped inside
+         this call: nothing reads it again. */
+      const kept = new Set(await this.#matches([...ids]))
+      for (const id of [...ids]) {
+        if (!kept.has(id)) ids.delete(id)
+      }
     })
   }
 
   /**
    * The one way a gesture changes which ids are selected: resolve first, edit
-   * the resolved set, and leave the store in id mode (design D4).
+   * the resolved set, and leave the store in id mode (design D4). `edit` may
+   * itself await — the anchor pickup and `keepMatching` both make a second
+   * round trip inside it — so the before/after guard is checked only once
+   * `edit` has settled, covering every await it made and not just the
+   * resolve (`browse-fixes` design D1 risk: a gesture during the round trip
+   * wins).
    */
-  async #editIds(edit: (ids: SvelteSet<string>) => void): Promise<void> {
+  async #editIds(edit: (ids: SvelteSet<string>) => void | Promise<void>): Promise<void> {
     const before = this.#state
     const resolved = await this.ids()
-    // An `Esc` or a new query during the resolve owns the selection now, and
-    // writing the edit back would resurrect what the user cleared. `ids()`
-    // itself moves a range into id mode on return, which is the one other
-    // state a resolve may leave behind.
+    const ids = new SvelteSet(resolved)
+    await edit(ids)
+    // An `Esc` or a new query during the resolve or the edit owns the
+    // selection now, and writing this edit back would resurrect what the
+    // user cleared. `ids()` itself moves a range into id mode on return,
+    // which is the one other state a resolve may leave behind.
     const after = this.#state
     if (after !== before && after !== this.#promoted) return
-    const ids = new SvelteSet(resolved)
-    edit(ids)
     this.#state = { kind: 'ids', ids }
   }
 

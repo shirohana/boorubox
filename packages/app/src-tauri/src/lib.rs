@@ -189,6 +189,7 @@ pub fn run() {
             commands::set_open_last_on_launch,
             commands::search,
             commands::search_ids,
+            commands::matching_ids,
             commands::search_position,
             commands::tag_counts,
             commands::update_tags,

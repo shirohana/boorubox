@@ -436,6 +436,22 @@ pub async fn search_ids(req: SearchRequest, state: State<'_, AppState>) -> Resul
     .await
 }
 
+/// Which of `ids` a `search` of `req` still matches — what the selection
+/// prunes itself by after a write re-reads the search (`browse-fixes` design
+/// D1), so the count, the thumbnail strip and the next bulk action describe
+/// only images the result still shows.
+#[tauri::command]
+pub async fn matching_ids(
+    req: SearchRequest,
+    ids: Vec<String>,
+    state: State<'_, AppState>,
+) -> Result<Vec<String>> {
+    with_library_off_main_thread(&state.library, move |library| {
+        query::matching_ids(&library.conn, &req, &ids)
+    })
+    .await
+}
+
 /// The zero-based row `id` occupies in the order a `search` of `req` would
 /// page, or `None` when `id` is not in `req`'s matched set — what a
 /// click-driven search rewrite asks to keep its subject current
@@ -2226,6 +2242,20 @@ mod tests {
                 .map(|image| image.id.clone())
                 .collect::<Vec<_>>(),
         );
+    }
+
+    #[test]
+    fn matching_ids_answers_the_subset_the_request_still_matches() {
+        let (_library, app) = app_with_library();
+        import(&app, &folder_of_images(5));
+        let ids = ids_in_library(&app);
+
+        let candidates = vec![ids[0].clone(), ids[1].clone(), "no-such-id".to_string()];
+        let matched = now(matching_ids(everything(), candidates, app.state())).unwrap();
+
+        assert_eq!(matched.len(), 2);
+        assert!(matched.contains(&ids[0]));
+        assert!(matched.contains(&ids[1]));
     }
 
     #[test]
