@@ -415,6 +415,31 @@ export function excludeAccountFromQuery(query: string, handle: string): string {
 }
 
 /**
+ * The collection twins of {@link addAccountToQuery} and
+ * {@link excludeAccountFromQuery}: a collection the query already states the
+ * other way loses that term before gaining this one, so "include replaces
+ * exclude" holds for `collection:` too.
+ */
+export function addCollectionToQuery(query: string, slug: string): string {
+  const parsed = parseTagSearch(query)
+  if (parsed.collections.includes(slug)) return query
+  const base = parsed.excludeCollections.includes(slug)
+    ? rewriteMetatagList(query, '-collection:', parsed.excludeCollections.filter((value) => value !== slug))
+    : query
+  return rewriteMetatagList(base, 'collection:', [...parsed.collections, slug])
+}
+
+/** The mirror of {@link addCollectionToQuery}, for `-collection:`. */
+export function excludeCollectionFromQuery(query: string, slug: string): string {
+  const parsed = parseTagSearch(query)
+  if (parsed.excludeCollections.includes(slug)) return query
+  const base = parsed.collections.includes(slug)
+    ? rewriteMetatagList(query, 'collection:', parsed.collections.filter((value) => value !== slug))
+    : query
+  return rewriteMetatagList(base, '-collection:', [...parsed.excludeCollections, slug])
+}
+
+/**
  * Adds or removes `slug` from the collection list, leaving the rest of the
  * query — `toggleAccountInQuery`'s rule for `account:` (design D4), applied
  * to `collection:` (design D6): a collection the query excludes stops being

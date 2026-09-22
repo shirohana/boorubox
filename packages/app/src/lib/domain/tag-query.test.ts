@@ -2,8 +2,10 @@ import { describe, expect, it } from 'vitest'
 import {
   activeTerms,
   addAccountToQuery,
+  addCollectionToQuery,
   addTagToQuery,
   excludeAccountFromQuery,
+  excludeCollectionFromQuery,
   excludeTagFromQuery,
   parseTagSearch,
   removeTagFromQuery,
@@ -264,6 +266,54 @@ describe('toggleCollectionInQuery', () => {
     expect(parsed.collections).toEqual(['favorites'])
     expect(parsed.includeTags).toEqual(['cat'])
     expect(parsed.ratings).toEqual(['s'])
+  })
+})
+
+describe('addCollectionToQuery', () => {
+  it('starts a query', () => {
+    expect(addCollectionToQuery('', 'favorites')).toBe('collection:favorites')
+  })
+
+  it('adds beside other terms', () => {
+    const query = addCollectionToQuery('cat rating:s', 'favorites')
+    const parsed = parseTagSearch(query)
+    expect(parsed.includeTags).toEqual(['cat'])
+    expect(parsed.ratings).toEqual(['s'])
+    expect(parsed.collections).toEqual(['favorites'])
+  })
+
+  it('leaves a collection the query already includes alone, not doubled', () => {
+    expect(addCollectionToQuery('collection:favorites', 'favorites')).toBe('collection:favorites')
+  })
+
+  it('replaces an exclusion it is asked to include', () => {
+    const query = addCollectionToQuery('-collection:favorites', 'favorites')
+    expect(query).toBe('collection:favorites')
+    expect(parseTagSearch(query).excludeCollections).toEqual([])
+  })
+})
+
+describe('excludeCollectionFromQuery', () => {
+  it('starts a query', () => {
+    expect(excludeCollectionFromQuery('', 'queue')).toBe('-collection:queue')
+  })
+
+  it('leaves the rest of the query intact', () => {
+    const query = excludeCollectionFromQuery('cat rating:s', 'queue')
+    const parsed = parseTagSearch(query)
+    expect(parsed.includeTags).toEqual(['cat'])
+    expect(parsed.ratings).toEqual(['s'])
+    expect(parsed.excludeCollections).toEqual(['queue'])
+  })
+
+  it('leaves a collection the query already excludes alone, not doubled', () => {
+    expect(excludeCollectionFromQuery('-collection:queue', 'queue')).toBe('-collection:queue')
+  })
+
+  it('replaces an inclusion it is asked to exclude', () => {
+    const query = excludeCollectionFromQuery('collection:queue', 'queue')
+    expect(query).toBe('-collection:queue')
+    expect(parseTagSearch(query).collections).toEqual([])
   })
 })
 

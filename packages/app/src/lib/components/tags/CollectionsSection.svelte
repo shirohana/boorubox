@@ -15,6 +15,7 @@
   // stored preference and a `resize-y` box.
   import type { Collection, CollectionCount } from '@boorubox/shared'
   import ChevronDownIcon from '@lucide/svelte/icons/chevron-down'
+  import MinusIcon from '@lucide/svelte/icons/minus'
   import PlusIcon from '@lucide/svelte/icons/plus'
   import { collectionDelete, collections, errorText, settings } from '$lib/api'
   import CollectionNameDialog from '$lib/components/common/CollectionNameDialog.svelte'
@@ -22,7 +23,12 @@
   import { Button } from '$lib/components/ui/button'
   import * as Collapsible from '$lib/components/ui/collapsible'
   import * as ContextMenu from '$lib/components/ui/context-menu'
-  import { activeTerms, toggleCollectionInQuery } from '$lib/domain/tag-utils'
+  import {
+    activeTerms,
+    addCollectionToQuery,
+    excludeCollectionFromQuery,
+    toggleCollectionInQuery,
+  } from '$lib/domain/tag-utils'
 
   interface Props {
     /** `null` while a search is running (design D8): the heading stays, the list is blank. */
@@ -161,6 +167,30 @@
                         {excluded ? 'bg-destructive/10 text-destructive line-through' : ''}
                       "
                     >
+                      <button
+                        type="button"
+                        class="
+                          shrink-0 rounded-sm p-0.5 text-muted-foreground
+                          hover:text-foreground
+                        "
+                        aria-label="Include {collection.name}"
+                        title="Include {collection.name}"
+                        onclick={() => onquery(addCollectionToQuery(tagQuery, collection.slug))}
+                      >
+                        <PlusIcon class="size-3" />
+                      </button>
+                      <button
+                        type="button"
+                        class="
+                          shrink-0 rounded-sm p-0.5 text-muted-foreground
+                          hover:text-foreground
+                        "
+                        aria-label="Exclude {collection.name}"
+                        title="Exclude {collection.name}"
+                        onclick={() => onquery(excludeCollectionFromQuery(tagQuery, collection.slug))}
+                      >
+                        <MinusIcon class="size-3" />
+                      </button>
                       <!--
                         Clicking an active collection takes it out again
                         (spec "Filter from the list").

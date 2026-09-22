@@ -96,9 +96,13 @@ hover, and no mark otherwise, so an image in no collection is told apart at a gl
 Beside the results the app SHALL list every collection in the library with the number of
 images of the current result in it, in name order; the collections the search names SHALL be
 marked where they are and SHALL NOT move to the front. Each entry SHALL filter the search by
-that collection on activation and take the term out again when it is already there, and SHALL
-offer rename and delete on its context menu; deleting SHALL ask first, naming the collection
-and how many images are in it. The section SHALL offer creating a collection.
+that collection on activation and take the term out again when it is already there, SHALL
+offer including it in the search and excluding it from the search as two separate controls
+in the same form the tag list uses, and SHALL show which of the two the current search does.
+Excluding a collection the search includes SHALL replace the inclusion, and the reverse;
+neither action SHALL disturb the rest of the query. Each entry SHALL offer rename and delete
+on its context menu; deleting SHALL ask first, naming the collection and how many images are in
+it. The section SHALL offer creating a collection.
 
 The section SHALL fold away and unfold on request, and whether it is folded SHALL be kept
 with the app's other preferences, so the choice survives a restart. Unfolded, its list SHALL
@@ -113,6 +117,14 @@ below out of their room.
 #### Scenario: Filter from the list
 - **WHEN** the user activates `Favorites` in the list
 - **THEN** the search reads `collection:favorites`, and activating it again removes the term
+
+#### Scenario: Exclude from the list
+- **WHEN** the search reads `cat` and the user excludes `Uncategorized` from the list
+- **THEN** the search reads `cat -collection:uncategorized`, the row is marked as excluded, and images in `Uncategorized` leave the result
+
+#### Scenario: Include replaces exclude
+- **WHEN** the search reads `-collection:queue` and the user includes `Queue` from the list
+- **THEN** the search reads `collection:queue` and nothing else changed
 
 #### Scenario: An active collection stays in place
 - **WHEN** the list reads `Art`, `Favorites`, `Queue` and the user activates `Queue`
