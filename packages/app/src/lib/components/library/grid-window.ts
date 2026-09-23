@@ -15,6 +15,17 @@ import { GRID_TILE_MAX, GRID_TILE_MIN } from '@boorubox/shared'
 export const GAP = 12
 /** Padding between the scroll container and the cards. */
 export const EDGE = 12
+/**
+ * Height of a tile's tag strip while it is shown (`ImageCard`'s `showTags`,
+ * `tile-tags-in-edit-mode` design D1/D2): the one number both draw from, so
+ * the footer the CSS renders and the row height this module computes never
+ * drift apart. It is three lines of `text-xs/4` (3 × 16) plus `pt-1` and 4 px of
+ * clearance below (2 × 4):
+ * change the strip's text size or padding and this number moves with it. A
+ * list longer than that is read by hovering the tile, which lets the strip
+ * grow over the row below; the row math never sees that growth.
+ */
+export const TAG_FOOTER = 56
 /** Rows kept mounted beyond the viewport, so a scroll does not show holes. */
 export const OVERSCAN_ROWS = 2
 /** Height of a group heading row, gap included. */
@@ -38,6 +49,11 @@ export interface Viewport {
   height: number
   /** Target edge length of one tile in px (design D11). */
   tile: number
+  /**
+   * Height added under each tile: `TAG_FOOTER` while `ImageCard`'s strip
+   * shows, 0 otherwise (`tile-tags-in-edit-mode` design D2).
+   */
+  footer: number
 }
 
 /** One group's place in the list, or the whole list when ungrouped. */
@@ -63,8 +79,9 @@ export interface GridWindow {
   columns: number
   /**
    * Height of one row: a tile is square, so this is the width a `1fr` column
-   * actually gets, plus the gap. Deriving it from `tile` instead would let the
-   * rows the CSS grid lays out drift from the ones this module positions.
+   * actually gets, plus the footer and the gap. Deriving the tile's edge from
+   * `tile` instead would let the rows the CSS grid lays out drift from the
+   * ones this module positions.
    */
   rowHeight: number
   headingHeight: number
@@ -122,6 +139,7 @@ export function gridWindow({
   width,
   height,
   tile,
+  footer,
 }: Viewport): GridWindow {
   const edge = clampTile(tile)
   const contentWidth = Math.max(0, width - EDGE * 2)
@@ -132,7 +150,7 @@ export function gridWindow({
   const columnWidth = contentWidth > 0
     ? (contentWidth - (columns - 1) * GAP) / columns
     : edge
-  const row = columnWidth + GAP
+  const row = columnWidth + footer + GAP
   const sections = sectionsOf(groups, total, columns, row)
 
   const top = scrollTop - OVERSCAN_ROWS * row

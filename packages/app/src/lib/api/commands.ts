@@ -115,6 +115,14 @@ export function setGridTileSize(size: number): Promise<AppSettings> {
 }
 
 /**
+ * Whether the grid's tag footer shows outside edit mode, where the mode
+ * forces it on regardless (`tile-tags-in-edit-mode` design D3).
+ */
+export function setShowTileTags(value: boolean): Promise<AppSettings> {
+  return invoke('set_show_tile_tags', { value })
+}
+
+/**
  * Clamped by Rust to `CLICK_ZOOM_CEILING_MIN`…`CLICK_ZOOM_CEILING_MAX`, never
  * refused (`click-zoom-ceiling` design D4).
  */

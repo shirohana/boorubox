@@ -6,6 +6,7 @@ import {
   setGridTileSize,
   setNotesCollapsed,
   setOpenLastOnLaunch,
+  setShowTileTags,
   setTheme,
 } from './commands'
 import { errorText } from './errors'
@@ -41,6 +42,14 @@ class Settings {
   /** Rust clamps the size, so the stored value is what comes back, not `size`. */
   async setGridTileSize(size: number): Promise<void> {
     this.current = await setGridTileSize(size)
+  }
+
+  /**
+   * Whether the grid's tag footer shows outside edit mode
+   * (`tile-tags-in-edit-mode` design D3).
+   */
+  async setShowTileTags(value: boolean): Promise<void> {
+    this.current = await setShowTileTags(value)
   }
 
   /**

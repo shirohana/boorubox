@@ -506,6 +506,13 @@ export interface AppSettings {
   theme: Theme
   gridTileSize: number
   /**
+   * Whether the grid's tag footer shows outside edit mode, where the mode
+   * forces it on regardless (`tile-tags-in-edit-mode` design D3). Kept
+   * beside `gridTileSize`: a display preference of this machine, not of the
+   * library.
+   */
+  showTileTags: boolean
+  /**
    * How far a click in the viewer may zoom, as a percent of the fit
    * (`click-zoom-ceiling` design D1): the click's target is the cover or
    * this ceiling times the fit, whichever is smaller. A percent, not a

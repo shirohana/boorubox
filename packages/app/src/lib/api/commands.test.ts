@@ -70,6 +70,7 @@ import {
   setNotesCollapsed,
   setOpenLastOnLaunch,
   setRating,
+  setShowTileTags,
   setTagCategory,
   setTagPinned,
   setTheme,
@@ -164,6 +165,7 @@ it('app_settings takes no arguments', async () => {
   const settings: AppSettings = {
     theme: 'system',
     gridTileSize: GRID_TILE_DEFAULT,
+    showTileTags: false,
     clickZoomCeilingPercent: CLICK_ZOOM_CEILING_DEFAULT,
     notesCollapsed: false,
     collectionsCollapsed: false,
@@ -178,6 +180,7 @@ it('set_theme passes the theme and returns the settings', async () => {
   const settings: AppSettings = {
     theme: 'dark',
     gridTileSize: GRID_TILE_DEFAULT,
+    showTileTags: false,
     clickZoomCeilingPercent: CLICK_ZOOM_CEILING_DEFAULT,
     notesCollapsed: false,
     collectionsCollapsed: false,
@@ -192,6 +195,7 @@ it('set_grid_tile_size passes the size', async () => {
   const calls = spyIPC({
     theme: 'system',
     gridTileSize: GRID_TILE_MAX,
+    showTileTags: false,
     clickZoomCeilingPercent: CLICK_ZOOM_CEILING_DEFAULT,
     notesCollapsed: false,
     collectionsCollapsed: false,
@@ -201,10 +205,26 @@ it('set_grid_tile_size passes the size', async () => {
   expect(calls).toHaveBeenCalledWith('set_grid_tile_size', { size: 10_000 })
 })
 
+it('set_show_tile_tags passes the flag and returns the settings', async () => {
+  const settings: AppSettings = {
+    theme: 'system',
+    gridTileSize: GRID_TILE_DEFAULT,
+    showTileTags: true,
+    clickZoomCeilingPercent: CLICK_ZOOM_CEILING_DEFAULT,
+    notesCollapsed: false,
+    collectionsCollapsed: false,
+    openLastOnLaunch: true,
+  }
+  const calls = spyIPC(settings)
+  await expect(setShowTileTags(true)).resolves.toEqual(settings)
+  expect(calls).toHaveBeenCalledWith('set_show_tile_tags', { value: true })
+})
+
 it('set_click_zoom_ceiling_percent passes the percent', async () => {
   const calls = spyIPC({
     theme: 'system',
     gridTileSize: GRID_TILE_DEFAULT,
+    showTileTags: false,
     clickZoomCeilingPercent: CLICK_ZOOM_CEILING_MAX,
     notesCollapsed: false,
     collectionsCollapsed: false,
@@ -218,6 +238,7 @@ it('set_notes_collapsed passes the flag and returns the settings', async () => {
   const settings: AppSettings = {
     theme: 'system',
     gridTileSize: GRID_TILE_DEFAULT,
+    showTileTags: false,
     clickZoomCeilingPercent: CLICK_ZOOM_CEILING_DEFAULT,
     notesCollapsed: true,
     collectionsCollapsed: false,
@@ -232,6 +253,7 @@ it('set_collections_collapsed passes the flag and returns the settings', async (
   const settings: AppSettings = {
     theme: 'system',
     gridTileSize: GRID_TILE_DEFAULT,
+    showTileTags: false,
     clickZoomCeilingPercent: CLICK_ZOOM_CEILING_DEFAULT,
     notesCollapsed: false,
     collectionsCollapsed: true,
@@ -246,6 +268,7 @@ it('set_open_last_on_launch passes the flag and returns the settings', async () 
   const settings: AppSettings = {
     theme: 'system',
     gridTileSize: GRID_TILE_DEFAULT,
+    showTileTags: false,
     clickZoomCeilingPercent: CLICK_ZOOM_CEILING_DEFAULT,
     notesCollapsed: false,
     collectionsCollapsed: false,

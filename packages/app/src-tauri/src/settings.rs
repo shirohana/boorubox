@@ -24,6 +24,7 @@ const LIBRARY_PATH: &str = "libraryPath";
 const PORT: &str = "port";
 const THEME: &str = "theme";
 const GRID_TILE_SIZE: &str = "gridTileSize";
+const SHOW_TILE_TAGS: &str = "showTileTags";
 const CLICK_ZOOM_CEILING_PERCENT: &str = "clickZoomCeilingPercent";
 const RECENT_LIBRARIES: &str = "recentLibraries";
 const NOTES_COLLAPSED: &str = "notesCollapsed";
@@ -41,6 +42,11 @@ pub struct Settings {
     pub port: u16,
     pub theme: Theme,
     pub grid_tile_size: u32,
+    /// Whether the grid's tag footer shows outside edit mode, where the mode
+    /// forces it on regardless (`tile-tags-in-edit-mode` design D3). Kept
+    /// beside `grid_tile_size`: a display preference of this machine, not of
+    /// the library.
+    pub show_tile_tags: bool,
     /// How far a click in the viewer may zoom, as a percent of the fit
     /// (`click-zoom-ceiling` design D1).
     pub click_zoom_ceiling_percent: u32,
@@ -67,6 +73,10 @@ impl Default for Settings {
             port: DEFAULT_PORT,
             theme: Theme::default(),
             grid_tile_size: GRID_TILE_DEFAULT,
+            // Off: edit mode already forces the footer on, so a fresh
+            // profile's browse grid stays as dense as it was before this
+            // setting existed.
+            show_tile_tags: false,
             click_zoom_ceiling_percent: CLICK_ZOOM_CEILING_DEFAULT,
             recent_libraries: Vec::new(),
             // Expanded: a panel nobody asked to hide is a panel the user has
@@ -100,6 +110,7 @@ impl From<&Settings> for crate::model::AppSettings {
         crate::model::AppSettings {
             theme: settings.theme,
             grid_tile_size: settings.grid_tile_size,
+            show_tile_tags: settings.show_tile_tags,
             click_zoom_ceiling_percent: settings.click_zoom_ceiling_percent,
             notes_collapsed: settings.notes_collapsed,
             collections_collapsed: settings.collections_collapsed,
@@ -153,6 +164,11 @@ fn load_from<R: Runtime>(app: &AppHandle<R>, file: &str) -> Settings {
             .and_then(|size| u32::try_from(size).ok())
             .filter(|size| (GRID_TILE_MIN..=GRID_TILE_MAX).contains(size))
             .unwrap_or(defaults.grid_tile_size),
+        show_tile_tags: store
+            .get(SHOW_TILE_TAGS)
+            .as_ref()
+            .and_then(JsonValue::as_bool)
+            .unwrap_or(defaults.show_tile_tags),
         // Same reasoning as `grid_tile_size`: `set_click_zoom_ceiling_percent`
         // is the only writer that clamps, so anything out of range here was
         // hand-edited and is not a preference.
@@ -210,6 +226,7 @@ fn save_to<R: Runtime>(app: &AppHandle<R>, file: &str, settings: &Settings) -> R
         serde_json::to_value(settings.theme).unwrap_or_default(),
     );
     store.set(GRID_TILE_SIZE, settings.grid_tile_size);
+    store.set(SHOW_TILE_TAGS, settings.show_tile_tags);
     store.set(
         CLICK_ZOOM_CEILING_PERCENT,
         settings.click_zoom_ceiling_percent,
@@ -253,6 +270,7 @@ mod tests {
             port: 51234,
             theme: Theme::Dark,
             grid_tile_size: 240,
+            show_tile_tags: true,
             click_zoom_ceiling_percent: 350,
             recent_libraries: vec![
                 PathBuf::from("/tmp/boorubox-library"),
@@ -356,6 +374,22 @@ mod tests {
             load_from(mock_app().handle(), file).grid_tile_size,
             GRID_TILE_DEFAULT,
         );
+    }
+
+    /// The footer nobody has turned on yet is off: edit mode already forces
+    /// it, so a file that predates this setting must not suddenly show
+    /// footers in the browse grid too.
+    #[test]
+    fn a_file_without_the_show_tile_tags_key_reads_as_off() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("settings.json");
+        let file = file.to_str().unwrap();
+        let writer = mock_app();
+        let store = writer.handle().store(file).unwrap();
+        store.set(GRID_TILE_SIZE, GRID_TILE_DEFAULT);
+        store.save().unwrap();
+
+        assert!(!load_from(mock_app().handle(), file).show_tile_tags);
     }
 
     #[test]

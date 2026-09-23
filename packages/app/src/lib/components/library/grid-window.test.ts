@@ -1,10 +1,15 @@
 import type { GroupSlice } from '@boorubox/shared'
 import { GRID_TILE_DEFAULT, GRID_TILE_MAX, GRID_TILE_MIN } from '@boorubox/shared'
 import { describe, expect, it } from 'vitest'
-import { EDGE, GAP, gridWindow, HEADING_HEIGHT, imageTop } from './grid-window'
+import { EDGE, GAP, gridWindow, HEADING_HEIGHT, imageTop, TAG_FOOTER } from './grid-window'
 
-/** A 1400 x 900 window, roughly the default 1200 x 800 app window maximised. */
-const viewport = { width: 1400, height: 900, tile: GRID_TILE_DEFAULT, groups: [] }
+/**
+ * A 1400 x 900 window, roughly the default 1200 x 800 app window maximised.
+ * `footer: 0` here means every test below that spreads this object is
+ * already the "footer off" case; the `footer` describe block below is what
+ * covers `TAG_FOOTER` instead.
+ */
+const viewport = { width: 1400, height: 900, tile: GRID_TILE_DEFAULT, groups: [], footer: 0 }
 
 /** Every tile size the slider can produce, so no assertion is tied to the default. */
 const tiles = [GRID_TILE_MIN, GRID_TILE_DEFAULT, GRID_TILE_MAX]
@@ -26,7 +31,14 @@ describe('columns', () => {
   })
 
   it('drops a column rather than shrinking a tile below the asked-for size', () => {
-    const narrow = { total: 100, scrollTop: 0, height: 900, tile: GRID_TILE_DEFAULT, groups: [] }
+    const narrow = {
+      total: 100,
+      scrollTop: 0,
+      height: 900,
+      tile: GRID_TILE_DEFAULT,
+      groups: [],
+      footer: 0,
+    }
     expect(gridWindow({ ...narrow, width: 420 }).columns).toBe(2)
     expect(gridWindow({ ...narrow, width: 230 }).columns).toBe(1)
     // Even narrower than one tile: never zero columns, or the row math divides by 0.
@@ -142,6 +154,62 @@ describe('virtualisation', () => {
       })
 
       expect(window.endIndex).toBe(total)
+    }
+  })
+})
+
+// `tile-tags-in-edit-mode` design D2: `footer` is the one number `ImageCard`'s
+// strip and this module's row math both read, so they cannot drift apart.
+describe('footer', () => {
+  function tileRowCount(window: ReturnType<typeof gridWindow>): number {
+    return window.rows.filter((row) => row.kind === 'tiles').length
+  }
+
+  it('adds the footer to the row height, columns and content width untouched', () => {
+    for (const tile of tiles) {
+      const off = gridWindow({ total: 100, scrollTop: 0, ...viewport, tile, footer: 0 })
+      const on = gridWindow({ total: 100, scrollTop: 0, ...viewport, tile, footer: TAG_FOOTER })
+
+      expect(on.columns).toBe(off.columns)
+      expect(on.rowHeight).toBe(off.rowHeight + TAG_FOOTER)
+    }
+  })
+
+  it('grows the list height by the footer on every row', () => {
+    for (const tile of tiles) {
+      const { columns, rowHeight, contentHeight } = gridWindow({
+        total: 10_000,
+        scrollTop: 0,
+        ...viewport,
+        tile,
+        footer: TAG_FOOTER,
+      })
+      expect(contentHeight).toBe(Math.ceil(10_000 / columns) * rowHeight)
+    }
+  })
+
+  it('places the second row exactly one taller row down', () => {
+    for (const tile of tiles) {
+      const window = gridWindow({
+        total: 10_000,
+        scrollTop: 0,
+        ...viewport,
+        tile,
+        footer: TAG_FOOTER,
+      })
+      const secondRowFirstIndex = window.columns
+      expect(imageTop(window.sections, secondRowFirstIndex, window.columns, window.rowHeight))
+        .toBe(window.rowHeight)
+    }
+  })
+
+  it('mounts no more tile rows than the footer-off window, for the same viewport', () => {
+    for (const tile of tiles) {
+      const off = gridWindow({ total: 10_000, scrollTop: 0, ...viewport, tile, footer: 0 })
+      const on = gridWindow({ total: 10_000, scrollTop: 0, ...viewport, tile, footer: TAG_FOOTER })
+
+      // Taller rows: the same viewport height fits no more of them.
+      expect(tileRowCount(on)).toBeLessThanOrEqual(tileRowCount(off))
     }
   })
 })

@@ -14,6 +14,7 @@
   } from '@boorubox/shared'
   import PanelRightIcon from '@lucide/svelte/icons/panel-right'
   import StampIcon from '@lucide/svelte/icons/stamp'
+  import TagsIcon from '@lucide/svelte/icons/tags'
   import {
     applyEdit,
     booruSites,
@@ -203,6 +204,13 @@
 
   const libraryPath = $derived(library.status?.libraryPath ?? null)
   const focused = $derived(results.at(selection.focus) ?? null)
+  /**
+   * The grid's tag footer: always on in edit mode, otherwise the toolbar's
+   * own toggle (`tile-tags-in-edit-mode` design D3). Same rule as
+   * `clickZoomCeiling` below: a `$derived` of `settings.current`, not an
+   * `$effect` on it, so this doesn't re-run on every unrelated settings write.
+   */
+  const showTags = $derived(editMode || (settings.current?.showTileTags ?? false))
   /**
    * The viewer's click zoom ceiling, as a multiple of the fit
    * (`click-zoom-ceiling` design D3): read live off the settings store, never
@@ -809,6 +817,32 @@
     }}
   />
 
+  <!--
+    Disabled rather than hidden while edit mode is on, so the setting stays
+    readable even though the mode forces it (`tile-tags-in-edit-mode` design
+    D3); the variant follows the state as the inspector toggle's does below.
+    The title sits on a wrapper: a disabled control gets no pointer events in
+    either webview, so a title on the button itself never shows in the one
+    state whose wording matters.
+  -->
+  <span
+    class="inline-flex"
+    title={editMode ? 'Tags under thumbnails (always on in edit mode)' : 'Tags under thumbnails'}
+  >
+    <Button
+      size="icon-sm"
+      variant={showTags ? 'secondary' : 'ghost'}
+      aria-label="Show tags under thumbnails"
+      aria-pressed={showTags}
+      disabled={editMode}
+      onclick={() => {
+        settings.setShowTileTags(!showTags).catch((error) => (actionError = errorText(error)))
+      }}
+    >
+      <TagsIcon />
+    </Button>
+  </span>
+
   <!-- The variant, not just `aria-pressed`: the state has to be visible. -->
   <Button
     size="icon-sm"
@@ -928,6 +962,7 @@
           onerror={(message) => (actionError = message)}
           onstamp={editMode && activeStamp ? (index, id) => void onStamp(index, id) : undefined}
           stampLabel={editMode ? activeStamp?.text : undefined}
+          {showTags}
         />
       {/if}
     </div>

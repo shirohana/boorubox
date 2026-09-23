@@ -18,6 +18,7 @@ afterEach(() => {
 const stored: AppSettings = {
   theme: 'system',
   gridTileSize: GRID_TILE_DEFAULT,
+  showTileTags: false,
   clickZoomCeilingPercent: CLICK_ZOOM_CEILING_DEFAULT,
   notesCollapsed: false,
   collectionsCollapsed: false,
@@ -44,6 +45,7 @@ it('keeps what the write answered, not what it was asked for', async () => {
       ({
         theme: 'dark',
         gridTileSize: GRID_TILE_MAX,
+        showTileTags: true,
         clickZoomCeilingPercent: CLICK_ZOOM_CEILING_MAX,
         notesCollapsed: true,
         collectionsCollapsed: true,
@@ -58,6 +60,9 @@ it('keeps what the write answered, not what it was asked for', async () => {
   // to; taking the argument instead would show a value the file does not hold.
   await settings.setGridTileSize(GRID_TILE_MAX + 100)
   expect(settings.current?.gridTileSize).toBe(GRID_TILE_MAX)
+
+  await settings.setShowTileTags(true)
+  expect(settings.current?.showTileTags).toBe(true)
 
   // Same reasoning as the tile size's: the clamped answer is what is kept.
   await settings.setClickZoomCeilingPercent(CLICK_ZOOM_CEILING_MAX + 100)

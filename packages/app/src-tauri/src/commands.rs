@@ -377,6 +377,20 @@ pub fn set_grid_tile_size<R: Runtime>(
     })
 }
 
+/// Whether the grid's tag footer shows outside edit mode, where the mode
+/// forces it on regardless (`tile-tags-in-edit-mode` design D3). No clamp:
+/// unlike the tile size, there is no out-of-range value for a bare flag.
+#[tauri::command]
+pub fn set_show_tile_tags<R: Runtime>(
+    value: bool,
+    app: AppHandle<R>,
+    state: State<'_, AppState>,
+) -> Result<AppSettings> {
+    write_settings(&app, &state, |settings| {
+        settings.show_tile_tags = value;
+    })
+}
+
 /// Clamped, never refused, for `set_grid_tile_size`'s reason: a rejected
 /// ceiling would leave the settings screen disagreeing with the slider that
 /// set it.
@@ -1636,6 +1650,19 @@ mod tests {
         let large = set_grid_tile_size(10_000, app.handle().clone(), app.state()).unwrap();
         assert_eq!(large.grid_tile_size, GRID_TILE_MAX);
         assert_eq!(settings::load(app.handle()).grid_tile_size, GRID_TILE_MAX);
+    }
+
+    /// Copied from the tile size's round trip above, minus the clamp: a bare
+    /// flag has no out-of-range value to prove, only that it reaches the
+    /// running state and the file.
+    #[test]
+    fn show_tile_tags_reaches_the_state_and_the_store() {
+        let app = mock_app();
+
+        let updated = set_show_tile_tags(true, app.handle().clone(), app.state()).unwrap();
+
+        assert!(updated.show_tile_tags);
+        assert!(settings::load(app.handle()).show_tile_tags);
     }
 
     /// Same rule as the tile size's: a slider that sent 10 000 must leave the

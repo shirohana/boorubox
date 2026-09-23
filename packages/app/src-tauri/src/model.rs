@@ -719,6 +719,12 @@ pub enum Theme {
 pub struct AppSettings {
     pub theme: Theme,
     pub grid_tile_size: u32,
+    /// Whether the grid's tag footer shows outside edit mode, where the mode
+    /// forces it on regardless (`tile-tags-in-edit-mode` design D3). Kept
+    /// beside `grid_tile_size` rather than with the mode itself: it is a
+    /// display preference of this machine, like the tile size, not a fact
+    /// about the library.
+    pub show_tile_tags: bool,
     /// How far a click in the viewer may zoom, as a percent of the fit
     /// (`click-zoom-ceiling` design D1): the click's target is the cover or
     /// this ceiling times the fit, whichever is smaller.
@@ -1092,6 +1098,7 @@ mod tests {
         let settings = AppSettings {
             theme: Theme::Dark,
             grid_tile_size: GRID_TILE_DEFAULT,
+            show_tile_tags: true,
             click_zoom_ceiling_percent: CLICK_ZOOM_CEILING_DEFAULT,
             notes_collapsed: true,
             collections_collapsed: true,
@@ -1103,6 +1110,7 @@ mod tests {
             serde_json::json!({
                 "theme": "dark",
                 "gridTileSize": 180,
+                "showTileTags": true,
                 "clickZoomCeilingPercent": 150,
                 "notesCollapsed": true,
                 "collectionsCollapsed": true,

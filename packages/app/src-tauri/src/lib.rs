@@ -186,6 +186,7 @@ pub fn run() {
             commands::app_settings,
             commands::set_theme,
             commands::set_grid_tile_size,
+            commands::set_show_tile_tags,
             commands::set_click_zoom_ceiling_percent,
             commands::set_open_last_on_launch,
             commands::search,

@@ -17,7 +17,7 @@
   import type { CollectionTarget } from './collection-actions'
   import { addToCreated } from './collection-actions'
   import { moveFocus } from './grid-focus'
-  import { EDGE, GAP, gridWindow, imageTop } from './grid-window'
+  import { EDGE, GAP, gridWindow, imageTop, TAG_FOOTER } from './grid-window'
   import { groupLabel } from './group-label'
   import ImageCard from './ImageCard.svelte'
   import type { TrashActions } from './trash-actions'
@@ -58,6 +58,13 @@
      * the cursor and the hover overlay naming what a click would apply.
      */
     stampLabel?: string
+    /**
+     * Edit mode is on (`tile-tags-in-edit-mode` design D1/D2): every tile
+     * gets its tag footer, and `gridWindow`'s row height grows by
+     * `TAG_FOOTER` to hold it — the screen owns the mode, so this is the
+     * grid's whole knowledge of it, the same shape as `stampLabel` above.
+     */
+    showTags?: boolean
   }
 
   let {
@@ -73,6 +80,7 @@
     onerror,
     onstamp,
     stampLabel,
+    showTags = false,
   }: Props = $props()
 
   /**
@@ -106,6 +114,7 @@
     width: viewportWidth,
     height: viewportHeight,
     tile,
+    footer: showTags ? TAG_FOOTER : 0,
   }))
 
   // `ensureRange` reads the result generation itself, so a new query re-runs
@@ -381,6 +390,7 @@
               {onerror}
               onnewcollection={(target) => (creatingCollectionFor = target)}
               {stampLabel}
+              {showTags}
             />
           {/each}
         </div>
