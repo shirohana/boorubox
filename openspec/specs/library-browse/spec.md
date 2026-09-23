@@ -52,6 +52,23 @@ searchable. The metatag `collection:<name>` SHALL match images in the collection
 lower-cased with spaces as underscores, is `<name>`; `-collection:<name>` SHALL exclude them;
 a name no collection has SHALL match nothing.
 
+The metatags `gentags:`, `arttags:`, `chartags:`, `copytags:` and `metatags:` SHALL count an
+image's tags in one category — general, artist, character, copyright and meta respectively —
+where `tagcount:` counts all of them. Each SHALL take `tagcount:`'s syntax: a number for
+exactly that many, `>n`, `<n`, `>=n`, `<=n`, `a..b` for a range inclusive at both ends in
+either order, and `a,b,c` for any of the listed counts. Different count metatags in one query
+SHALL all apply; the same count metatag given more than once SHALL keep its first occurrence
+and ignore the rest. A leading `-` on a count metatag SHALL be ignored, as it is on
+`tagcount:`: a count metatag is not negated.
+
+`collection:none` SHALL match images in no collection and `collection:any` images in at least
+one; `-collection:none` SHALL match what `collection:any` matches, and `-collection:any` what
+`collection:none` matches. These two words SHALL be read as keywords only when they are the
+whole value of the term: `none` or `any` inside a comma list SHALL name nothing, and a
+collection whose name reduces to `none` or `any` SHALL NOT be searchable by name. Adding or
+removing a collection from the sidebar or the inspector SHALL leave a `none`/`any` term in the
+query standing.
+
 #### Scenario: AND and NOT
 - **WHEN** the query is `cat -dog`
 - **THEN** only images tagged `cat` and not tagged `dog` are shown
@@ -79,6 +96,46 @@ a name no collection has SHALL match nothing.
 #### Scenario: Excluding a collection
 - **WHEN** the query is `-collection:queue`
 - **THEN** images in `Queue` are not shown and every other image is
+
+#### Scenario: No copyright tag
+- **WHEN** image A is tagged `cat` (general) and `touhou` (copyright), image B only `cat`, and the query is `copytags:0`
+- **THEN** B is shown and A is not
+
+#### Scenario: At least one artist tag
+- **WHEN** image A has the artist tag `kantoku`, image B has no artist tag, and the query is `arttags:>0`
+- **THEN** A is shown and B is not
+
+#### Scenario: A range of character tags
+- **WHEN** images carry zero, one, two and three character tags and the query is `chartags:1..2`
+- **THEN** the images with one and two character tags are shown, and the others are not
+
+#### Scenario: A list of general counts
+- **WHEN** images carry zero, one and two general tags and the query is `gentags:0,1`
+- **THEN** the images with zero and one general tag are shown, and the one with two is not
+
+#### Scenario: Two count metatags combine
+- **WHEN** the query is `copytags:0 chartags:>0`
+- **THEN** only images with no copyright tag and at least one character tag are shown
+
+#### Scenario: A repeated count metatag keeps the first
+- **WHEN** the query is `copytags:0 copytags:>0`
+- **THEN** the result is the same as for `copytags:0`, and neither term is read as a tag
+
+#### Scenario: In no collection
+- **WHEN** image A is in `Favorites`, image B is in no collection, and the query is `collection:none`
+- **THEN** B is shown and A is not
+
+#### Scenario: In some collection
+- **WHEN** image A is in `Favorites`, image B is in no collection, and the query is `collection:any`
+- **THEN** A is shown and B is not
+
+#### Scenario: Negated none
+- **WHEN** the query is `-collection:none`
+- **THEN** the result is the same as for `collection:any`
+
+#### Scenario: A sidebar click keeps the keyword
+- **WHEN** the query is `collection:none` and the user excludes `Queue` from the collections list
+- **THEN** the query reads `collection:none -collection:queue`
 
 ### Requirement: Lightbox
 Activating a thumbnail — by double click, Enter, Space, or a single click on the thumbnail

@@ -543,6 +543,12 @@ const MATCHES_NOTHING: &str = "1 = 0";
 /// the lifted `filterByTagSearch` took `img.tags.length` of.
 const TAG_COUNT: &str = "(SELECT COUNT(*) FROM image_tags WHERE image_tags.image_id = images.id)";
 
+/// The image's tag count in one category — `TAG_COUNT` narrowed by a bound
+/// `tags.category` (`category-count-search` design D3).
+const CATEGORY_TAG_COUNT: &str = "(SELECT COUNT(*) FROM image_tags
+    JOIN tags ON tags.id = image_tags.tag_id
+    WHERE image_tags.image_id = images.id AND tags.category = ?)";
+
 /// Whether the rating clause is part of the compiled filter. The rating half of
 /// `tag_counts` is the one caller that drops it (design D8).
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -628,42 +634,75 @@ fn push_file_types(filter: &mut Filter, query: &ParsedTagSearch) {
     );
 }
 
+/// `tagcount:` and the five category count metatags (`category-count-search`
+/// design D1–D3): one loop over `query.tag_count_terms`, each compiled
+/// against `TAG_COUNT` or, with a category, `CATEGORY_TAG_COUNT` bound to it.
+/// The category's placeholder comes first in the clause text (`{expr}
+/// BETWEEN ? AND ?` binds category, min, max), so it is chained before the
+/// comparison's own values rather than after.
 fn push_tag_count(filter: &mut Filter, query: &ParsedTagSearch) {
-    let Some(tag_count) = &query.tag_count else {
-        return;
-    };
-    match tag_count.operator {
-        TagCountOperator::Eq => push_tag_count_comparison(filter, "=", tag_count.value),
-        TagCountOperator::Gt => push_tag_count_comparison(filter, ">", tag_count.value),
-        TagCountOperator::Lt => push_tag_count_comparison(filter, "<", tag_count.value),
-        TagCountOperator::Gte => push_tag_count_comparison(filter, ">=", tag_count.value),
-        TagCountOperator::Lte => push_tag_count_comparison(filter, "<=", tag_count.value),
-        TagCountOperator::Range => match (tag_count.min, tag_count.max) {
-            // `BETWEEN` is inclusive on both ends, like `>= min && <= max`.
-            (Some(min), Some(max)) => filter.add_bound(
-                format!("{TAG_COUNT} BETWEEN ? AND ?"),
-                [Value::Integer(min), Value::Integer(max)],
+    for term in &query.tag_count_terms {
+        let (expr, leading): (&str, Vec<Value>) = match term.category {
+            Some(category) => (
+                CATEGORY_TAG_COUNT,
+                vec![Value::Text(category.as_str().to_string())],
             ),
-            _ => filter.add(MATCHES_NOTHING),
-        },
-        TagCountOperator::List => match tag_count.values.as_deref() {
-            Some(values) if !values.is_empty() => filter.add_bound(
-                format!("{TAG_COUNT} IN ({})", placeholders(values.len())),
-                values
-                    .iter()
-                    .copied()
-                    .map(Value::Integer)
-                    .collect::<Vec<_>>(),
-            ),
-            _ => filter.add(MATCHES_NOTHING),
-        },
+            None => (TAG_COUNT, Vec::new()),
+        };
+        let tag_count = &term.filter;
+        match tag_count.operator {
+            TagCountOperator::Eq => {
+                push_tag_count_comparison(filter, expr, leading, "=", tag_count.value)
+            }
+            TagCountOperator::Gt => {
+                push_tag_count_comparison(filter, expr, leading, ">", tag_count.value)
+            }
+            TagCountOperator::Lt => {
+                push_tag_count_comparison(filter, expr, leading, "<", tag_count.value)
+            }
+            TagCountOperator::Gte => {
+                push_tag_count_comparison(filter, expr, leading, ">=", tag_count.value)
+            }
+            TagCountOperator::Lte => {
+                push_tag_count_comparison(filter, expr, leading, "<=", tag_count.value)
+            }
+            TagCountOperator::Range => match (tag_count.min, tag_count.max) {
+                // `BETWEEN` is inclusive on both ends, like `>= min && <= max`.
+                (Some(min), Some(max)) => {
+                    let mut values = leading;
+                    values.push(Value::Integer(min));
+                    values.push(Value::Integer(max));
+                    filter.add_bound(format!("{expr} BETWEEN ? AND ?"), values)
+                }
+                _ => filter.add(MATCHES_NOTHING),
+            },
+            TagCountOperator::List => match tag_count.values.as_deref() {
+                Some(values) if !values.is_empty() => {
+                    let mut params = leading;
+                    params.extend(values.iter().copied().map(Value::Integer));
+                    filter.add_bound(
+                        format!("{expr} IN ({})", placeholders(values.len())),
+                        params,
+                    )
+                }
+                _ => filter.add(MATCHES_NOTHING),
+            },
+        }
     }
 }
 
-fn push_tag_count_comparison(filter: &mut Filter, operator: &str, value: Option<i64>) {
+fn push_tag_count_comparison(
+    filter: &mut Filter,
+    expr: &str,
+    leading: Vec<Value>,
+    operator: &str,
+    value: Option<i64>,
+) {
     match value {
         Some(value) => {
-            filter.add_bound(format!("{TAG_COUNT} {operator} ?"), [Value::Integer(value)])
+            let mut params = leading;
+            params.push(Value::Integer(value));
+            filter.add_bound(format!("{expr} {operator} ?"), params)
         }
         None => filter.add(MATCHES_NOTHING),
     }
@@ -695,12 +734,28 @@ fn push_accounts(filter: &mut Filter, query: &ParsedTagSearch) {
     }
 }
 
-/// `collection:<slug>` / `-collection:<slug>` (design D6), compiled against
+/// "this image is in at least one collection", no join to `collections`
+/// needed (`category-count-search` design D4): a membership row cannot
+/// outlive its collection (`ON DELETE CASCADE`), so `image_collections` alone
+/// answers it.
+const IN_SOME_COLLECTION: &str =
+    "EXISTS (SELECT 1 FROM image_collections WHERE image_collections.image_id = images.id)";
+
+/// `collection:<slug>` / `-collection:<slug>` (design D6) and
+/// `collection:none` / `collection:any` (design D4), compiled against
 /// `collections.slug` — never the id, which the webview never sees. A slug
 /// nothing has matches nothing by the `IN` alone, on both sides: no `NULL`
 /// case to special-case the way `push_accounts` needs one for `x_account`,
-/// since a membership join produces no row rather than a `NULL` one.
+/// since a membership join produces no row rather than a `NULL` one. Both
+/// `any_collection` and `no_collection` set AND together into a clause that
+/// is never true, which is what asking for both says; no special case.
 fn push_collections(filter: &mut Filter, query: &ParsedTagSearch) {
+    if query.any_collection {
+        filter.add(IN_SOME_COLLECTION);
+    }
+    if query.no_collection {
+        filter.add(format!("NOT {IN_SOME_COLLECTION}"));
+    }
     if !query.collections.is_empty() {
         filter.add_bound(
             has_any_collection(query.collections.len()),
@@ -874,7 +929,7 @@ mod tests {
     use super::*;
     use crate::ingest::{IngestInput, store_image};
     use crate::library::Library;
-    use crate::model::{ImageSource, TagCountFilter};
+    use crate::model::{ImageSource, TagCategory, TagCountFilter, TagCountTerm};
 
     fn png_bytes(width: u32, height: u32) -> Vec<u8> {
         encoded(width, height, image::ImageFormat::Png)
@@ -1039,7 +1094,27 @@ mod tests {
         found(
             fixture,
             &request(ParsedTagSearch {
-                tag_count: Some(tag_count),
+                tag_count_terms: vec![TagCountTerm {
+                    category: None,
+                    filter: tag_count,
+                }],
+                ..Default::default()
+            }),
+        )
+    }
+
+    fn category_count_ids(
+        fixture: &Fixture,
+        category: TagCategory,
+        filter: TagCountFilter,
+    ) -> Vec<String> {
+        found(
+            fixture,
+            &request(ParsedTagSearch {
+                tag_count_terms: vec![TagCountTerm {
+                    category: Some(category),
+                    filter,
+                }],
                 ..Default::default()
             }),
         )
@@ -1472,6 +1547,152 @@ mod tests {
         assert!(ids.is_empty());
     }
 
+    /// `category-count-search` task 1.1, spec `library-browse` "No copyright
+    /// tag": `dog` recategorised to copyright, so `copytags:0` finds the
+    /// images that never got one.
+    #[test]
+    fn a_category_count_of_zero_finds_images_without_that_category() {
+        let fixture = fixture();
+        crate::tags::set_category(&fixture.library, "dog", TagCategory::Copyright).unwrap();
+
+        let ids = category_count_ids(
+            &fixture,
+            TagCategory::Copyright,
+            TagCountFilter {
+                operator: TagCountOperator::Eq,
+                value: Some(0),
+                values: None,
+                min: None,
+                max: None,
+            },
+        );
+
+        assert_eq!(ids, vec!["cat-s", "untagged", "no-account"]);
+    }
+
+    #[test]
+    fn a_category_count_greater_than_zero() {
+        let fixture = fixture();
+        crate::tags::set_category(&fixture.library, "cat", TagCategory::Artist).unwrap();
+
+        let ids = category_count_ids(
+            &fixture,
+            TagCategory::Artist,
+            TagCountFilter {
+                operator: TagCountOperator::Gt,
+                value: Some(0),
+                values: None,
+                min: None,
+                max: None,
+            },
+        );
+
+        assert_eq!(ids, vec!["cat-s", "cat-dog-q", "no-account"]);
+    }
+
+    /// Binds three placeholders in one clause — category, then min, then max
+    /// (design D3) — so a wrong order would either error or silently return
+    /// the wrong rows rather than the range this asserts.
+    #[test]
+    fn a_category_count_range_binds_the_category_before_min_and_max() {
+        let fixture = fixture();
+        crate::tags::set_category(&fixture.library, "cat", TagCategory::Character).unwrap();
+        crate::tags::set_category(&fixture.library, "dog", TagCategory::Character).unwrap();
+        crate::tags::set_category(&fixture.library, "cute", TagCategory::Character).unwrap();
+
+        let ids = category_count_ids(
+            &fixture,
+            TagCategory::Character,
+            TagCountFilter {
+                operator: TagCountOperator::Range,
+                value: None,
+                values: None,
+                min: Some(1),
+                max: Some(2),
+            },
+        );
+
+        assert_eq!(ids, vec!["cat-s", "dog-e", "no-account"]);
+    }
+
+    #[test]
+    fn a_category_count_list() {
+        let fixture = fixture();
+
+        // Every tag defaults to `general`, so this reads the fixture's plain
+        // tag counts without recategorising anything.
+        let ids = category_count_ids(
+            &fixture,
+            TagCategory::General,
+            TagCountFilter {
+                operator: TagCountOperator::List,
+                value: None,
+                values: Some(vec![0, 1]),
+                min: None,
+                max: None,
+            },
+        );
+
+        assert_eq!(ids, vec!["dog-e", "untagged", "no-account"]);
+    }
+
+    #[test]
+    fn two_count_terms_both_apply() {
+        let fixture = fixture();
+        crate::tags::set_category(&fixture.library, "dog", TagCategory::Copyright).unwrap();
+        crate::tags::set_category(&fixture.library, "cat", TagCategory::Character).unwrap();
+
+        let ids = found(
+            &fixture,
+            &request(ParsedTagSearch {
+                tag_count_terms: vec![
+                    TagCountTerm {
+                        category: Some(TagCategory::Copyright),
+                        filter: TagCountFilter {
+                            operator: TagCountOperator::Eq,
+                            value: Some(0),
+                            values: None,
+                            min: None,
+                            max: None,
+                        },
+                    },
+                    TagCountTerm {
+                        category: Some(TagCategory::Character),
+                        filter: TagCountFilter {
+                            operator: TagCountOperator::Gt,
+                            value: Some(0),
+                            values: None,
+                            min: None,
+                            max: None,
+                        },
+                    },
+                ],
+                ..Default::default()
+            }),
+        );
+
+        assert_eq!(ids, vec!["cat-s", "no-account"]);
+    }
+
+    #[test]
+    fn a_category_count_without_its_operand_matches_nothing() {
+        let fixture = fixture();
+
+        let ids = category_count_ids(
+            &fixture,
+            TagCategory::Artist,
+            TagCountFilter {
+                operator: TagCountOperator::Eq,
+                value: None,
+                values: None,
+                min: None,
+                max: None,
+            },
+        );
+
+        assert!(ids.is_empty());
+    }
+
     #[test]
     fn account_selects_one_x_account() {
         let fixture = fixture();
@@ -1551,6 +1772,76 @@ mod tests {
             &fixture,
             &request(ParsedTagSearch {
                 collections: vec!["no-such-slug".to_string()],
+                ..Default::default()
+            }),
+        );
+
+        assert!(ids.is_empty());
+    }
+
+    #[test]
+    fn collection_none_finds_images_in_no_collection() {
+        let fixture = fixture();
+        crate::collections::add(&fixture.library, &["cat-s".to_string()], "favorites").unwrap();
+
+        let ids = found(
+            &fixture,
+            &request(ParsedTagSearch {
+                no_collection: true,
+                ..Default::default()
+            }),
+        );
+
+        assert_eq!(ids, vec!["cat-dog-q", "dog-e", "untagged", "no-account"]);
+    }
+
+    #[test]
+    fn collection_any_finds_images_in_some_collection() {
+        let fixture = fixture();
+        crate::collections::add(&fixture.library, &["cat-s".to_string()], "favorites").unwrap();
+
+        let ids = found(
+            &fixture,
+            &request(ParsedTagSearch {
+                any_collection: true,
+                ..Default::default()
+            }),
+        );
+
+        assert_eq!(ids, vec!["cat-s"]);
+    }
+
+    #[test]
+    fn none_and_any_together_match_nothing() {
+        let fixture = fixture();
+        crate::collections::add(&fixture.library, &["cat-s".to_string()], "favorites").unwrap();
+
+        let ids = found(
+            &fixture,
+            &request(ParsedTagSearch {
+                any_collection: true,
+                no_collection: true,
+                ..Default::default()
+            }),
+        );
+
+        assert!(ids.is_empty());
+    }
+
+    /// `collection:none collection:cute`: no collection at all, and in
+    /// `cute` — contradictory regardless of who is actually in `cute`
+    /// (design D4).
+    #[test]
+    fn none_with_a_slug_matches_nothing() {
+        let fixture = fixture();
+        let cute = crate::collections::create(&fixture.library, "Cute").unwrap();
+        crate::collections::add(&fixture.library, &["cat-s".to_string()], &cute.id).unwrap();
+
+        let ids = found(
+            &fixture,
+            &request(ParsedTagSearch {
+                no_collection: true,
+                collections: vec!["cute".to_string()],
                 ..Default::default()
             }),
         );

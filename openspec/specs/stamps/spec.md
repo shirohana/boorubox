@@ -12,10 +12,10 @@ A stamp SHALL be a text whose space-separated tokens each mean one of: `tag` add
 it out, `rating:g|s|q|e` set the rating, and a category prefix (`artist:name` and the others
 `tag-vocabulary` names) add the tag and create it under that category. A rating token SHALL
 set the rating and never clear or toggle it; the last rating token wins. A token that is a
-search-only metatag (`is:`, `tagcount:`, `account:`, `or`) or `-rating:` SHALL make the text
-invalid with a reason naming the token; an empty text SHALL be invalid. A collection named
-that does not exist SHALL refuse the apply with a reason naming it; nothing SHALL be created
-by a stamp except tags.
+search-only metatag (`is:`, `tagcount:`, `gentags:`, `arttags:`, `chartags:`, `copytags:`,
+`metatags:`, `account:`, `or`) or `-rating:` SHALL make the text invalid with a reason naming
+the token; an empty text SHALL be invalid. A collection named that does not exist SHALL refuse
+the apply with a reason naming it; nothing SHALL be created by a stamp except tags.
 
 #### Scenario: Tags both ways
 - **WHEN** the stamp `cat animal -dog` is applied to an image tagged `dog`, `cute`
@@ -32,6 +32,10 @@ by a stamp except tags.
 #### Scenario: Not an edit
 - **WHEN** the user saves a stamp reading `cat is:png`
 - **THEN** the save is refused naming `is:png` as not an edit
+
+#### Scenario: A category count is not an edit
+- **WHEN** the user saves a stamp reading `touhou copytags:0`
+- **THEN** the save is refused naming `copytags:0` as not an edit
 
 #### Scenario: A collection that does not exist
 - **WHEN** the stamp `collection:nope` is applied and no collection is named Nope

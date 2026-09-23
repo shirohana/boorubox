@@ -286,6 +286,20 @@ describe('toggleCollectionInQuery', () => {
     expect(parsed.includeTags).toEqual(['cat'])
     expect(parsed.ratings).toEqual(['s'])
   })
+
+  // Design D5: the keyword starts with the marker this rewrite drops and
+  // rebuilds, so only the `keep` predicate leaves it standing.
+  it('keeps collection:none standing', () => {
+    const query = toggleCollectionInQuery('collection:none', 'queue')
+    expect(query).toBe('collection:none collection:queue')
+    expect(parseTagSearch(query).noCollection).toBe(true)
+  })
+
+  it('keeps -collection:any standing while un-excluding a slug', () => {
+    const query = toggleCollectionInQuery('-collection:any -collection:queue', 'queue')
+    expect(query).toBe('-collection:any')
+    expect(parseTagSearch(query).noCollection).toBe(true)
+  })
 })
 
 describe('addCollectionToQuery', () => {
@@ -310,6 +324,18 @@ describe('addCollectionToQuery', () => {
     expect(query).toBe('collection:favorites')
     expect(parseTagSearch(query).excludeCollections).toEqual([])
   })
+
+  it('keeps -collection:any standing', () => {
+    const query = addCollectionToQuery('-collection:any -collection:favorites', 'favorites')
+    expect(query).toBe('-collection:any collection:favorites')
+    expect(parseTagSearch(query).noCollection).toBe(true)
+  })
+
+  it('keeps collection:any standing', () => {
+    const query = addCollectionToQuery('collection:any', 'favorites')
+    expect(query).toBe('collection:any collection:favorites')
+    expect(parseTagSearch(query).anyCollection).toBe(true)
+  })
 })
 
 describe('excludeCollectionFromQuery', () => {
@@ -333,6 +359,18 @@ describe('excludeCollectionFromQuery', () => {
     const query = excludeCollectionFromQuery('collection:queue', 'queue')
     expect(query).toBe('-collection:queue')
     expect(parseTagSearch(query).collections).toEqual([])
+  })
+
+  it('leaves a collection:none keyword standing', () => {
+    const query = excludeCollectionFromQuery('collection:none', 'queue')
+    expect(query).toBe('collection:none -collection:queue')
+    expect(parseTagSearch(query).noCollection).toBe(true)
+  })
+
+  it('leaves a -collection:none keyword standing', () => {
+    const query = excludeCollectionFromQuery('-collection:none', 'queue')
+    expect(query).toBe('-collection:none -collection:queue')
+    expect(parseTagSearch(query).anyCollection).toBe(true)
   })
 })
 
@@ -364,6 +402,12 @@ describe('activeTerms', () => {
     expect(terms.excludedAccounts.size).toBe(0)
     expect(terms.collections.size).toBe(0)
     expect(terms.excludedCollections.size).toBe(0)
+  })
+
+  // Design D5: `none`/`any` are keywords, not slugs, so no collection row
+  // reads as active under `collection:none`.
+  it('reads no collection as active under collection:none', () => {
+    expect(activeTerms('collection:none').collections.size).toBe(0)
   })
 })
 

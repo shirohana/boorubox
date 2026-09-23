@@ -42,6 +42,16 @@ describe('parseStamp', () => {
     expect(parseStamp('posted:danbooru')).toEqual({ error: '“posted:danbooru” is not an edit.' })
   })
 
+  // `category-count-search` design D6, spec `stamps` "A category count is not
+  // an edit".
+  it('names a category count metatag as not an edit', () => {
+    expect(parseStamp('touhou copytags:0')).toEqual({ error: '“copytags:0” is not an edit.' })
+    expect(parseStamp('gentags:1')).toEqual({ error: '“gentags:1” is not an edit.' })
+    expect(parseStamp('arttags:>0')).toEqual({ error: '“arttags:>0” is not an edit.' })
+    expect(parseStamp('chartags:1..2')).toEqual({ error: '“chartags:1..2” is not an edit.' })
+    expect(parseStamp('metatags:0,1')).toEqual({ error: '“metatags:0,1” is not an edit.' })
+  })
+
   it('names or as not an edit', () => {
     expect(parseStamp('cat or dog')).toEqual({ error: '“or” is not an edit.' })
   })

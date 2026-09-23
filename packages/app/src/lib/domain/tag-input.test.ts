@@ -76,6 +76,14 @@ describe('suggestionPrefix', () => {
     expect(suggestionPrefix('cat OR', 6)).toBeNull()
     expect(suggestionPrefix('cat o', 5)).toBeNull()
   })
+
+  // `category-count-search` design D6, spec `tag-editing` "Inside a category
+  // count metatag".
+  it('is null inside a category count metatag, and still suggests without the colon', () => {
+    expect(suggestionPrefix('copytags:', 9)).toBeNull()
+    expect(suggestionPrefix('arttags:>', 9)).toBeNull()
+    expect(suggestionPrefix('gentags', 7)).toBe('gentags')
+  })
 })
 
 describe('suggestsOnFocus', () => {

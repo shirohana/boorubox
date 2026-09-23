@@ -102,6 +102,10 @@ when the token has one.
 - **WHEN** the token being typed is `rating:` or `or`
 - **THEN** no suggestions appear
 
+#### Scenario: Inside a category count metatag
+- **WHEN** the token being typed is `copytags:` or `arttags:>`
+- **THEN** no suggestions appear
+
 #### Scenario: Behind a category prefix
 - **WHEN** the token being typed is `artist:kan`
 - **THEN** no suggestions appear

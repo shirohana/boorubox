@@ -4,7 +4,7 @@
 // component is untested by construction.
 
 import type { TagCategory } from '@boorubox/shared'
-import { parseTagSearch } from './tag-utils'
+import { COUNT_METATAGS, parseTagSearch } from './tag-utils'
 import { groupByCategory } from './tag-categories'
 
 /** Rows the popover offers at once — the legacy viewer showed eight. */
@@ -35,10 +35,12 @@ const CATEGORY_PREFIXES = [
  * The metatags of the query language (`tag-utils`'s parser), plus the tag
  * editor's own category prefixes above. A token that has begun one is not a
  * tag being typed, so the list stays shut behind it exactly as behind a
- * `rating:`.
+ * `rating:`. The count metatags come from the parser's own table, so a new
+ * row there shuts the list here too.
  */
 const METATAG = new RegExp(
-  `^(rating|is|tagcount|account|collection|${CATEGORY_PREFIXES.join('|')}):`,
+  `^(rating|is|account|collection|${CATEGORY_PREFIXES.join('|')}|`
+  + `${COUNT_METATAGS.map(([name]) => name).join('|')}):`,
   'i',
 )
 

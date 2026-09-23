@@ -18,9 +18,23 @@ const RATING_LETTERS: Rating[] = ['g', 's', 'q', 'e']
  * Search-only metatags a stamp text refuses, named in the error (design D1):
  * none of them describes a write, so none of them belongs in an edit.
  * Matched with or without a leading `-`, since excluding a search term is
- * still a search term.
+ * still a search term. The five category count metatags
+ * (`category-count-search` design D6) are spelled by hand rather than
+ * imported from `tag-utils`'s `COUNT_METATAGS`: the search language and the
+ * stamp grammar are kept apart on purpose (design D1), so a sixth count
+ * metatag added there needs a row added here too.
  */
-const SEARCH_ONLY_METATAGS = ['is:', 'tagcount:', 'account:', 'posted:']
+const SEARCH_ONLY_METATAGS = [
+  'is:',
+  'tagcount:',
+  'account:',
+  'posted:',
+  'gentags:',
+  'arttags:',
+  'chartags:',
+  'copytags:',
+  'metatags:',
+]
 
 export type ParsedStamp = { edit: TagEditSpec } | { error: string }
 

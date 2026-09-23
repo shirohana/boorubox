@@ -1,6 +1,6 @@
-import type { ParsedTagSearch } from '@boorubox/shared'
+import type { TagCountFilter } from '@boorubox/shared'
 import { describe, expect, it } from 'vitest'
-import { parseTagSearch } from './tag-utils'
+import { COUNT_METATAGS, parseTagSearch } from './tag-utils'
 
 /** `ratings`, `fileTypes` and `accounts` were Sets before D13: order means nothing. */
 const sorted = (values: string[]) => [...values].sort()
@@ -14,7 +14,7 @@ describe('parseTagSearch', () => {
       expect(result.orGroups).toEqual([])
       expect(result.ratings).toEqual([])
       expect(result.fileTypes).toEqual([])
-      expect(result.tagCount).toBeNull()
+      expect(result.tagCountTerms).toEqual([])
       expect(result.includeUnrated).toBe(false)
       expect(result.accounts).toEqual([])
       expect(result.excludeAccounts).toEqual([])
@@ -309,26 +309,113 @@ describe('parseTagSearch', () => {
     })
   })
 
+  describe('collection:none / collection:any', () => {
+    it('reads collection:none as noCollection, no slug', () => {
+      const result = parseTagSearch('collection:none')
+      expect(result.noCollection).toBe(true)
+      expect(result.anyCollection).toBe(false)
+      expect(result.collections).toEqual([])
+    })
+
+    it('reads collection:any as anyCollection', () => {
+      const result = parseTagSearch('collection:any')
+      expect(result.anyCollection).toBe(true)
+      expect(result.noCollection).toBe(false)
+      expect(result.collections).toEqual([])
+    })
+
+    it('reads -collection:none as anyCollection', () => {
+      const result = parseTagSearch('-collection:none')
+      expect(result.anyCollection).toBe(true)
+      expect(result.noCollection).toBe(false)
+      expect(result.excludeCollections).toEqual([])
+    })
+
+    it('reads -collection:any as noCollection', () => {
+      const result = parseTagSearch('-collection:any')
+      expect(result.noCollection).toBe(true)
+      expect(result.anyCollection).toBe(false)
+      expect(result.excludeCollections).toEqual([])
+    })
+
+    it('is case-insensitive', () => {
+      const result = parseTagSearch('COLLECTION:None')
+      expect(result.noCollection).toBe(true)
+    })
+
+    it('reads collection:none_left as a slug, not the keyword', () => {
+      const result = parseTagSearch('collection:none_left')
+      expect(result.collections).toEqual(['none_left'])
+      expect(result.noCollection).toBe(false)
+      expect(result.anyCollection).toBe(false)
+    })
+
+    it('drops none/any inside a comma list, without setting the flag', () => {
+      const result = parseTagSearch('collection:cute,none')
+      expect(result.collections).toEqual(['cute'])
+      expect(result.noCollection).toBe(false)
+      expect(result.anyCollection).toBe(false)
+    })
+  })
+
   describe('tag count filters', () => {
-    const operators: [query: string, tagCount: ParsedTagSearch['tagCount']][] = [
-      ['tagcount:2', { operator: '=', value: 2 }],
-      ['tagcount:>5', { operator: '>', value: 5 }],
-      ['tagcount:<3', { operator: '<', value: 3 }],
-      ['tagcount:>=2', { operator: '>=', value: 2 }],
-      ['tagcount:<=10', { operator: '<=', value: 10 }],
-      ['tagcount:1..10', { operator: 'range', min: 1, max: 10 }],
-      ['tagcount:10..1', { operator: 'range', min: 1, max: 10 }],
-      ['tagcount:1,3,5', { operator: 'list', values: [1, 3, 5] }],
-      ['tagcount:0,2,4,6,8', { operator: 'list', values: [0, 2, 4, 6, 8] }],
-      ['TAGCOUNT:>5', { operator: '>', value: 5 }],
+    const operators: [suffix: string, filter: TagCountFilter][] = [
+      ['2', { operator: '=', value: 2 }],
+      ['>5', { operator: '>', value: 5 }],
+      ['<3', { operator: '<', value: 3 }],
+      ['>=2', { operator: '>=', value: 2 }],
+      ['<=10', { operator: '<=', value: 10 }],
+      ['1..10', { operator: 'range', min: 1, max: 10 }],
+      ['10..1', { operator: 'range', min: 1, max: 10 }],
+      ['1,3,5', { operator: 'list', values: [1, 3, 5] }],
+      ['0,2,4,6,8', { operator: 'list', values: [0, 2, 4, 6, 8] }],
     ]
 
-    it.each(operators)('reads %s and strips it from the tag terms', (query, tagCount) => {
-      expect(parseTagSearch(query).tagCount).toEqual(tagCount)
+    // `COUNT_METATAGS` itself, not a hand-copied list of names: a sixth row
+    // added there without a matching test case still runs every operator
+    // form through it here (design D6).
+    it.each(COUNT_METATAGS)('%s: reads every operator form and strips it from the tag terms', (name, category) => {
+      for (const [suffix, filter] of operators) {
+        const query = `${name}:${suffix}`
+        expect(parseTagSearch(query).tagCountTerms).toEqual([{ category, filter }])
 
-      const amongTags = parseTagSearch(`girl ${query} cat`)
-      expect(amongTags.tagCount).toEqual(tagCount)
-      expect(amongTags.includeTags).toEqual(['girl', 'cat'])
+        const amongTags = parseTagSearch(`girl ${query} cat`)
+        expect(amongTags.tagCountTerms).toEqual([{ category, filter }])
+        expect(amongTags.includeTags).toEqual(['girl', 'cat'])
+      }
+    })
+
+    it('reads a count metatag case-insensitively', () => {
+      const result = parseTagSearch('COPYTAGS:0')
+      expect(result.tagCountTerms).toEqual([{ category: 'copyright', filter: { operator: '=', value: 0 } }])
+    })
+
+    it('combines different count metatags, in table order', () => {
+      const result = parseTagSearch('copytags:0 chartags:>0')
+      expect(result.tagCountTerms).toEqual([
+        { category: 'character', filter: { operator: '>', value: 0 } },
+        { category: 'copyright', filter: { operator: '=', value: 0 } },
+      ])
+      expect(result.includeTags).toEqual([])
+    })
+
+    it('keeps the first of a repeated count metatag', () => {
+      const result = parseTagSearch('copytags:0 copytags:>0')
+      expect(result.tagCountTerms).toEqual([
+        { category: 'copyright', filter: { operator: '=', value: 0 } },
+      ])
+      expect(result.includeTags).toEqual([])
+    })
+
+    it('keeps the first across forms', () => {
+      const result = parseTagSearch('tagcount:5 tagcount:1,3')
+      expect(result.tagCountTerms).toEqual([{ category: null, filter: { operator: '=', value: 5 } }])
+    })
+
+    it('drops a leading minus, not as an exclusion', () => {
+      const result = parseTagSearch('-copytags:0')
+      expect(result.tagCountTerms).toEqual([{ category: 'copyright', filter: { operator: '=', value: 0 } }])
+      expect(result.excludeTags).toEqual([])
     })
 
     it('takes the first tagcount and strips every one of them', () => {
@@ -336,7 +423,7 @@ describe('parseTagSearch', () => {
       // off a string an earlier step had not stripped, the two occurrences
       // would disagree about which one won.
       const result = parseTagSearch('girl tagcount:>2 tagcount:5 cat')
-      expect(result.tagCount).toEqual({ operator: '>', value: 2 })
+      expect(result.tagCountTerms).toEqual([{ category: null, filter: { operator: '>', value: 2 } }])
       expect(result.includeTags).toEqual(['girl', 'cat'])
     })
 
@@ -348,7 +435,7 @@ describe('parseTagSearch', () => {
         'tagcount:>2 cat rating:s is:png account:alice',
       ]) {
         const result = parseTagSearch(query)
-        expect(result.tagCount).toEqual({ operator: '>', value: 2 })
+        expect(result.tagCountTerms).toEqual([{ category: null, filter: { operator: '>', value: 2 } }])
         expect(result.includeTags).toEqual(['cat'])
       }
     })
@@ -362,14 +449,14 @@ describe('parseTagSearch', () => {
       expect(result.excludeTags).toEqual(['dog'])
       expect(result.ratings).toEqual(['s'])
       expect(result.fileTypes).toEqual(['image/png'])
-      expect(result.tagCount).toEqual({ operator: '>', value: 2 })
+      expect(result.tagCountTerms).toEqual([{ category: null, filter: { operator: '>', value: 2 } }])
     })
 
     it('should handle multiple metatags of same type', () => {
       const result = parseTagSearch('rating:g,s is:png is:jpg tagcount:1..5')
       expect(sorted(result.ratings)).toEqual(sorted(['g', 's']))
       expect(sorted(result.fileTypes)).toEqual(sorted(['image/png', 'image/jpeg']))
-      expect(result.tagCount).toEqual({ operator: 'range', min: 1, max: 5 })
+      expect(result.tagCountTerms).toEqual([{ category: null, filter: { operator: 'range', min: 1, max: 5 } }])
     })
 
     it('should handle real-world query', () => {
@@ -381,7 +468,7 @@ describe('parseTagSearch', () => {
       expect(result.excludeTags).toEqual(['realistic'])
       expect(sorted(result.ratings)).toEqual(sorted(['g', 's']))
       expect(sorted(result.fileTypes)).toEqual(sorted(['image/png', 'image/jpeg']))
-      expect(result.tagCount).toEqual({ operator: 'range', min: 3, max: 10 })
+      expect(result.tagCountTerms).toEqual([{ category: null, filter: { operator: 'range', min: 3, max: 10 } }])
     })
   })
 
@@ -428,7 +515,7 @@ describe('parseTagSearch', () => {
       expect(result.includeTags).toEqual([])
       expect(result.ratings).toEqual(['g'])
       expect(result.fileTypes).toEqual(['image/png'])
-      expect(result.tagCount).toEqual({ operator: '=', value: 5 })
+      expect(result.tagCountTerms).toEqual([{ category: null, filter: { operator: '=', value: 5 } }])
     })
 
     it('should handle invalid rating values', () => {
@@ -444,7 +531,7 @@ describe('parseTagSearch', () => {
       const result3 = parseTagSearch('is:')
       // Incomplete metatags should not match regex
       expect(result1.ratings).toEqual([])
-      expect(result2.tagCount).toBeNull()
+      expect(result2.tagCountTerms).toEqual([])
       expect(result3.fileTypes).toEqual([])
     })
 

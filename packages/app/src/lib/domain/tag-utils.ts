@@ -1,7 +1,7 @@
 // The one definition of the query language (design D3): Rust never sees a query
 // string, only the `ParsedTagSearch` this produces.
 
-import type { ParsedTagSearch, Rating } from '@boorubox/shared'
+import type { ParsedTagSearch, Rating, TagCategory, TagCountFilter } from '@boorubox/shared'
 
 /**
  * The `rating:` metatag in every spelling the parser accepts. Shared with
@@ -17,6 +17,69 @@ const RATING_METATAG
 
 /** `is:unrated` alone, which `toggleRatingInQuery` adds and removes by itself. */
 const UNRATED_METATAG = /\bis:unrated\b/gi
+
+/**
+ * `collection:none` / `collection:any`, either sign (`category-count-search`
+ * design D4, D5): read as the keyword only when the word is the **whole**
+ * value of the term — the lookahead requires whitespace or the end right
+ * after it — so `collection:none_left` and `collection:none,cute` are not
+ * this and fall through to the slug regex below instead. Exported so the
+ * collection rewriters can keep a token matching it standing rather than
+ * rebuilding it away as an ordinary collection term (design D5) — the single
+ * source `isCollectionKeyword` reads from.
+ */
+export const COLLECTION_KEYWORD = /(-?)collection:(none|any)(?=\s|$)/gi
+
+/**
+ * Whether `token` (already split on whitespace by a rewriter below) is a
+ * `collection:none`/`any` keyword term, either sign. A fresh non-global copy
+ * of {@link COLLECTION_KEYWORD}: `.test()` on the shared global regex would
+ * carry `lastIndex` from one token's call into the next.
+ */
+function isCollectionKeyword(token: string): boolean {
+  return new RegExp(COLLECTION_KEYWORD.source, 'i').test(token)
+}
+
+/**
+ * The count metatags, in the order `tagCountTerms` is built in
+ * (`category-count-search` design D2): `tagcount:` counts every tag,
+ * the other five count one category each. Module-level so a sixth count
+ * metatag is one row here; `tag-input.ts`'s `METATAG` reads it too. `stamp.ts`'s
+ * `SEARCH_ONLY_METATAGS` cannot import it (the stamp grammar and the search
+ * language are kept apart on purpose, `stamps` design D1) and spells the names
+ * by hand: a new row here needs one there too.
+ */
+export const COUNT_METATAGS: [name: string, category: TagCategory | null][] = [
+  ['tagcount', null],
+  ['gentags', 'general'],
+  ['arttags', 'artist'],
+  ['chartags', 'character'],
+  ['copytags', 'copyright'],
+  ['metatags', 'meta'],
+]
+
+/**
+ * Reads one count metatag's operand into a `TagCountFilter`, from a match of
+ * the alternation `COUNT_METATAGS`' loop runs per name: a comparison operator,
+ * a `min..max` range (normalised so `min <= max`), a comma list, or a bare
+ * number for an exact count — in that order, matching what the regex tried
+ * first (design D2).
+ */
+function readTagCountFilter(match: RegExpExecArray): TagCountFilter {
+  const [, operator, comparisonValue, rangeMin, rangeMax, list, exact] = match
+  if (operator) {
+    return { operator: operator as '>' | '<' | '>=' | '<=', value: parseInt(comparisonValue, 10) }
+  }
+  if (rangeMin !== undefined) {
+    const a = parseInt(rangeMin, 10)
+    const b = parseInt(rangeMax, 10)
+    return { operator: 'range', min: Math.min(a, b), max: Math.max(a, b) }
+  }
+  if (list !== undefined) {
+    return { operator: 'list', values: list.split(',').map((value) => parseInt(value, 10)) }
+  }
+  return { operator: '=', value: parseInt(exact, 10) }
+}
 
 /**
  * Sorts tags alphabetically (case-insensitive).
@@ -51,12 +114,14 @@ export function parseTagSearch(query: string): ParsedTagSearch {
     orGroups: [],
     ratings: [],
     fileTypes: [],
-    tagCount: null,
+    tagCountTerms: [],
     includeUnrated: false,
     accounts: [],
     excludeAccounts: [],
     collections: [],
     excludeCollections: [],
+    anyCollection: false,
+    noCollection: false,
   }
 
   if (!query.trim()) {
@@ -65,46 +130,24 @@ export function parseTagSearch(query: string): ParsedTagSearch {
 
   let remainingQuery = query
 
-  // 1. Extract tagcount: metatag
-  // tagcount:2 (exact), tagcount:1,3 (list), tagcount:>5 (gt), tagcount:<3 (lt), tagcount:1..10
-  const tagCountListRegex = /tagcount:(\d+(?:,\d+)+)/gi
-  const tagCountListMatch = remainingQuery.match(tagCountListRegex)
-  if (tagCountListMatch) {
-    const values = tagCountListMatch[0].substring(9).split(',').map((v) => parseInt(v.trim(), 10))
-    result.tagCount = { operator: 'list', values }
-    remainingQuery = remainingQuery.replace(tagCountListRegex, '').trim()
-  } else {
-    // Design D15: every step of this parse reads and strips `remainingQuery`.
-    // One `exec` gives both "did it match" and the captures, so there is no
-    // second read of another string to fall out of step with the strip below.
-    // `String.replace` with a /g/ regex resets `lastIndex` itself; do not add
-    // another `exec` on this literal without resetting it first.
-    const tagCountRegex = /tagcount:(>=|<=|>|<|)(\d+)(\.\.(\d+))?/gi
-    const match = tagCountRegex.exec(remainingQuery)
-    if (match) {
-      const operator = match[1]
-      const firstNum = parseInt(match[2], 10)
-      const secondNum = match[4] ? parseInt(match[4], 10) : undefined
-
-      if (secondNum !== undefined) {
-        result.tagCount = {
-          operator: 'range',
-          min: Math.min(firstNum, secondNum),
-          max: Math.max(firstNum, secondNum),
-        }
-      } else if (operator === '>') {
-        result.tagCount = { operator: '>', value: firstNum }
-      } else if (operator === '<') {
-        result.tagCount = { operator: '<', value: firstNum }
-      } else if (operator === '>=') {
-        result.tagCount = { operator: '>=', value: firstNum }
-      } else if (operator === '<=') {
-        result.tagCount = { operator: '<=', value: firstNum }
-      } else {
-        result.tagCount = { operator: '=', value: firstNum }
-      }
-      remainingQuery = remainingQuery.replace(tagCountRegex, '').trim()
-    }
+  // 1. Extract count metatags: `tagcount:` and the five category counts
+  // (`category-count-search` design D2). One regex per `COUNT_METATAGS` row,
+  // tried in table order: the first match of that name in the text is read
+  // (design D15: read and strip over the same string, one `exec` giving both),
+  // then every occurrence of that name is stripped. `tagCountTerms` therefore
+  // ends in the table's order, not the text's — the mixed-form and repeat
+  // cases in `tag-parser.test.ts` pin that. The leading `-?` takes a sign with
+  // the term, so `-copytags:0` strips whole and reads as `copytags:0`: a count
+  // metatag is not negated.
+  for (const [name, category] of COUNT_METATAGS) {
+    const countRegex = new RegExp(
+      `-?${name}:(?:(>=|<=|>|<)(\\d+)|(\\d+)\\.\\.(\\d+)|(\\d+(?:,\\d+)+)|(\\d+))`,
+      'gi',
+    )
+    const match = countRegex.exec(remainingQuery)
+    if (!match) continue
+    result.tagCountTerms.push({ category, filter: readTagCountFilter(match) })
+    remainingQuery = remainingQuery.replace(countRegex, '').trim()
   }
 
   // 2. Extract rating: metatags (match comma-separated list first, then single values)
@@ -172,7 +215,16 @@ export function parseTagSearch(query: string): ParsedTagSearch {
     remainingQuery = remainingQuery.replace(accountRegex, '').trim()
   }
 
-  // 5. Extract collection: metatags (design D6 — same shape as account:, a
+  // 5a. `collection:none` / `collection:any` (design D4, D5), read and
+  // stripped before the slug list below so the keyword never reaches it.
+  for (const [, sign, word] of remainingQuery.matchAll(COLLECTION_KEYWORD)) {
+    const wantsAny = (word.toLowerCase() === 'any') !== (sign === '-')
+    if (wantsAny) result.anyCollection = true
+    else result.noCollection = true
+  }
+  remainingQuery = remainingQuery.replace(COLLECTION_KEYWORD, '').trim()
+
+  // 5b. Extract collection: metatags (design D6 — same shape as account:, a
   // comma list on either side; the slug is lower-cased so `collection:Favorites`
   // finds `favorites`, the slug Rust computed).
   //
@@ -182,7 +234,10 @@ export function parseTagSearch(query: string): ParsedTagSearch {
   // this shipped as read the term the sidebar itself wrote as `collection:to`
   // — a filter that matched nothing and a row that never showed as active. A
   // space separates terms and a comma separates the list, so those two are
-  // the only characters this may not take.
+  // the only characters this may not take. `none`/`any` inside the list are
+  // dropped rather than added as a slug (design D5): the step above already
+  // read them alone, and a collection slugged `none` or `any` is not
+  // searchable by name in any spelling, comma list included.
   const collectionRegex = /-?collection:([^\s,]+(?:,[^\s,]+)*)/gi
   const collectionMatches = remainingQuery.match(collectionRegex)
   if (collectionMatches) {
@@ -191,7 +246,7 @@ export function parseTagSearch(query: string): ParsedTagSearch {
       const value = match.substring(isExclusion ? 12 : 11) // Remove "-collection:" or "collection:"
       value.split(',').forEach((slug) => {
         const trimmed = slug.trim().toLowerCase()
-        if (trimmed) {
+        if (trimmed && trimmed !== 'none' && trimmed !== 'any') {
           addUnique(isExclusion ? result.excludeCollections : result.collections, trimmed)
         }
       })
@@ -385,13 +440,22 @@ export function toggleRatingInQuery(query: string, rating: Rating | 'unrated'): 
  * `toggleRatingInQuery` rewrites `rating:` (design D4, D6): the metatag holds
  * every value in one comma list, so there is nothing to edit in place.
  * `marker` is matched lowercase against whole tokens, so rewriting one list
- * leaves the other, and the other metatag, standing.
+ * leaves the other, and the other metatag, standing. `keep`, when given,
+ * spares a token that would otherwise be dropped for starting with `marker`
+ * (design D5): the three collection rewriters pass one that keeps a
+ * `collection:none`/`any` keyword term standing even when `marker` is
+ * `-collection:` and the keyword itself starts with `-collection:`.
  */
-function rewriteMetatagList(query: string, marker: string, kept: string[]): string {
+function rewriteMetatagList(
+  query: string,
+  marker: string,
+  kept: string[],
+  keep?: (token: string) => boolean,
+): string {
   const base = tidy(
     query
       .split(/\s+/)
-      .filter((token) => !token.toLowerCase().startsWith(marker))
+      .filter((token) => keep?.(token) || !token.toLowerCase().startsWith(marker))
       .join(' '),
   )
   if (kept.length === 0) return base
@@ -452,9 +516,14 @@ export function addCollectionToQuery(query: string, slug: string): string {
   const parsed = parseTagSearch(query)
   if (parsed.collections.includes(slug)) return query
   const base = parsed.excludeCollections.includes(slug)
-    ? rewriteMetatagList(query, '-collection:', parsed.excludeCollections.filter((value) => value !== slug))
+    ? rewriteMetatagList(
+        query,
+        '-collection:',
+        parsed.excludeCollections.filter((value) => value !== slug),
+        isCollectionKeyword,
+      )
     : query
-  return rewriteMetatagList(base, 'collection:', [...parsed.collections, slug])
+  return rewriteMetatagList(base, 'collection:', [...parsed.collections, slug], isCollectionKeyword)
 }
 
 /** The mirror of {@link addCollectionToQuery}, for `-collection:`. */
@@ -462,9 +531,14 @@ export function excludeCollectionFromQuery(query: string, slug: string): string 
   const parsed = parseTagSearch(query)
   if (parsed.excludeCollections.includes(slug)) return query
   const base = parsed.collections.includes(slug)
-    ? rewriteMetatagList(query, 'collection:', parsed.collections.filter((value) => value !== slug))
+    ? rewriteMetatagList(
+        query,
+        'collection:',
+        parsed.collections.filter((value) => value !== slug),
+        isCollectionKeyword,
+      )
     : query
-  return rewriteMetatagList(base, '-collection:', [...parsed.excludeCollections, slug])
+  return rewriteMetatagList(base, '-collection:', [...parsed.excludeCollections, slug], isCollectionKeyword)
 }
 
 /**
@@ -481,12 +555,12 @@ export function toggleCollectionInQuery(query: string, slug: string): string {
   const parsed = parseTagSearch(query)
   if (parsed.excludeCollections.includes(slug)) {
     const kept = parsed.excludeCollections.filter((value) => value !== slug)
-    return rewriteMetatagList(query, '-collection:', kept)
+    return rewriteMetatagList(query, '-collection:', kept, isCollectionKeyword)
   }
   const kept = parsed.collections.includes(slug)
     ? parsed.collections.filter((value) => value !== slug)
     : [...parsed.collections, slug]
-  return rewriteMetatagList(query, 'collection:', kept)
+  return rewriteMetatagList(query, 'collection:', kept, isCollectionKeyword)
 }
 
 /**

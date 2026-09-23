@@ -395,6 +395,16 @@ pub struct TagCountFilter {
     pub max: Option<i64>,
 }
 
+/// One `tagcount:`-syntax term over one tag category, or every tag when
+/// `category` is `None` (`tagcount:` itself). `category-count-search` design
+/// D1: the TypeScript mirror is `TagCountTerm` in `packages/shared/src/index.ts`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TagCountTerm {
+    pub category: Option<TagCategory>,
+    pub filter: TagCountFilter,
+}
+
 /// The parsed query the webview sends to Rust, which compiles it to SQL. The
 /// parser (`$lib/domain/tag-utils`) is the only definition of the query
 /// language; Rust never sees the query string (design D3).
@@ -410,7 +420,10 @@ pub struct ParsedTagSearch {
     pub ratings: Vec<String>,
     /// MIME types from `is:png` and friends.
     pub file_types: Vec<String>,
-    pub tag_count: Option<TagCountFilter>,
+    /// `tagcount:` and the five category count metatags (`category-count-search`
+    /// design D1): one entry per count metatag matched, `tagcount:`'s own entry
+    /// carrying `category: None`. Empty means no count filter.
+    pub tag_count_terms: Vec<TagCountTerm>,
     pub include_unrated: bool,
     pub accounts: Vec<String>,
     pub exclude_accounts: Vec<String>,
@@ -418,6 +431,13 @@ pub struct ParsedTagSearch {
     /// `collections.slug`, never the id — the webview never sees one.
     pub collections: Vec<String>,
     pub exclude_collections: Vec<String>,
+    /// `collection:any` / `-collection:none` (`category-count-search` design
+    /// D4): the image is in at least one collection. Independent of
+    /// `no_collection` — both set compiles to a clause that matches nothing,
+    /// which is what the query says.
+    pub any_collection: bool,
+    /// `collection:none` / `-collection:any`: the image is in no collection.
+    pub no_collection: bool,
 }
 
 /// What the four sorts compare. An enum rather than the legacy's `field-direction`
@@ -1149,6 +1169,48 @@ mod tests {
         }
     }
 
+    /// `category-count-search` task 1.1: a term's wire shape — camelCase
+    /// keys, and `category` serialised as `null` for `tagcount:` itself
+    /// rather than an absent key (design D1).
+    #[test]
+    fn a_tag_count_term_crosses_the_wire_in_camel_case() {
+        let every = TagCountTerm {
+            category: None,
+            filter: TagCountFilter {
+                operator: TagCountOperator::Eq,
+                value: Some(5),
+                values: None,
+                min: None,
+                max: None,
+            },
+        };
+        assert_eq!(
+            serde_json::to_value(&every).unwrap(),
+            serde_json::json!({
+                "category": null,
+                "filter": { "operator": "=", "value": 5 },
+            }),
+        );
+
+        let artist = TagCountTerm {
+            category: Some(TagCategory::Artist),
+            filter: TagCountFilter {
+                operator: TagCountOperator::Gt,
+                value: Some(0),
+                values: None,
+                min: None,
+                max: None,
+            },
+        };
+        assert_eq!(
+            serde_json::to_value(&artist).unwrap(),
+            serde_json::json!({
+                "category": "artist",
+                "filter": { "operator": ">", "value": 0 },
+            }),
+        );
+    }
+
     /// `stamps` task 1.1: `TagEditSpec`'s wire shape — camelCase keys, and
     /// `rating` absent from the JSON entirely when a stamp does not set one,
     /// the same convention `RuleInput.id` already follows for an absent field.
@@ -1428,7 +1490,13 @@ mod tests {
     #[test]
     fn a_search_carries_its_sort_and_group_and_answers_with_slices() {
         let req = SearchRequest {
-            query: ParsedTagSearch::default(),
+            // `any_collection` set and `no_collection` left default: the
+            // round-trip below is what pins `category-count-search` design
+            // D4's wire keys, camelCase and present even when false.
+            query: ParsedTagSearch {
+                any_collection: true,
+                ..Default::default()
+            },
             text: String::new(),
             view: SearchView::Library,
             sort: Sort {
@@ -1447,6 +1515,8 @@ mod tests {
         );
         assert_eq!(json["group"], "x-account");
         assert_eq!(json["view"], "library");
+        assert_eq!(json["query"]["anyCollection"], true);
+        assert_eq!(json["query"]["noCollection"], false);
         assert_eq!(
             serde_json::from_value::<SearchRequest>(json).unwrap(),
             req,

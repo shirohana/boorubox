@@ -214,6 +214,17 @@ export interface TagCountFilter {
 }
 
 /**
+ * One `tagcount:`-syntax term over one tag category, or every tag when
+ * `category` is `null` (`tagcount:` itself). `category-count-search` design
+ * D1: a list of these, not six optional fields, so a sixth count metatag is a
+ * parser row rather than a wire change.
+ */
+export interface TagCountTerm {
+  category: TagCategory | null
+  filter: TagCountFilter
+}
+
+/**
  * The parsed query the webview sends to Rust, which compiles it to SQL. The
  * parser (`$lib/domain/tag-utils`) is the only definition of the query
  * language; Rust never sees the query string (design D3).
@@ -228,7 +239,12 @@ export interface ParsedTagSearch {
   ratings: string[]
   /** MIME types from `is:png` and friends. */
   fileTypes: string[]
-  tagCount: TagCountFilter | null
+  /**
+   * `tagcount:` and the five category count metatags (`category-count-search`
+   * design D1): one entry per count metatag matched, `tagcount:`'s own entry
+   * carrying `category: null`. Empty means no count filter.
+   */
+  tagCountTerms: TagCountTerm[]
   includeUnrated: boolean
   accounts: string[]
   excludeAccounts: string[]
@@ -238,6 +254,16 @@ export interface ParsedTagSearch {
    */
   collections: string[]
   excludeCollections: string[]
+  /**
+   * `collection:any` / `-collection:none` (`category-count-search` design
+   * D4): the image is in at least one collection. Independent of
+   * `noCollection`, the same way `includeUnrated` is independent of
+   * `ratings`: both set compiles to a clause that matches nothing, which is
+   * what the query says.
+   */
+  anyCollection: boolean
+  /** `collection:none` / `-collection:any`: the image is in no collection. */
+  noCollection: boolean
 }
 
 /**
