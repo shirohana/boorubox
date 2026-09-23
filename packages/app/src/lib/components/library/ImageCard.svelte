@@ -579,7 +579,7 @@
           -->
           <div class="relative shrink-0" style="height: {TAG_FOOTER}px">
             <div
-              use:markOverflow={{ hovered: tile, deps: tagGroups }}
+              use:markOverflow={{ hovered: tile, deps: [tagGroups, collectionNames] }}
               class="
                 absolute inset-x-0 top-0 line-clamp-3 px-2 pt-1 text-xs/4
                 data-overflowing:group-hover/tile:z-10
@@ -591,10 +591,23 @@
             >
               {#if !image}
                 <!-- Blank while this row's page has not loaded yet. -->
-              {:else if tagGroups.length === 0}
+              {:else if tagGroups.length === 0 && collectionNames.length === 0}
                 <span class="text-muted-foreground">No tags</span>
               {:else}
                 <span>
+                  {#if collectionNames.length > 0}
+                    <!--
+                    Collections first, ahead of the tags: an image carries few
+                    of them, and this run is the answer to the pinned chip's
+                    click landing on the tile.
+                  -->
+                    <!-- eslint-disable-next-line svelte/no-useless-mustaches -->
+                    <BookmarkIcon class="inline size-3" />{' '}
+                    {#each collectionNames as name (name)}
+                      <!-- eslint-disable-next-line svelte/no-useless-mustaches -->
+                      <span class="text-foreground">{name}</span>{' '}
+                    {/each}
+                  {/if}
                   {#each tagGroups as group (group.category)}
                     {#each group.items as name (name)}
                       <!--
