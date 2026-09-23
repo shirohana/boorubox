@@ -12,6 +12,7 @@ use crate::error::{AppError, Result};
 use crate::ingest;
 use crate::library::Library;
 use crate::model::{Collection, ImageRecord};
+use crate::tags;
 
 const COLLECTION_COLUMNS: &str = "id, name, slug, created_at, updated_at";
 
@@ -32,12 +33,11 @@ fn row_to_collection(row: &Row) -> rusqlite::Result<Collection> {
 /// same value (`query::push_collections`), and every `Collection` /
 /// `CollectionCount` record hands it to the webview rather than letting
 /// TypeScript compute a second answer.
+///
+/// The spelling itself is [`tags::underscored`], shared with the derived
+/// artist tag (`auto-artist-tag` design D1): change it there, for both.
 pub fn slug(name: &str) -> String {
-    name.trim()
-        .to_lowercase()
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join("_")
+    tags::underscored(name)
 }
 
 fn require_collection(conn: &Connection, id: &str) -> Result<Collection> {

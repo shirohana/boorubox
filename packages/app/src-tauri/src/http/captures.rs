@@ -304,7 +304,10 @@ mod tests {
     /// `auto-tag-rules` task 2.5: an end-to-end pass through the HTTP layer — a
     /// rule matching the adapter record's `handle` tags the capture on the way
     /// in, both in the response and in the stored row (spec `auto-tag-rules`,
-    /// "A capture arrives tagged").
+    /// "A capture arrives tagged"). The handle `alice` is also the capture's
+    /// derived artist tag (`auto-artist-tag`), so the stored row — and the
+    /// answer, which is that row read back after the commit — carries both,
+    /// in name order.
     #[tokio::test]
     async fn a_rule_matching_the_adapter_record_tags_the_capture() {
         let (_dir, state) = open_state();
@@ -339,17 +342,77 @@ mod tests {
         .await;
 
         assert_eq!(status, StatusCode::CREATED);
-        assert_eq!(body["tags"], serde_json::json!(["alice-fanart"]));
+        assert_eq!(body["tags"], serde_json::json!(["alice", "alice-fanart"]));
         with_library(&state.library, |library| {
             assert_eq!(
                 crate::ingest::require_record(&library.conn, "id-1")
                     .unwrap()
                     .tags,
-                vec!["alice-fanart".to_string()],
+                vec!["alice".to_string(), "alice-fanart".to_string()],
             );
             Ok(())
         })
         .unwrap();
+    }
+
+    /// Spec `capture-ingest`, "From an X post", through the HTTP layer.
+    #[tokio::test]
+    async fn an_x_capture_answers_201_carrying_its_artist_tag() {
+        let (_dir, state) = open_state();
+        let png = png_bytes(4, 7);
+        let meta = meta_with_adapter(
+            "id-1",
+            serde_json::json!({
+                "site": "x",
+                "fields": { "handle": "Alice_Art" },
+            }),
+        );
+
+        let (status, body) = send(
+            &state,
+            capture_request(Some(EXTENSION_ORIGIN), &[file_part(&png), meta_part(&meta)]),
+        )
+        .await;
+
+        assert_eq!(status, StatusCode::CREATED);
+        assert_eq!(body["tags"], serde_json::json!(["alice_art"]));
+    }
+
+    /// Spec `capture-ingest`, "The answer never waits on the tag": a capture
+    /// whose handle is skipped for a category conflict answers 201 exactly as
+    /// one with no adapter record would.
+    #[tokio::test]
+    async fn a_capture_whose_handle_is_a_general_tag_still_answers_201_without_it() {
+        let (_dir, state) = open_state();
+        let png = png_bytes(4, 7);
+        send(
+            &state,
+            capture_request(
+                Some(EXTENSION_ORIGIN),
+                &[file_part(&png), meta_part(&meta_json("seed"))],
+            ),
+        )
+        .await;
+        with_library(&state.library, |library| {
+            crate::tags::update_tags(library, "seed", &["alice".to_string()]).map(|_| ())
+        })
+        .unwrap();
+        let meta = meta_with_adapter(
+            "id-1",
+            serde_json::json!({
+                "site": "x",
+                "fields": { "handle": "alice" },
+            }),
+        );
+
+        let (status, body) = send(
+            &state,
+            capture_request(Some(EXTENSION_ORIGIN), &[file_part(&png), meta_part(&meta)]),
+        )
+        .await;
+
+        assert_eq!(status, StatusCode::CREATED);
+        assert_eq!(body["tags"], serde_json::json!([]));
     }
 
     #[tokio::test]

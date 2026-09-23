@@ -30,7 +30,8 @@ pub struct IngestInput<'a> {
     pub page_title: Option<&'a str>,
     /// What the caller's site adapter extracted. Stored as it arrived
     /// (design D11); also matched against the enabled auto-tag rules
-    /// (`auto-tag-rules` design D5, D7), except for `source = LegacyBundle`.
+    /// (`auto-tag-rules` design D5, D7) and read for the derived artist tag
+    /// (`auto-artist-tag` design D1), except for `source = LegacyBundle`.
     pub adapter: Option<&'a SiteAdapterRecord>,
     pub rating: Option<&'a str>,
     pub tags: &'a [String],
@@ -188,11 +189,11 @@ fn insert_rows(
         .map_err(|error| {
             AppError::BadRequest(format!("adapter record cannot be stored: {error}"))
         })?;
-    let text = resolve_tag_text(&tx, input)?;
+    let resolved = resolve_tag_text(&tx, input)?;
     let final_rating = input
         .rating
         .map(str::to_string)
-        .or_else(|| text.rating.clone());
+        .or_else(|| resolved.text.rating.clone());
     let inserted = tx.execute(
         "INSERT INTO images (id, ext, mime, size, width, height, source, source_ref, image_url,
                              page_url, page_title, adapter_json, rating, captured_at, created_at,
@@ -235,7 +236,17 @@ fn insert_rows(
     // `Conflict::Keep` (`tag-vocabulary` design D4): a rule's tags never
     // refuse a capture over a category disagreement — the auto-tag rules'
     // own promise is that they never block the save.
-    let categorised = tags::link_tags(&tx, input.id, &text, tags::Conflict::Keep)?;
+    let mut categorised = tags::link_tags(&tx, input.id, &resolved.text, tags::Conflict::Keep)?;
+    // After the rules, not before (`auto-artist-tag` design D3): the order
+    // decides the one case where both name the same tag in one capture, and
+    // the owner's own text — a rule's plain match — decides its category
+    // over the app's guess. `Conflict::Skip` (`tag-vocabulary`'s third
+    // policy, `auto-artist-tag` design D2): a category disagreement leaves
+    // the artist tag off the image entirely rather than refusing the
+    // capture or linking it under the wrong category.
+    if let Some(artist) = &resolved.artist {
+        categorised |= tags::link_tags(&tx, input.id, artist, tags::Conflict::Skip)?;
+    }
     tx.commit()?;
 
     Ok((
@@ -244,22 +255,36 @@ fn insert_rows(
     ))
 }
 
+/// What [`resolve_tag_text`] answers with: the source's and the rules' tags,
+/// settled, beside the artist tag a capture's adapter record derives
+/// (`auto-artist-tag` design D3) — kept apart because the two are linked
+/// under different [`tags::Conflict`] policies in `insert_rows`.
+struct ResolvedTags {
+    text: tags::TagText,
+    artist: Option<tags::TagText>,
+}
+
 /// What actually gets stored: `input.tags` unioned with the enabled rules'
 /// matches against the title and the adapter record (`auto-tag-rules` design
-/// D5, D7), except for `LegacyBundle` — `legacy-bundle-import` records
-/// "whatever the bundle carries is what is stored", and re-deriving tags for
-/// images that already carry the old library's would fight that and
+/// D5, D7), beside the artist tag the adapter record names (`auto-artist-tag`
+/// design D1, D3) — both exempt for `LegacyBundle` — `legacy-bundle-import`
+/// records "whatever the bundle carries is what is stored", and re-deriving
+/// tags for images that already carry the old library's would fight that and
 /// double-apply a rule that has since changed. The combined list then goes
 /// through `tags::read_metatags` unconditionally, the same reader the tag
 /// editor uses (design D8, `tag-vocabulary` design D4): a `rating:e` a rule
 /// names — or one a caller simply hands in through `input.tags` — never
 /// becomes a literal tag either way, and an `artist:` prefix a rule names
-/// creates the tag under that category the same way the editor's does.
+/// creates the tag under that category the same way the editor's does. The
+/// artist name goes through the same reader, alone, with an `artist:` prefix
+/// of its own — `read_metatags` rather than a hand-built `TagText`, since it
+/// is the one reader that already turns a token into a name and a category.
 /// `insert_rows` merges `input.rating`, what the source itself supplied, over
 /// whatever this extracted (design D8's "a rule SHALL NOT overwrite a rating
 /// the source supplied").
-fn resolve_tag_text(conn: &Connection, input: &IngestInput) -> Result<tags::TagText> {
+fn resolve_tag_text(conn: &Connection, input: &IngestInput) -> Result<ResolvedTags> {
     let mut candidate: Vec<String> = input.tags.to_vec();
+    let mut artist = None;
     if input.source != ImageSource::LegacyBundle {
         let enabled = rules::enabled_rules(conn)?;
         let haystacks = rules::haystacks(input.page_title, input.adapter);
@@ -268,8 +293,16 @@ fn resolve_tag_text(conn: &Connection, input: &IngestInput) -> Result<tags::TagT
         // tag the source supplied and a rule also names is stored once, in the
         // source's position, without a second dedupe spelling it here.
         candidate.extend(rules::auto_tags(&enabled, &haystacks));
+
+        artist = input
+            .adapter
+            .and_then(rules::artist_tag)
+            .map(|name| tags::read_metatags(&[format!("artist:{name}")]));
     }
-    Ok(tags::read_metatags(&candidate))
+    Ok(ResolvedTags {
+        text: tags::read_metatags(&candidate),
+        artist,
+    })
 }
 
 /// Map a row selected with [`IMAGE_COLUMNS`]. `tags` comes back empty: tags are
@@ -446,6 +479,7 @@ pub fn require_records_exist(conn: &Connection, ids: &[String]) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::TagCategory;
 
     fn png_bytes(width: u32, height: u32) -> Vec<u8> {
         let image = image::DynamicImage::ImageRgba8(image::RgbaImage::new(width, height));
@@ -1143,6 +1177,328 @@ mod tests {
 
         assert!(matches!(ingested, Ingested::Created(_)));
         assert!(ingested.record().tags.is_empty());
+    }
+
+    // -- `auto-artist-tag` task 1.4: the derived artist tag ---------------------
+
+    fn adapter_record(site: &str, fields: serde_json::Value) -> SiteAdapterRecord {
+        SiteAdapterRecord {
+            site: site.to_string(),
+            fields,
+        }
+    }
+
+    fn category_of(library: &Library, name: &str) -> TagCategory {
+        library
+            .conn
+            .query_row("SELECT category FROM tags WHERE name = ?1", [name], |row| {
+                row.get(0)
+            })
+            .unwrap()
+    }
+
+    /// Spec `capture-ingest`, "From an X post".
+    #[test]
+    fn an_x_capture_is_stored_with_its_handle_as_an_artist_tag() {
+        let (_dir, library) = library();
+        let bytes = png_bytes(2, 2);
+        let adapter = adapter_record(
+            "x",
+            serde_json::json!({ "handle": "Alice_Art", "displayName": "Alice \u{2721}" }),
+        );
+
+        let ingested = store_image(
+            &library,
+            IngestInput {
+                adapter: Some(&adapter),
+                tags: &[],
+                ..input("id-1", &bytes, &[])
+            },
+        )
+        .unwrap();
+
+        assert_eq!(ingested.record().tags, vec!["alice_art".to_string()]);
+        assert_eq!(category_of(&library, "alice_art"), TagCategory::Artist);
+    }
+
+    /// Spec `capture-ingest`, "From a Pixiv artwork, a name with spaces and
+    /// capitals".
+    #[test]
+    fn a_pixiv_capture_is_stored_with_its_display_name_as_an_artist_tag() {
+        let (_dir, library) = library();
+        let bytes = png_bytes(2, 2);
+        let adapter = adapter_record("pixiv", serde_json::json!({ "artist": "Some  Artist" }));
+
+        let ingested = store_image(
+            &library,
+            IngestInput {
+                adapter: Some(&adapter),
+                tags: &[],
+                ..input("id-1", &bytes, &[])
+            },
+        )
+        .unwrap();
+
+        assert_eq!(ingested.record().tags, vec!["some_artist".to_string()]);
+        assert_eq!(category_of(&library, "some_artist"), TagCategory::Artist);
+    }
+
+    /// A display name that reads as a metatag stays a name: behind the
+    /// `artist:` prefix, `rating:e` is neither a rating nor a second prefix.
+    #[test]
+    fn an_artist_name_spelled_like_a_metatag_is_stored_as_the_artist_tag() {
+        let (_dir, library) = library();
+        let bytes = png_bytes(2, 2);
+        let adapter = adapter_record("pixiv", serde_json::json!({ "artist": "Rating:E" }));
+
+        let ingested = store_image(
+            &library,
+            IngestInput {
+                adapter: Some(&adapter),
+                rating: None,
+                tags: &[],
+                ..input("id-1", &bytes, &[])
+            },
+        )
+        .unwrap();
+
+        assert_eq!(ingested.record().tags, vec!["rating:e".to_string()]);
+        assert_eq!(ingested.record().rating, None);
+        assert_eq!(category_of(&library, "rating:e"), TagCategory::Artist);
+    }
+
+    /// Spec `capture-ingest`, "A site with no author field the app reads".
+    #[test]
+    fn a_capture_from_another_site_gains_no_artist_tag() {
+        let (_dir, library) = library();
+        let bytes = png_bytes(2, 2);
+        let adapter = adapter_record("danbooru", serde_json::json!({ "artist": "someone" }));
+
+        let ingested = store_image(
+            &library,
+            IngestInput {
+                adapter: Some(&adapter),
+                tags: &[],
+                ..input("id-1", &bytes, &[])
+            },
+        )
+        .unwrap();
+
+        assert!(ingested.record().tags.is_empty());
+    }
+
+    /// Spec `capture-ingest`, "The field is missing".
+    #[test]
+    fn a_capture_whose_record_lacks_the_field_gains_no_artist_tag() {
+        let (_dir, library) = library();
+        let bytes = png_bytes(2, 2);
+        let adapter = adapter_record("pixiv", serde_json::json!({ "workId": "123" }));
+
+        let ingested = store_image(
+            &library,
+            IngestInput {
+                adapter: Some(&adapter),
+                tags: &[],
+                ..input("id-1", &bytes, &[])
+            },
+        )
+        .unwrap();
+
+        assert!(ingested.record().tags.is_empty());
+    }
+
+    /// Spec `capture-ingest`, "The name is already a general tag".
+    #[test]
+    fn a_capture_whose_artist_name_is_a_general_tag_is_stored_without_it() {
+        let (_dir, library) = library();
+        let bytes = png_bytes(2, 2);
+        store_image(
+            &library,
+            IngestInput {
+                tags: &["alice".to_string()],
+                ..input("seed", &bytes, &[])
+            },
+        )
+        .unwrap();
+        let adapter = adapter_record("x", serde_json::json!({ "handle": "alice" }));
+
+        let ingested = store_image(
+            &library,
+            IngestInput {
+                adapter: Some(&adapter),
+                tags: &[],
+                ..input("id-1", &bytes, &[])
+            },
+        )
+        .unwrap();
+
+        assert!(ingested.record().tags.is_empty());
+        assert_eq!(category_of(&library, "alice"), TagCategory::General);
+    }
+
+    /// Spec `capture-ingest`, "The name is already a character tag".
+    #[test]
+    fn a_capture_whose_artist_name_is_a_character_tag_is_stored_without_it() {
+        let (_dir, library) = library();
+        let bytes = png_bytes(2, 2);
+        store_image(&library, input("seed", &bytes, &[])).unwrap();
+        tags::update_tags(&library, "seed", &["char:miku".to_string()]).unwrap();
+        let adapter = adapter_record("pixiv", serde_json::json!({ "artist": "Miku" }));
+
+        let ingested = store_image(
+            &library,
+            IngestInput {
+                adapter: Some(&adapter),
+                tags: &[],
+                ..input("id-1", &bytes, &[])
+            },
+        )
+        .unwrap();
+
+        assert!(ingested.record().tags.is_empty());
+        assert_eq!(category_of(&library, "miku"), TagCategory::Character);
+    }
+
+    /// Spec `capture-ingest`, "The name is already an artist tag".
+    #[test]
+    fn a_capture_whose_artist_name_is_already_an_artist_carries_it() {
+        let (_dir, library) = library();
+        let bytes = png_bytes(2, 2);
+        store_image(&library, input("seed", &bytes, &[])).unwrap();
+        tags::update_tags(&library, "seed", &["artist:kantoku".to_string()]).unwrap();
+        let adapter = adapter_record("pixiv", serde_json::json!({ "artist": "Kantoku" }));
+
+        let ingested = store_image(
+            &library,
+            IngestInput {
+                adapter: Some(&adapter),
+                tags: &[],
+                ..input("id-1", &bytes, &[])
+            },
+        )
+        .unwrap();
+
+        assert_eq!(ingested.record().tags, vec!["kantoku".to_string()]);
+        assert_eq!(category_of(&library, "kantoku"), TagCategory::Artist);
+    }
+
+    /// Spec `capture-ingest`, "A rule names the same name in the same
+    /// capture": the rules settle before the artist tag does (design D3), so
+    /// a rule's plain match keeps the name general rather than the derived
+    /// tag creating it as an artist.
+    #[test]
+    fn a_rule_naming_the_artist_name_plainly_in_the_same_capture_keeps_it_general() {
+        let (_dir, library) = library();
+        crate::rules::upsert(
+            &library,
+            &crate::model::RuleInput {
+                id: None,
+                name: "alice".to_string(),
+                pattern: "alice".to_string(),
+                is_regex: false,
+                tags: vec!["alice".to_string()],
+                enabled: true,
+            },
+        )
+        .unwrap();
+        let bytes = png_bytes(2, 2);
+        let adapter = adapter_record("x", serde_json::json!({ "handle": "alice" }));
+
+        let ingested = store_image(
+            &library,
+            IngestInput {
+                page_title: Some("a page by alice"),
+                adapter: Some(&adapter),
+                tags: &[],
+                ..input("id-1", &bytes, &[])
+            },
+        )
+        .unwrap();
+
+        assert_eq!(ingested.record().tags, vec!["alice".to_string()]);
+        assert_eq!(category_of(&library, "alice"), TagCategory::General);
+    }
+
+    /// Spec `capture-ingest`, "A legacy bundle import": the adapter record is
+    /// set by hand here (the real importer always passes `None`) to prove the
+    /// `LegacyBundle` gate itself derives nothing, not merely that the
+    /// importer never supplies a record.
+    #[test]
+    fn a_bundle_sourced_ingest_with_an_adapter_record_gains_no_artist_tag() {
+        let (_dir, library) = library();
+        let bytes = png_bytes(2, 2);
+        let adapter = adapter_record("x", serde_json::json!({ "handle": "alice" }));
+
+        let ingested = store_image(
+            &library,
+            IngestInput {
+                source: ImageSource::LegacyBundle,
+                adapter: Some(&adapter),
+                tags: &[],
+                ..input("id-1", &bytes, &[])
+            },
+        )
+        .unwrap();
+
+        assert!(ingested.record().tags.is_empty());
+    }
+
+    /// Spec `capture-ingest`, "Retrying a delivery".
+    #[test]
+    fn re_delivering_a_stored_id_gains_no_artist_tag() {
+        let (_dir, library) = library();
+        let bytes = png_bytes(2, 2);
+        store_image(
+            &library,
+            IngestInput {
+                tags: &[],
+                ..input("id-1", &bytes, &[])
+            },
+        )
+        .unwrap();
+        let adapter = adapter_record("x", serde_json::json!({ "handle": "alice" }));
+
+        let ingested = store_image(
+            &library,
+            IngestInput {
+                adapter: Some(&adapter),
+                tags: &[],
+                ..input("id-1", &bytes, &[])
+            },
+        )
+        .unwrap();
+
+        assert!(matches!(ingested, Ingested::Existing(_)));
+        assert!(ingested.record().tags.is_empty());
+    }
+
+    /// `tag-vocabulary` design D2: creating an artist tag is a categorised
+    /// row born, so `library.json` carries it exactly as a rule-created one
+    /// would.
+    #[test]
+    fn a_capture_creating_an_artist_tag_rewrites_library_json() {
+        let (_dir, library) = library();
+        let bytes = png_bytes(2, 2);
+        let adapter = adapter_record("x", serde_json::json!({ "handle": "alice" }));
+
+        store_image(
+            &library,
+            IngestInput {
+                adapter: Some(&adapter),
+                tags: &[],
+                ..input("id-1", &bytes, &[])
+            },
+        )
+        .unwrap();
+
+        let file =
+            crate::sidecar::read_library(&crate::sidecar::library_path(&library.paths)).unwrap();
+        let entries = file.tags.expect("the key is always written");
+        assert!(
+            entries
+                .iter()
+                .any(|entry| entry.name == "alice" && entry.category == TagCategory::Artist)
+        );
     }
 
     fn search_view(library: &Library, view: crate::model::SearchView) -> Vec<String> {

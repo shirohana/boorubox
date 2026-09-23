@@ -28,6 +28,20 @@ pub fn canonical(name: &str) -> String {
     name.trim().to_lowercase()
 }
 
+/// Free text spelled as a tag or collection name (`auto-artist-tag` design
+/// D1): [`canonical`], then every run of whitespace — U+3000 included —
+/// collapsed to one `_`. The one spelling for both `collections::slug` and
+/// the derived artist tag. `canonical` itself must not do this: its other
+/// callers hand it a token that already has no inner whitespace, and widening
+/// it would silently change what a rebuild or a stamp does with a name that
+/// somehow has one.
+pub fn underscored(text: &str) -> String {
+    canonical(text)
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join("_")
+}
+
 /// Ensure the tag row exists — general, unless [`link_one_tag`] already gave
 /// it a category before calling this — and link the image to it. The plain
 /// half of tag creation: `link_one_tag` is where a category is ever named at
@@ -590,11 +604,16 @@ fn category_metatag(tag: &str) -> Option<(TagCategory, &str)> {
 /// refusal is the answer they need to pick another name — `Keep` for a rule's
 /// tags, at capture time and on a run over stored images alike, so a
 /// capture's success or a run's progress never depends on a rule's spelling
-/// matching what the tag already is.
+/// matching what the tag already is — and `Skip` for the derived artist tag
+/// (`auto-artist-tag` design D2): a name the app guessed rather than one a
+/// person or a rule wrote, which must never land an image under a general or
+/// character tag because an author happens to share its name; the image is
+/// left not carrying it, the existing tag row untouched.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Conflict {
     Refuse,
     Keep,
+    Skip,
 }
 
 /// Link `image_id` to every tag in `text.tags`, creating a row under its named
@@ -669,6 +688,9 @@ fn link_one_tag(
             Some(existing) if existing != category => match policy {
                 Conflict::Refuse => return Err(category_conflict(tag, existing, category)),
                 Conflict::Keep => {}
+                // Before `link_tag` below (`auto-artist-tag` design D2): the
+                // image is not linked to the existing tag, the row untouched.
+                Conflict::Skip => return Ok(false),
             },
             Some(_) => {}
         }
@@ -1312,6 +1334,109 @@ mod tests {
         tx.commit().unwrap();
 
         assert_eq!(category_of(&library, "cat"), TagCategory::Artist);
+    }
+
+    // -- `auto-artist-tag` task 1.1: `underscored` -----------------------------
+
+    #[test]
+    fn underscored_lower_cases_and_joins_whitespace_runs_with_underscores() {
+        assert_eq!(underscored("Some  Artist"), "some_artist");
+    }
+
+    #[test]
+    fn underscored_reads_an_ideographic_space_as_whitespace() {
+        assert_eq!(underscored("山田\u{3000}太郎"), "山田_太郎");
+    }
+
+    #[test]
+    fn underscored_of_a_blank_text_is_empty() {
+        assert_eq!(underscored(""), "");
+        assert_eq!(underscored("   "), "");
+    }
+
+    // -- `auto-artist-tag` task 1.2: `Conflict::Skip` --------------------------
+
+    /// The shape `ingest::resolve_tag_text` builds for the derived artist tag
+    /// (design D3): one tag, named under `Artist` by its `artist:` prefix.
+    fn artist_text(name: &str) -> TagText {
+        read_metatags(&[format!("artist:{name}")])
+    }
+
+    #[test]
+    fn skip_links_nothing_when_the_name_exists_under_another_category() {
+        let (_dir, library) = library();
+        store(&library, "a", None, &["cat"]);
+        store(&library, "b", None, &[]);
+
+        let tx = library.conn.unchecked_transaction().unwrap();
+        let categorised = link_tags(&tx, "b", &artist_text("cat"), Conflict::Skip).unwrap();
+        tx.commit().unwrap();
+
+        assert!(!categorised);
+        assert!(
+            ingest::require_record(&library.conn, "b")
+                .unwrap()
+                .tags
+                .is_empty()
+        );
+        assert_eq!(category_of(&library, "cat"), TagCategory::General);
+    }
+
+    #[test]
+    fn skip_leaves_a_character_tag_unlinked_and_unchanged() {
+        let (_dir, library) = library();
+        store(&library, "a", None, &[]);
+        edit(&library, "a", &["char:miku"]);
+        store(&library, "b", None, &[]);
+
+        let tx = library.conn.unchecked_transaction().unwrap();
+        let categorised = link_tags(&tx, "b", &artist_text("miku"), Conflict::Skip).unwrap();
+        tx.commit().unwrap();
+
+        assert!(!categorised);
+        assert!(
+            ingest::require_record(&library.conn, "b")
+                .unwrap()
+                .tags
+                .is_empty()
+        );
+        assert_eq!(category_of(&library, "miku"), TagCategory::Character);
+    }
+
+    #[test]
+    fn skip_creates_a_missing_tag_under_its_category() {
+        let (_dir, library) = library();
+        store(&library, "a", None, &[]);
+
+        let tx = library.conn.unchecked_transaction().unwrap();
+        let categorised = link_tags(&tx, "a", &artist_text("kantoku"), Conflict::Skip).unwrap();
+        tx.commit().unwrap();
+
+        assert!(categorised);
+        assert_eq!(
+            ingest::require_record(&library.conn, "a").unwrap().tags,
+            vec!["kantoku".to_string()]
+        );
+        assert_eq!(category_of(&library, "kantoku"), TagCategory::Artist);
+    }
+
+    #[test]
+    fn skip_links_a_tag_already_under_the_same_category() {
+        let (_dir, library) = library();
+        store(&library, "a", None, &[]);
+        edit(&library, "a", &["artist:kantoku"]);
+        store(&library, "b", None, &[]);
+
+        let tx = library.conn.unchecked_transaction().unwrap();
+        let categorised = link_tags(&tx, "b", &artist_text("kantoku"), Conflict::Skip).unwrap();
+        tx.commit().unwrap();
+
+        assert!(!categorised);
+        assert_eq!(
+            ingest::require_record(&library.conn, "b").unwrap().tags,
+            vec!["kantoku".to_string()]
+        );
+        assert_eq!(category_of(&library, "kantoku"), TagCategory::Artist);
     }
 
     // -- `tag-vocabulary` task 1.3: `vocabulary` / `set_category` / `set_pinned` --

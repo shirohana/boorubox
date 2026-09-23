@@ -707,12 +707,15 @@
         {@const account = image.account}
         <!--
           Spec `tag-editing`, "An X account on screen is a search term": a
-          fact of the page address, beside Page, not among the tags — with
-          artist tags in the vocabulary a handle there read as a second
-          artist (design D4). Read the same in both `editingFacts` states:
-          the address being edited is the draft, but the account is derived
-          from the stored one, so this row does not flip with the form. No
-          colour of its own (blue is general's now, design D2) — the padded,
+          fact of the page address, beside Page, not among the tags —
+          `account:` searches the address, not the tags, and the handle
+          reaches the tags only as the derived artist tag a capture creates
+          from it (`auto-artist-tag`, spec `capture-ingest` "A capture is
+          stored with its author as an artist tag"); this row never writes
+          one. Read the same in both `editingFacts` states: the address
+          being edited is the draft, but the account is derived from the
+          stored one, so this row does not flip with the form. No colour of
+          its own (blue is general's now, design D2) — the padded,
           hoverable box and the pointer cursor are what say it is a control,
           not a fact to merely read (owner, 2026-09-23: the row did not look
           clickable). `searchMarkClass` (design D3, amended again

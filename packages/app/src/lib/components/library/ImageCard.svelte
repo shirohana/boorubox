@@ -293,7 +293,7 @@
           grew past square and over the row below. WebKit keeps the square, so
           a Mac never shows it. Take it out and Windows breaks alone.
         -->
-        <div class="relative min-h-0 aspect-square">
+        <div class="relative aspect-square min-h-0">
           {#if !image}
             <div class="h-full rounded-lg border border-border bg-muted/40 {ring}">
               <span class="sr-only">Loading</span>
