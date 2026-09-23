@@ -25,9 +25,9 @@ export class Collections {
   error = $state<string | null>(null)
 
   /**
-   * Every pinned collection, by name — the inspector's chip row, after the
-   * pinned tags (`pinned-collections` design D5, D7). `list` is already in
-   * name order from Rust, so this needs no sort of its own.
+   * Every pinned collection, by name — the chip row at the top of the
+   * inspector's Collections section (`pinned-collections` design D5, D7).
+   * `list` is already in name order from Rust, so this needs no sort of its own.
    */
   pinned = $derived(this.list.filter((collection) => collection.pinned))
 

@@ -78,36 +78,39 @@
   sideways-scroll clip with it.
 -->
 <section data-sidebar="tags" class="min-h-32 flex-1 overflow-y-auto p-2">
-  <h2 class="px-1 pb-1 text-xs font-medium text-muted-foreground">Tags</h2>
+  <div class="flex items-center justify-between">
+    <h2 class="px-1 pb-1 text-xs font-medium text-muted-foreground">Tags</h2>
 
-  <!--
-    The five category toggles (`tag-category-visibility` design D5), doubling
-    as the list's colour legend: one plain button per `CATEGORY_ORDER` entry,
-    the `RatingPills` precedent rather than the shadcn `Toggle`, which is built
-    for toolbars. Pressed means shown, so the default row is five pressed
-    buttons and a hidden category is the odd one out, as it is on screen.
-    Stays drawn while `tags` is `null` and when every category is hidden, so
-    there is always a way back.
-  -->
-  <div role="group" aria-label="Tag categories" class="flex gap-0.5 px-1 pb-1">
-    {#each CATEGORY_ORDER as category (category)}
-      {@const isHidden = hidden.has(category)}
-      {@const label = categoryLabel(category)}
-      {@const Icon = CATEGORY_ICON[category]}
-      <button
-        type="button"
-        aria-pressed={!isHidden}
-        aria-label="{label} tags"
-        title={isHidden ? `Show ${label} tags` : `Hide ${label} tags`}
-        class="
-          rounded-sm p-0.5 hover:bg-sidebar-accent {CATEGORY_TEXT_CLASS[category]}
-          {isHidden ? 'opacity-40' : ''}
-        "
-        onclick={() => void settings.setTagCategoryHidden(category, !isHidden)}
-      >
-        <Icon class="size-3" />
-      </button>
-    {/each}
+    <!--
+      The five category toggles (`tag-category-visibility` design D5), doubling
+      as the list's colour legend, on the heading's row at the right: one plain
+      button per `CATEGORY_ORDER` entry, the `RatingPills` precedent rather than
+      the shadcn `Toggle`, which is built for toolbars. Pressed means shown, so
+      the default row is five pressed buttons and a hidden category is the odd
+      one out, as it is on screen.
+      Stays drawn while `tags` is `null` and when every category is hidden, so
+      there is always a way back.
+    -->
+    <div role="group" aria-label="Tag categories" class="flex gap-0.5 px-1 pb-1">
+      {#each CATEGORY_ORDER as category (category)}
+        {@const isHidden = hidden.has(category)}
+        {@const label = categoryLabel(category)}
+        {@const Icon = CATEGORY_ICON[category]}
+        <button
+          type="button"
+          aria-pressed={!isHidden}
+          aria-label="{label} tags"
+          title={isHidden ? `Show ${label} tags` : `Hide ${label} tags`}
+          class="
+            rounded-sm p-0.5 hover:bg-sidebar-accent {CATEGORY_TEXT_CLASS[category]}
+            {isHidden ? 'opacity-40' : ''}
+          "
+          onclick={() => void settings.setTagCategoryHidden(category, !isHidden)}
+        >
+          <Icon class="size-3" />
+        </button>
+      {/each}
+    </div>
   </div>
 
   {#if tags && tags.length === 0}

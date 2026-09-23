@@ -176,7 +176,7 @@ SHALL NOT rewrite any describing file.
 
 #### Scenario: Rebuilt pinned
 - **WHEN** a library whose collection `Cute` is pinned is rebuilt
-- **THEN** `Cute` comes back pinned, and its chip is in the inspector's pinned strip
+- **THEN** `Cute` comes back pinned, and its chip is at the top of the inspector's collections section
 
 #### Scenario: Rebuilt with no library-level file
 - **WHEN** the library-level file is missing and an image's describing file names a collection id
@@ -189,9 +189,12 @@ same menus and from the pinned chip's own context menu. Whether a collection is 
 a property of the collection, the same for every image, and SHALL NOT change any image, the
 collection's name, or its members.
 
-The inspector SHALL show every pinned collection as a chip in the pinned strip at the top of
-its tag area, in both of its placements, after the pinned tags and in collection name order,
-whether or not the described image is in it. A pinned collection's chip SHALL be told apart
+The inspector SHALL show every pinned collection as a chip at the top of its collections
+section, in both of its placements — the selection panel gains a collections section for them,
+after its tag area — in collection name order, whether or not the described image is in it
+(owner, 2026-09-24: the chips first sat in the pinned strip beside the pinned tags; a collection
+chip among tag chips read as one more tag, and the section that lists the image's collections is
+where a click that changes them is looked for). A pinned collection's chip SHALL be told apart
 from a pinned tag's at a glance: it SHALL carry the mark the tiles use for collection
 membership rather than a pin mark, and its text SHALL NOT be drawn in any tag category's
 colour. It SHALL show the collection's current name.
@@ -206,11 +209,11 @@ list. Deleting a pinned collection SHALL remove its chip.
 
 #### Scenario: Pin from the sidebar
 - **WHEN** the user opens the context menu of `Cute` in the collections section and chooses Pin
-- **THEN** `Cute` appears as a chip with the collection mark in the inspector's pinned strip, after any pinned tag, and the tag list shows no entry for it
+- **THEN** `Cute` appears as a chip with the collection mark at the top of the inspector's collections section, and the tag list shows no entry for it
 
 #### Scenario: Pin from the inspector
 - **WHEN** the panel describes an image in `Cute` and the user opens the context menu of `Cute` among its collections and chooses Pin
-- **THEN** `Cute` appears as a chip in the pinned strip, shown as containing the image
+- **THEN** `Cute` appears as a chip at the top of the collections section, shown as containing the image, and its badge stays among the image's collections below
 
 #### Scenario: One click in, one click out
 - **WHEN** `Cute` is pinned, the panel describes an image not in it, and the user activates the chip, then activates it again
@@ -226,7 +229,7 @@ list. Deleting a pinned collection SHALL remove its chip.
 
 #### Scenario: Told apart from a tag
 - **WHEN** the tag `cute` and the collection `Cute` are both pinned
-- **THEN** the strip shows two chips, the tag's with a pin mark in its category colour first, the collection's with the collection mark in plain text after it
+- **THEN** the tag's chip sits in the tag area's pinned strip with a pin mark in its category colour, and the collection's sits in the collections section with the collection mark in plain text
 
 #### Scenario: Unpin from the chip
 - **WHEN** the user opens the chip's context menu and chooses Unpin
@@ -238,4 +241,4 @@ list. Deleting a pinned collection SHALL remove its chip.
 
 #### Scenario: A pinned collection is deleted
 - **WHEN** `Cute` is pinned and the user deletes it
-- **THEN** its chip is gone, and the strip is absent if nothing else is pinned
+- **THEN** its chip is gone, and the chip row is absent if no collection is pinned

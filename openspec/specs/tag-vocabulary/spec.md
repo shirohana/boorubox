@@ -107,9 +107,9 @@ inspector SHALL show every pinned tag, in the app's one category order — artis
 character, general, meta — alphabetical within a category, as the sidebar lists tags, at the
 top of its tag area in both of its placements, whether or not the described image carries it
 (owner, 2026-09-24: the strip was alphabetical alone, and reads better grouped like the left
-panel). The same strip SHALL hold the pinned
-collections' chips (`collections`), after every pinned tag, and SHALL show nothing — no row and
-no heading — while neither a tag nor a collection is pinned. A pinned chip SHALL look like a
+panel). The strip SHALL hold tags only — a
+pinned collection's chip sits in the collections section (`collections`) — and SHALL show
+nothing, no row and no heading, while no tag is pinned. A pinned chip SHALL look like a
 control and not like one of the image's
 tags: a pill with a pin mark, where the image's tags are plain text. Each chip SHALL show
 whether the described image carries the tag, and one activation SHALL add the tag to the
@@ -125,7 +125,7 @@ image would be written.
 
 #### Scenario: Pinned tags in category order
 - **WHEN** `tagme` (meta), `kantoku` (artist), `1girl` (general) and `azur_lane` (copyright) are pinned
-- **THEN** the strip reads `kantoku`, `azur_lane`, `1girl`, `tagme`, each in its category's colour, and the pinned collections follow
+- **THEN** the strip reads `kantoku`, `azur_lane`, `1girl`, `tagme`, each in its category's colour
 
 #### Scenario: One click on, one click off
 - **WHEN** `tagme` is pinned, the panel describes an image without it, and the user activates the chip, then activates it again
@@ -145,14 +145,14 @@ image would be written.
 
 #### Scenario: Tags first, then collections
 - **WHEN** the tags `tagme` and `wip` and the collection `Cute` are pinned
-- **THEN** the strip reads `tagme`, `wip`, `Cute`, in that order
+- **THEN** the strip reads `tagme`, `wip`, and `Cute`'s chip sits in the collections section, not in the strip
 
 #### Scenario: Only a collection pinned
 - **WHEN** no tag is pinned and the collection `Cute` is
-- **THEN** the strip is drawn, holding the one chip for `Cute`
+- **THEN** the strip is absent, and the collections section holds the one chip for `Cute`
 
 #### Scenario: Nothing pinned
-- **WHEN** no tag and no collection is pinned
+- **WHEN** no tag is pinned
 - **THEN** the inspector draws no pinned row and no heading for one
 
 ### Requirement: The vocabulary outlives its carriers

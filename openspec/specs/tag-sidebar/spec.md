@@ -110,9 +110,11 @@ the current search returns nothing the list SHALL show only the tags the search 
 - **THEN** the tag list holds only the searched tags at zero, every rating control reads zero, and no stale counts from the previous search are shown
 
 ### Requirement: Categories can be hidden from the sidebar
-The sidebar's tag list SHALL carry, under its heading, one toggle per tag category in the
+The sidebar's tag list SHALL carry, on its heading's row at the right-hand edge, one toggle per tag category in the
 app's one category order — artist, copyright, character, general, meta — each drawn in its
-category's colour, so the row reads as the list's colour legend. Acting on a toggle SHALL hide
+category's colour, so the row reads as the list's colour legend (owner, 2026-09-24: first drawn on
+their own row under the heading; on the heading's row they cost no height and sit where the
+section's controls are looked for). Acting on a toggle SHALL hide
 that category's tags from the list, and acting on it again SHALL show them; a hidden
 category's toggle SHALL be drawn dimmed, and each toggle SHALL name its category and state to
 assistive technology as a pressed or unpressed button. A tag the search includes, excludes or
@@ -150,7 +152,7 @@ before.
 
 #### Scenario: The toggles as the legend
 - **WHEN** the sidebar is shown
-- **THEN** the five toggles appear under the Tags heading in the order artist, copyright, character, general, meta, each in the colour its category's tags are drawn in
+- **THEN** the five toggles appear on the Tags heading's row, right-aligned, in the order artist, copyright, character, general, meta, each in the colour its category's tags are drawn in
 
 #### Scenario: The inspector is not filtered
 - **WHEN** the artist category is hidden and the user selects an image tagged `kantoku` (artist)

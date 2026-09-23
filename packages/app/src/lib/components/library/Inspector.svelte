@@ -732,15 +732,13 @@
     </section>
 
     <!--
-      Design D7/D9: the same chip row the single-image panel draws, tri-state
-      over the selection instead of one image's membership — the heading
-      reads Pinned rather than Tags, since it can now hold both kinds. Absent
-      along with its heading while nothing is pinned, same as the
-      single-image panel.
+      The single-image panel's pinned tag strip, tri-state over the selection
+      instead of one image's tags. Absent along with its heading while no tag
+      is pinned.
     -->
-    {#if vocabulary.pinned.length > 0 || collections.pinned.length > 0}
+    {#if vocabulary.pinned.length > 0}
       <section class="border-t border-border px-4 py-3">
-        <h3 class="mb-2 text-xs font-medium text-muted-foreground">Pinned</h3>
+        <h3 class="mb-2 text-xs font-medium text-muted-foreground">Tags</h3>
         <ul class="flex flex-wrap gap-1">
           {#each vocabulary.pinned as tag (tag)}
             {@render pinnedChip(
@@ -749,6 +747,28 @@
               () => void toggleSelectionTag(tag),
             )}
           {/each}
+        </ul>
+        {#if pinnedCountsError}
+          <p class="mt-1 text-xs text-destructive">{pinnedCountsError}</p>
+        {/if}
+        {#if vocabulary.error}
+          <p class="mt-1 text-xs text-destructive">{vocabulary.error}</p>
+        {/if}
+      </section>
+    {/if}
+
+    <!--
+      The pinned collection chips, tri-state over the selection
+      (`pinned-collections` design D7/D9).
+      Absent along with its heading while no collection is pinned.
+      `pinnedCountsError` is one error for both kinds' counts (D9), so
+      it is shown here only when the Tags section above, which already shows
+      it, is absent.
+    -->
+    {#if collections.pinned.length > 0}
+      <section class="border-t border-border px-4 py-3">
+        <h3 class="mb-2 text-xs font-medium text-muted-foreground">Collections</h3>
+        <ul class="flex flex-wrap gap-1">
           {#each collections.pinned as collection (collection.id)}
             {@render pinnedChip(
               { kind: 'collection', collection },
@@ -757,11 +777,8 @@
             )}
           {/each}
         </ul>
-        {#if pinnedCountsError}
+        {#if pinnedCountsError && vocabulary.pinned.length === 0}
           <p class="mt-1 text-xs text-destructive">{pinnedCountsError}</p>
-        {/if}
-        {#if vocabulary.error}
-          <p class="mt-1 text-xs text-destructive">{vocabulary.error}</p>
         {/if}
       </section>
     {/if}
@@ -970,16 +987,14 @@
             <Button size="xs" disabled={saving} onclick={save}>Save</Button>
           </div>
         </div>
-      {:else if vocabulary.pinned.length > 0 || collections.pinned.length > 0}
+      {:else if vocabulary.pinned.length > 0}
         <!--
-          Design D7/D8: a tag chip's activation writes the whole toggled set
-          through `write`, the same path the editor's own save makes, so the
-          tag list, the sidebar and `updatedAt` follow exactly as they do for
-          a save; a collection chip's goes through `toggleCollection` on the
-          panel's own `collectionTarget`, the "Add to…" menu's door. Tags
-          first, collections after (design D7), so pinning a collection never
-          moves a tag chip. Only in read mode: a chip write mid-edit would
-          fight the open draft, replacing tags the field has not saved yet.
+          `tag-vocabulary` design D8: a chip's activation writes the whole
+          toggled set through `write`, the same path the editor's own save
+          makes, so the tag list, the sidebar and `updatedAt` follow exactly
+          as they do for a save. Only in read mode: a chip write mid-edit
+          would fight the open draft, replacing tags the field has not saved
+          yet.
         -->
         <ul class="mt-2 flex flex-wrap gap-1">
           {#each vocabulary.pinned as tag (tag)}
@@ -987,13 +1002,6 @@
               { kind: 'tag', tag },
               tags.includes(tag) ? 'all' : 'none',
               () => togglePinned(tag),
-            )}
-          {/each}
-          {#each collections.pinned as collection (collection.id)}
-            {@render pinnedChip(
-              { kind: 'collection', collection },
-              ownCollections?.has(collection.id) ? 'all' : 'none',
-              () => void toggleCollection(collectionTarget, collection.id),
             )}
           {/each}
         </ul>
@@ -1081,6 +1089,25 @@
         <h3 class="mb-2 text-xs font-medium text-muted-foreground">
           Collections {#if image.collections.length > 0}({image.collections.length}){/if}
         </h3>
+
+        {#if collections.pinned.length > 0 && !editingTags}
+          <!--
+            `pinned-collections` design D7: a chip's activation goes through
+            `toggleCollection` on the panel's own `collectionTarget`, the
+            "Add to…" menu's door. Hidden while the tag editor is open:
+            `collectionTarget.onwritten` calls `onrelease`, which on the grid
+            refocuses the grid and would blur the editor mid-draft.
+          -->
+          <ul class="mb-2 flex flex-wrap gap-1">
+            {#each collections.pinned as collection (collection.id)}
+              {@render pinnedChip(
+                { kind: 'collection', collection },
+                ownCollections?.has(collection.id) ? 'all' : 'none',
+                () => void toggleCollection(collectionTarget, collection.id),
+              )}
+            {/each}
+          </ul>
+        {/if}
 
         {#if image.collections.length > 0}
           <!--
