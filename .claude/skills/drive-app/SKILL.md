@@ -6,8 +6,18 @@ allowed-tools: Bash, Read
 
 # Drive the BooruBox App From the Terminal
 
-What one coordinator learned driving the app for smoke runs. Everything here is macOS;
-the process name for System Events is `BooruBox` (tauri.conf.json `productName`).
+What one coordinator learned driving the app for smoke runs. Everything here is macOS.
+The System Events process name is `boorubox` (the Cargo binary name) under `mise run dev`;
+`BooruBox` (tauri.conf.json `productName`) is only the bundled app. Every osascript line
+below fails with -1719 under the wrong name.
+
+## Before launching: the screen
+
+A locked session (login screen) never gets a webview window: `count of windows` stays 0 and
+every `screencapture` returns the lock screen, which looks exactly like a hung app. Check
+first — `screencapture -x` a small region and look at it, or
+`ioreg -n Root -d1 | grep -q CGSSessionScreenIsLocked` — and stop if it is locked: nothing
+below can be observed, and the owner is not there to unlock it.
 
 ## Before launching: the owner's window
 
@@ -39,7 +49,7 @@ Bounds come from System Events, then `screencapture -x -R x,y,w,h out.png`. Crop
 and half of it is the terminal overlay.
 
 ```
-osascript -e 'tell application "System Events" to tell process "BooruBox" to get {position, size} of window 1'
+osascript -e 'tell application "System Events" to tell process "boorubox" to get {position, size} of window 1'
 ```
 
 A temporary debug label hot-reloaded through Vite (write it into the page, screenshot,
@@ -58,8 +68,19 @@ revert) answers a layout question in one round; it found `aspect-ratio: auto` on
 - AX positions from an `entire contents of window 1` walk are in the same coordinate space
   as the page's `getBoundingClientRect` plus the window origin. Use them, not
   window-relative guesses, when a click must land on an element.
+- A hover state cannot be produced by warping the cursor (CGWarp delivers no mouse event
+  to the webview; `cliclick` and pyobjc are absent). Park the cursor over the element, then
+  nudge the window by 1 px through System Events (`set position of window 1 to …`): the
+  move delivers the mouse event and the hover paints.
 - The Import menu's native file dialog can be driven: click the pop-up, arrow + Enter,
   then Cmd+Shift+G, type a path, Enter, Enter.
+
+## The vaults
+
+`boorubox-vault/test-1` (44 MB) has no categorised tag, no pinned tag and no stamp, so a
+smoke of those features shows nothing until the scratch copy is seeded (tag an image with
+`artist:x`, pin one from the sidebar menu, save a stamp on /settings). `test-3` is the owner's
+current library (their settings.json points there); copy it, never open it live.
 
 ## What this does not settle
 
