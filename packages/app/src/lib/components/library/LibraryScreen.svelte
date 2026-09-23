@@ -140,8 +140,11 @@
   $effect(() => () => clearTimeout(searchTimer))
 
   // The grid follows the drag; only the release writes the setting (design D11),
-  // so this is the live edge and `gridTileSize` is where it comes back from.
-  let tile = $state(settings.current?.gridTileSize ?? GRID_TILE_DEFAULT)
+  // so `dragged` is the live edge and `gridTileSize` is where it comes back
+  // from. Derived, not seeded once: the settings load after this screen
+  // mounts, and a size read at mount is the default, not the saved one.
+  let dragged = $state<number | null>(null)
+  const tile = $derived(dragged ?? settings.current?.gridTileSize ?? GRID_TILE_DEFAULT)
   let lightboxIndex = $state(0)
   let lightboxOpen = $state(false)
   /** Written by the grid, read by the viewer's row step (design D9). */
@@ -803,7 +806,7 @@
     min={GRID_TILE_MIN}
     max={GRID_TILE_MAX}
     step={10}
-    bind:value={tile}
+    bind:value={() => tile, (size) => (dragged = size)}
     onValueCommit={(size) => {
       settings.setGridTileSize(size).catch((error) => (actionError = errorText(error)))
     }}
