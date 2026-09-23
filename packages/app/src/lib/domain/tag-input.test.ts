@@ -12,6 +12,7 @@ import {
   moveHighlight,
   SUGGESTION_LIMIT,
   suggestionPrefix,
+  suggestsOnFocus,
 } from './tag-input'
 
 describe('currentToken', () => {
@@ -74,6 +75,32 @@ describe('suggestionPrefix', () => {
     expect(suggestionPrefix('cat or', 6)).toBeNull()
     expect(suggestionPrefix('cat OR', 6)).toBeNull()
     expect(suggestionPrefix('cat o', 5)).toBeNull()
+  })
+})
+
+describe('suggestsOnFocus', () => {
+  it('is false on an empty prefix, the caret at the start of an empty field', () => {
+    expect(suggestsOnFocus('', 0)).toBe(false)
+  })
+
+  it('is false on an empty prefix after a trailing space (`editorText`, `focusEnd`)', () => {
+    expect(suggestsOnFocus('cat ', 4)).toBe(false)
+  })
+
+  it('is false at the start of a field the caret has not yet reached (`focusEnd`\'s own race)', () => {
+    // The caret `field.focus()` leaves behind before `focusEnd`'s
+    // `setSelectionRange` moves it — 0 on a value ending in `editorText`'s
+    // trailing space, so the token there is empty either way.
+    expect(suggestsOnFocus('cat dog ', 0)).toBe(false)
+  })
+
+  it('is true on a partly typed token, so a click mid-word still suggests', () => {
+    expect(suggestsOnFocus('dog cat', 7)).toBe(true)
+    expect(suggestsOnFocus('cathedral dog', 4)).toBe(true)
+  })
+
+  it('is false inside a metatag, the same as suggestionPrefix', () => {
+    expect(suggestsOnFocus('rating:', 7)).toBe(false)
   })
 })
 
@@ -240,6 +267,6 @@ describe('editorText', () => {
     expect(editorText(
       ['1girl', 'kantoku', 'azur_lane', 'tashkent', 'highres', 'solo'],
       categoryOf,
-    )).toBe('kantoku\nazur_lane\ntashkent\nhighres\n1girl solo ')
+    )).toBe('kantoku\nazur_lane\ntashkent\n1girl solo\nhighres ')
   })
 })

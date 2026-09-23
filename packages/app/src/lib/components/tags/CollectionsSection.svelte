@@ -29,6 +29,7 @@
     excludeCollectionFromQuery,
     toggleCollectionInQuery,
   } from '$lib/domain/tag-utils'
+  import { searchMark, searchMarkClass } from './categories'
 
   interface Props {
     /** `null` while a search is running (design D8): the heading stays, the list is blank. */
@@ -150,21 +151,28 @@
       {:else}
         <ul class="flex flex-col gap-0.5 p-0.5">
           {#each collections.list as collection (collection.id)}
-            {@const active = terms.collections.has(collection.slug)}
-            {@const excluded = terms.excludedCollections.has(collection.slug)}
             <li>
               <ContextMenu.Root>
                 <ContextMenu.Trigger>
                   {#snippet child({ props })}
+                    <!--
+                      The row reads the same table the tag sidebar and the
+                      inspector do (design D3): background only, no
+                      strike-through, the shared emerald tint for an included
+                      collection rather than one of its own. `searchMarkClass`
+                      supplies `hover:bg-sidebar-accent` only while the row
+                      carries no mark, so an active or excluded row keeps its
+                      own hover instead of losing it to a competing neutral
+                      one at equal specificity.
+                    -->
                     <div
                       {...props}
                       class="
                         flex items-center gap-1 rounded-md px-1 text-xs
-                        hover:bg-sidebar-accent
-                        {active
-                          ? `bg-emerald-500/15 font-medium text-emerald-700 dark:text-emerald-300`
-                          : ''}
-                        {excluded ? 'bg-destructive/10 text-destructive line-through' : ''}
+                        {searchMarkClass(
+                          searchMark(collection.slug, terms.collections, terms.excludedCollections),
+                          'hover:bg-sidebar-accent',
+                        )}
                       "
                     >
                       <button
@@ -187,7 +195,9 @@
                         "
                         aria-label="Exclude {collection.name}"
                         title="Exclude {collection.name}"
-                        onclick={() => onquery(excludeCollectionFromQuery(tagQuery, collection.slug))}
+                        onclick={() => {
+                          onquery(excludeCollectionFromQuery(tagQuery, collection.slug))
+                        }}
                       >
                         <MinusIcon class="size-3" />
                       </button>

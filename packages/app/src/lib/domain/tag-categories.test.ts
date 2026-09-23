@@ -10,8 +10,8 @@ describe('CATEGORY_ORDER', () => {
     expect(CATEGORY_ORDER.length).toBe(ALL_CATEGORIES.length)
   })
 
-  it('is design D6\'s fixed order: artist, copyright, character, meta, general', () => {
-    expect(CATEGORY_ORDER).toEqual(['artist', 'copyright', 'character', 'meta', 'general'])
+  it('is design D1\'s fixed order: artist, copyright, character, general, meta', () => {
+    expect(CATEGORY_ORDER).toEqual(['artist', 'copyright', 'character', 'general', 'meta'])
   })
 })
 

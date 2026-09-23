@@ -8,6 +8,7 @@
   import type { GroupSlice } from '@boorubox/shared'
   import MinusIcon from '@lucide/svelte/icons/minus'
   import PlusIcon from '@lucide/svelte/icons/plus'
+  import { searchMark, searchMarkClass } from '$lib/components/tags/categories'
   import {
     activeTerms,
     addAccountToQuery,
@@ -52,14 +53,20 @@
 
   <ul class="flex flex-col gap-0.5">
     {#each listed as { handle: key, count } (key)}
+      <!--
+        The row reads the same table the tag sidebar and the inspector do
+        (design D3): background only, no strike-through, the shared emerald
+        tint for an included handle rather than a sky one of its own — a
+        second "active" colour beside the tags' would have said something
+        different about the same state. `searchMarkClass` supplies
+        `hover:bg-sidebar-accent` only while the row carries no mark, so an
+        active or excluded row keeps its own hover instead of losing it to a
+        competing neutral one.
+      -->
       <li
         class="
           flex items-center gap-1 rounded-md px-1 text-xs
-          hover:bg-sidebar-accent
-          {terms.accounts.has(key)
-            ? 'bg-sky-500/15 font-medium text-sky-700 dark:text-sky-300'
-            : ''}
-          {terms.excludedAccounts.has(key) ? 'bg-destructive/10 text-destructive line-through' : ''}
+          {searchMarkClass(searchMark(key, terms.accounts, terms.excludedAccounts), 'hover:bg-sidebar-accent')}
         "
       >
         <button

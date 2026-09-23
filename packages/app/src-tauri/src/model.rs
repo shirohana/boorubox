@@ -615,6 +615,12 @@ pub struct RatingCounts {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TagCounts {
+    /// Every tag carried by the matched set, plus — at zero, after the
+    /// carried rows — every name of the request's own query
+    /// (`include_tags`, `exclude_tags`, an `or_groups` member) that the
+    /// matched set does not carry but that a real `tags` row exists for
+    /// (design D8): a name no tag has is left out, since no menu could act
+    /// on it.
     pub tags: Vec<TagCount>,
     pub ratings: RatingCounts,
     /// Every collection in the library, counted over the matched set with the

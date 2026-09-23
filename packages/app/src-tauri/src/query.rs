@@ -11,6 +11,8 @@
 //! (`[].some()` is false, `!img.rating` is falsiness) rather than an obvious
 //! SQL one.
 
+use std::collections::{BTreeSet, HashSet};
+
 use rusqlite::functions::FunctionFlags;
 use rusqlite::types::Value;
 use rusqlite::{Connection, OptionalExtension, params_from_iter};
@@ -137,8 +139,15 @@ pub fn tag_counts(conn: &Connection, req: &SearchRequest) -> Result<TagCounts> {
     Ok(TagCounts {
         // Counted over the result *as filtered*, rating clause included: a tag
         // count answers "how many of what I am looking at also carry this",
-        // which is the narrowing move.
-        tags: Plan::for_request(req, RatingClause::Included).tag_counts(conn)?,
+        // which is the narrowing move. `zero_rows_for_request_tags` appends
+        // the request's own tag names the count left out, at zero (design
+        // D8), so a filter that emptied the result can still be undone from
+        // the sidebar.
+        tags: {
+            let counted = Plan::for_request(req, RatingClause::Included).tag_counts(conn)?;
+            let zero_rows = zero_rows_for_request_tags(conn, req, &counted)?;
+            [counted, zero_rows].concat()
+        },
         // Counted with the rating clause dropped: a pill answers "how many would
         // I get if I switched to this", which is a sideways move. Counting these
         // after the rating filter would show the selected rating's own count and
@@ -156,6 +165,44 @@ pub fn tag_counts(conn: &Connection, req: &SearchRequest) -> Result<TagCounts> {
         // pays for it.
         accounts: Plan::for_account_counts(req).account_counts(conn)?,
     })
+}
+
+/// Every name of `req.query`'s own tags — `include_tags`, `exclude_tags`, the
+/// members of `or_groups` — that `counted` does not already carry and that
+/// names a real row in `tags` (design D8). A name with no row is not a tag:
+/// no menu could act on it, so it stays out rather than showing a hopeful
+/// zero. One `SELECT … WHERE name IN (…)` over the request's own names —
+/// never over the result, however large that is.
+fn zero_rows_for_request_tags(
+    conn: &Connection,
+    req: &SearchRequest,
+    counted: &[TagCount],
+) -> Result<Vec<TagCount>> {
+    let carried: HashSet<&str> = counted.iter().map(|tag| tag.name.as_str()).collect();
+    let asked: BTreeSet<String> = req
+        .query
+        .include_tags
+        .iter()
+        .chain(req.query.exclude_tags.iter())
+        .chain(req.query.or_groups.iter().flatten())
+        .map(|name| tags::canonical(name))
+        .filter(|name| !carried.contains(name.as_str()))
+        .collect();
+    if asked.is_empty() {
+        return Ok(Vec::new());
+    }
+    let asked: Vec<String> = asked.into_iter().collect();
+    let mut stmt = conn.prepare(&format!(
+        "SELECT name FROM tags WHERE name IN ({}) ORDER BY name",
+        placeholders(asked.len())
+    ))?;
+    let names: Vec<String> = stmt
+        .query_map(params_from_iter(text_values(&asked)), |row| row.get(0))?
+        .collect::<rusqlite::Result<_>>()?;
+    Ok(names
+        .into_iter()
+        .map(|name| TagCount { name, count: 0 })
+        .collect())
 }
 
 /// One request compiled: the CTEs that name the matched set and its groups, what
@@ -2226,6 +2273,101 @@ mod tests {
         );
         assert_eq!(tag_pairs(&one_row), tag_pairs(&whole));
         assert_eq!(one_row.ratings, whole.ratings);
+    }
+
+    /// Design D8: `dog` carries nothing in this result (both its images are
+    /// filtered out), but it is a real tag and the search excludes it, so it
+    /// stays listed at zero rather than vanishing along with its count.
+    #[test]
+    fn an_excluded_tag_with_no_carrier_in_the_result_is_listed_at_zero() {
+        let fixture = fixture();
+
+        let counts = counts(
+            &fixture,
+            &request(ParsedTagSearch {
+                include_tags: vec!["cat".into()],
+                exclude_tags: vec!["dog".into()],
+                ..Default::default()
+            }),
+        );
+
+        assert_eq!(
+            tag_pairs(&counts),
+            vec![
+                ("cat".to_string(), 2),
+                ("cute".to_string(), 1),
+                ("dog".to_string(), 0),
+            ],
+            "cat/cute carried by cat-s and no-account; dog excluded but still a tag",
+        );
+    }
+
+    /// Design D8: "zzz" names no row in `tags` at all, so it is left out
+    /// entirely — not even at zero — since no menu could act on it.
+    #[test]
+    fn a_search_term_naming_no_tag_at_all_is_absent() {
+        let fixture = fixture();
+
+        let counts = counts(
+            &fixture,
+            &request(ParsedTagSearch {
+                include_tags: vec!["zzz".into()],
+                ..Default::default()
+            }),
+        );
+
+        assert!(
+            tag_pairs(&counts).is_empty(),
+            "\"zzz\" matches no image and names no tag row",
+        );
+    }
+
+    /// Design D8: an or-group can name a tag that exists (pinned, so its row
+    /// outlives the image that once carried it) but that no image in the
+    /// result carries — it is still a real tag, so it is listed at zero
+    /// alongside the group's other member.
+    #[test]
+    fn an_or_group_member_that_exists_but_has_no_carrier_in_the_result_is_at_zero() {
+        let fixture = fixture();
+        crate::tags::link_tag(&fixture.library.conn, "cat-s", "empty").unwrap();
+        crate::tags::set_pinned(&fixture.library, "empty", true).unwrap();
+        crate::tags::update_tags(
+            &fixture.library,
+            "cat-s",
+            &["cat".to_string(), "cute".to_string()],
+        )
+        .unwrap();
+
+        let counts = counts(
+            &fixture,
+            &request(ParsedTagSearch {
+                or_groups: vec![vec!["cat".into(), "empty".into()]],
+                ..Default::default()
+            }),
+        );
+
+        assert!(
+            tag_pairs(&counts).contains(&("empty".to_string(), 0)),
+            "empty is pinned (a real row) but no image carries it any more",
+        );
+    }
+
+    /// Design D8: a queried name the result does carry must not also show up
+    /// as a zero row — one row per name, not two.
+    #[test]
+    fn a_queried_tag_with_a_carrier_is_counted_once_not_twice() {
+        let fixture = fixture();
+
+        let counts = counts(
+            &fixture,
+            &request(ParsedTagSearch {
+                include_tags: vec!["cat".into()],
+                ..Default::default()
+            }),
+        );
+
+        let cat_rows = counts.tags.iter().filter(|tag| tag.name == "cat").count();
+        assert_eq!(cat_rows, 1);
     }
 
     #[test]

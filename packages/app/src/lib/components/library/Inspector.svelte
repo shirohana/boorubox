@@ -5,14 +5,16 @@
   // one component (slots Inspector · tags and Inspector · rating, design D17).
   import type { ImageRecord, Rating, TagCount } from '@boorubox/shared'
   import type { SearchResults, Selection } from '$lib/api'
+  import { tick } from 'svelte'
   import { collectionRemove, collections, errorText, selectionTagCounts, vocabulary } from '$lib/api'
   import PostedLabel from '$lib/components/booru/PostedLabel.svelte'
   import UploadAction from '$lib/components/booru/UploadAction.svelte'
   import PencilIcon from '@lucide/svelte/icons/pencil'
+  import PinIcon from '@lucide/svelte/icons/pin'
   import CollectionNameDialog from '$lib/components/common/CollectionNameDialog.svelte'
   import ExternalLink from '$lib/components/common/ExternalLink.svelte'
   import RatingControl from '$lib/components/tags/RatingControl.svelte'
-  import { CATEGORY_TEXT_CLASS } from '$lib/components/tags/categories'
+  import { CATEGORY_TEXT_CLASS, searchMark, searchMarkClass, SEARCH_MARK_CLASS } from '$lib/components/tags/categories'
   import TagInput from '$lib/components/tags/TagInput.svelte'
   import TagVocabularyMenuItems from '$lib/components/tags/TagVocabularyMenuItems.svelte'
   import { Badge } from '$lib/components/ui/badge'
@@ -21,7 +23,7 @@
   import * as DropdownMenu from '$lib/components/ui/dropdown-menu'
   import { Input } from '$lib/components/ui/input'
   import { formatBytes, formatTimestamp } from '$lib/domain/format'
-  import { CATEGORY_ORDER } from '$lib/domain/tag-categories'
+  import { groupByCategory } from '$lib/domain/tag-categories'
   import { editorText } from '$lib/domain/tag-input'
   import {
     activeTerms,
@@ -43,7 +45,7 @@
 
   /**
    * How many of a multi-selection the header draws. One constant, no spec:
-   * design D7 leaves the number to be judged against a real selection.
+   * `selection-and-bulk` design D7 leaves the number to be judged against a real selection.
    */
   const PREVIEW_LIMIT = 12
 
@@ -54,8 +56,8 @@
     results: SearchResults
     /**
      * Slot Inspector · header: two or more selected replaces the identity block
-     * with the count and a thumbnail strip (design D7). One selected shows that
-     * image's full panel (spec `selection`), which is not always the focused one:
+     * with the count and a thumbnail strip (`selection-and-bulk` design D7). One selected
+     * shows that image's full panel (spec `selection`), which is not always the focused one:
      * a multi-select click that deselects leaves the focus on the card it cleared.
      *
      * Absent inside the viewer, which shows one image and neither reads nor
@@ -128,7 +130,10 @@
     selection && multi ? selection.previewIds(PREVIEW_LIMIT, (index) => results.at(index)?.id) : [],
   )
 
-  /** The one selected id, whichever representation the selection is in (design D2). */
+  /**
+   * The one selected id, whichever representation the selection is in
+   * (`inspector-polish` design D2).
+   */
   const only = $derived(
     selection?.count === 1
       ? selection.previewIds(1, (index) => results.at(index)?.id)[0]
@@ -155,7 +160,7 @@
   }
 
   /**
-   * A thumbnail in the strip is a control, not a picture (design D7, amended):
+   * A thumbnail in the strip is a control, not a picture (`selection-and-bulk` design D7, amended):
    * pressing it opens the image, and its own button takes it back out of the
    * selection. The row is looked up here because the strip has ids and the
    * viewer opens at a row.
@@ -169,16 +174,16 @@
   const origin = $derived(
     image ? (image.sourceRef ? `${image.source} · ${image.sourceRef}` : image.source) : '',
   )
-  /** `sortTags` is the only tag order, applied at render (design D4). */
+  /** `sortTags` is the only tag order, applied at render (`tags-and-ratings` design D4). */
   const tags = $derived(image ? sortTags(image.tags) : [])
   /**
-   * The read-mode badge list's own order (design D7): `CATEGORY_ORDER`, then
-   * `sortTags` within a group — the same grouping `editorText` lines the
-   * editor with, over the badges instead of a string.
+   * The read-mode tag list's own grouping (`tag-vocabulary` design D7),
+   * ordered per `tag-panel-polish` design D1: `groupByCategory` — the same
+   * grouping `editorText` lines the editor with, over the tag list instead
+   * of a string.
    */
   const groupedTags = $derived(
-    CATEGORY_ORDER.flatMap((category) =>
-      sortTags(tags.filter((tag) => vocabulary.categoryOf(tag) === category))),
+    groupByCategory(tags, (tag) => tag, vocabulary.categoryOf).flatMap((group) => group.items),
   )
   /** Design D3: the same reader the sidebar uses, so a tag's marking agrees. */
   const terms = $derived(activeTerms(tagQuery))
@@ -204,15 +209,15 @@
   let saving = $state(false)
   let error = $state<string | null>(null)
 
-  // Read-first (design D7): the tag area opens on the badge list, and the
+  // Read-first (`tag-vocabulary` design D7): the tag area opens on the tag list, and the
   // field appears only once Edit is used — the facts form's own pattern.
   let editingTags = $state(false)
 
   // The editor follows the record: another image, or the same one after a write.
   // `updatedAt` is what a save moves, so the text comes back sorted from the row
-  // that was stored rather than from what was typed (design D4). Gated on
+  // that was stored rather than from what was typed (`tags-and-ratings` design D4). Gated on
   // `editingTags` so a capture arriving mid-edit does not overwrite the typed
-  // text (design D7) — the field's own draft is seeded fresh by `startEditTags`
+  // text (`tag-vocabulary` design D7) — the field's own draft is seeded fresh by `startEditTags`
   // on every open instead, which reads the current tags regardless of `shown`.
   let shown = ''
   $effect(() => {
@@ -229,6 +234,8 @@
     draft = editorText(tags, vocabulary.categoryOf)
     error = null
     editingTags = true
+    // The field mounts on the flag above, so it is not there yet to focus.
+    void tick().then(() => tagInput?.focusEnd())
   }
 
   function cancelEditTags() {
@@ -247,7 +254,18 @@
     cancelEditTags()
   }
 
-  // The facts form (design D3): editing state, one field per row. Kept apart
+  /**
+   * Escape from anywhere else in the editor block — a refused save leaves
+   * the focus on the Save button, and an editor that only cancels from its
+   * textarea reads as stuck there. The textarea's own Escape is left to
+   * `TagInput` (`onescape` above), which closes the suggestion list first.
+   */
+  function onEditorKeydown(event: KeyboardEvent) {
+    if (event.key !== KEY_ESCAPE || event.target instanceof HTMLTextAreaElement) return
+    onTagsEscape(event)
+  }
+
+  // The facts form (`editable-info` design D3): editing state, one field per row. Kept apart
   // from the tag editor's `draft` above — a facts save does not touch tags and
   // must not reset that editor's dirty text.
   let editingFacts = $state(false)
@@ -257,7 +275,7 @@
   let factsSaving = $state(false)
   let factsError = $state<string | null>(null)
 
-  // Changing the described image discards the facts draft (design D3): the
+  // Changing the described image discards the facts draft (`editable-info` design D3): the
   // image it was for is gone from the panel. Keyed on the id alone, not
   // `updatedAt` — a save's own record replacement must not blow away the
   // "leave editing mode" that just happened, and no other write touches facts.
@@ -286,7 +304,7 @@
 
   /**
    * Saves the title and the two addresses. `onrelease` fires only on success
-   * (design D3, the same rule `write` follows below): a refused address keeps
+   * (`editable-info` design D3, the same rule `write` follows below): a refused address keeps
    * the form open with the typed text so it can be fixed.
    */
   async function saveFacts() {
@@ -309,7 +327,7 @@
   }
 
   /**
-   * Enter saves, Escape cancels (design D3) — both `preventDefault`, since
+   * Enter saves, Escape cancels (`editable-info` design D3) — both `preventDefault`, since
    * inside the viewer a native `<dialog>` would otherwise close on the same
    * Escape (`Lightbox.svelte`'s `onkeydown` stands down once the key event
    * already has a default prevented). `stopPropagation` on Escape too, so nothing
@@ -327,9 +345,9 @@
   }
 
   /**
-   * A tag save or removal, from the editor, the badge menu or a pinned chip.
-   * `onrelease` fires only on success (design D1): a failed save leaves the
-   * editor open with the reason (design D7) rather than closing over it —
+   * A tag save or removal, from the editor, a tag's context menu or a pinned chip.
+   * `onrelease` fires only on success (`inspector-polish` design D1): a failed save leaves the
+   * editor open with the reason (`tag-vocabulary` design D7) rather than closing over it —
    * `submitFromEditor`'s own conditional blur below reads the same success.
    */
   async function write(tags: string[]) {
@@ -374,7 +392,7 @@
     await results.saveRating(image.id, rating)
   }
 
-  /** This image's own collections, for the "Add to…" menu's checkmark (design D8). */
+  /** This image's own collections, for the "Add to…" menu's checkmark (`collections` design D8). */
   const ownCollections = $derived(image ? new Set(image.collections) : null)
   let collectionsError = $state<string | null>(null)
 
@@ -384,7 +402,7 @@
 
   /**
    * A collection write from either the "Add to…" menu or one badge's "Remove
-   * from this collection" (design D8): the written records replace their
+   * from this collection" (`collections` design D8): the written records replace their
    * rows, the same `replace` a tag or rating save uses, and the keyboard goes
    * back the way every other panel write hands it back.
    */
@@ -419,14 +437,14 @@
   const remove = (tag: string) => write(tags.filter((other) => other !== tag))
 
   /**
-   * A pinned chip over one image (design D8): the same whole-set write the
-   * editor's save makes, so the badge list, the sidebar and `updatedAt`
+   * A pinned chip over one image (`tag-vocabulary` design D8): the same whole-set write the
+   * editor's save makes, so the tag list, the sidebar and `updatedAt`
    * follow exactly as they do for a save.
    */
   const togglePinned = (tag: string) => write(toggledTag(tags, tag))
 
   /**
-   * The chip's tri-state over a selection (design D8), read from
+   * The chip's tri-state over a selection (`tag-vocabulary` design D8), read from
    * `selectionTagCounts` asked for exactly the pinned names — the bulk
    * dialog's own command, narrowed by the `names` filter it gained for this.
    *
@@ -513,7 +531,7 @@
   })
 
   /**
-   * A pinned chip's activation over a selection (design D8): add unless every
+   * A pinned chip's activation over a selection (`tag-vocabulary` design D8): add unless every
    * selected image already carries the tag, else remove it from all of them —
    * `onedit` is the screen's `editSelectionTags`, which asks first past one
    * image (`pending-write.ts`'s `edit` kind). Ignored while `pinnedCounts` is
@@ -543,20 +561,26 @@
 </script>
 
 <!--
-  A pinned tag's chip (design D8), one image's membership or a selection's
+  A pinned tag's chip (`tag-vocabulary` design D8), one image's membership or a selection's
   tri-state alike — `state` is `'all' | 'some' | 'none'` either way, `'some'`
   only ever reached from a selection. Always drawn `secondary`: `default`'s
   `bg-primary` is near-white in dark mode, and `CATEGORY_TEXT_CLASS`'s
-  amber/violet/red/green text loses its contrast against it. The fill state
-  is a solid ring (`all`) or a dashed outline (`some`, Tailwind's `ring-*`
-  utilities have no dashed style, so `some` uses `outline-*` instead) rather
-  than a background, so it never competes with the category colour, which
-  stays the text's alone on the muted background either way. `aria-pressed`
-  carries the same tri-state for assistive tech, since a plain boolean
-  cannot say "some". Its menu is
-  `TagVocabularyMenuItems` unchanged: a pinned chip's tag reads
-  `vocabulary.isPinned` true by construction, so only Unpin renders, never a
-  second Pin item to suppress.
+  amber/violet/red/green/blue text loses its contrast against it. The fill
+  state is the pin itself: solid (`fill-current`) while the image carries
+  the tag, an outline while it does not, half-solid over a selection that
+  is split — a ring alone was unreadable at 1× (smoke run, 2026-09-24). A
+  faint foreground tint and a ring (`all`) or a dashed outline (`some`,
+  Tailwind's `ring-*` utilities have no dashed style, so `some` uses
+  `outline-*` instead) back the pin up without competing with the category
+  colour, which stays the text's alone on the muted background either way.
+  `aria-pressed` carries the same tri-state for assistive tech, since a
+  plain boolean cannot say "some". The pin glyph (`tag-vocabulary` design
+  D6, `tag-panel-polish` design D6) is what marks this a control rather than
+  one of the image's tags, now that the image's own tags are plain text
+  (design D3) and this chip is the only pill-shaped thing left in the
+  section. Its menu is `TagVocabularyMenuItems` unchanged: a pinned chip's
+  tag reads `vocabulary.isPinned` true by construction, so only Unpin
+  renders, never a second Pin item to suppress.
 -->
 {#snippet pinnedChip(tag: string, state: FillState, onactivate: () => void)}
   <li>
@@ -572,11 +596,19 @@
             <Badge
               variant="secondary"
               class="
-                {state === 'all' ? 'ring-1 ring-foreground/40' : ''}
+                flex items-center gap-1
+                {state === 'all' ? 'bg-foreground/10 ring-1 ring-foreground/60' : ''}
                 {state === 'some' ? 'outline-1 outline-foreground/40 outline-dashed' : ''}
                 {CATEGORY_TEXT_CLASS[vocabulary.categoryOf(tag)]}
               "
             >
+              <PinIcon
+                class="
+                  size-3 shrink-0
+                  {state === 'all' ? 'fill-current' : ''}
+                  {state === 'some' ? 'fill-current [fill-opacity:0.4]' : ''}
+                "
+              />
               {tag}
             </Badge>
           </button>
@@ -670,6 +702,39 @@
 
       <dt class="text-muted-foreground">Source</dt>
       <dd class="wrap-break-word">{origin}</dd>
+
+      {#if image.account}
+        {@const account = image.account}
+        <!--
+          Spec `tag-editing`, "An X account on screen is a search term": a
+          fact of the page address, beside Page, not among the tags — with
+          artist tags in the vocabulary a handle there read as a second
+          artist (design D4). Read the same in both `editingFacts` states:
+          the address being edited is the draft, but the account is derived
+          from the stored one, so this row does not flip with the form. No
+          colour of its own (blue is general's now, design D2) — the padded,
+          hoverable box and the pointer cursor are what say it is a control,
+          not a fact to merely read (owner, 2026-09-24: the row did not look
+          clickable). `searchMarkClass` (design D3, amended again
+          2026-09-24) supplies `hover:bg-accent` only while the row carries
+          no tint, so hovering an active account keeps its mark instead of
+          losing it to a competing neutral hover.
+        -->
+        <dt class="text-muted-foreground">Account</dt>
+        <dd>
+          <button
+            type="button"
+            class="
+              cursor-pointer rounded-md px-1 py-0.5 text-foreground
+              {searchMarkClass(searchMark(account, terms.accounts, terms.excludedAccounts), 'hover:bg-accent')}
+            "
+            title="Search for this account"
+            onclick={() => query(toggleAccountInQuery(tagQuery, account))}
+          >
+            @{account}
+          </button>
+        </dd>
+      {/if}
 
       <dt class="text-muted-foreground">Page</dt>
       {#if editingFacts}
@@ -777,9 +842,10 @@
           A textarea, capped so a heavily tagged image does not push the rest
           of the panel off screen; past the cap it scrolls. Save and Cancel
           sit under it, not beside: beside a field that grows they would hang
-          in the margin (design D7, the facts form's own layout).
+          in the margin (`tag-vocabulary` design D7, the facts form's own layout).
         -->
-        <div class="mt-2 flex flex-col gap-2">
+        <!-- svelte-ignore a11y_no_static_element_interactions -->
+        <div class="mt-2 flex flex-col gap-2" onkeydown={onEditorKeydown}>
           <TagInput
             bind:this={tagInput}
             bind:value={draft}
@@ -800,7 +866,7 @@
       {:else if vocabulary.pinned.length > 0}
         <!--
           Design D8: one activation writes the whole toggled set through
-          `write`, the same path the editor's own save makes — so the badge
+          `write`, the same path the editor's own save makes — so the tag
           list, the sidebar and `updatedAt` follow exactly as they do for a
           save. Only in read mode: a chip write mid-edit would fight the
           open draft, replacing tags the field has not saved yet.
@@ -819,30 +885,6 @@
         <p class="mt-2 text-xs text-destructive">{vocabulary.error}</p>
       {/if}
 
-      {#if image.account}
-        {@const account = image.account}
-        <!--
-          Spec `tag-editing`, "An X account on screen is a search term": its
-          own row, above the tags, so it reads as a filter and not a tag
-          (design D4). Blue while inactive; the tag marking below once it is
-          part of the query, so "in the search" looks the same everywhere.
-        -->
-        <button
-          type="button"
-          class="
-            mt-2 rounded-md px-1.5 py-0.5 text-xs font-medium
-            {terms.accounts.has(account)
-              ? 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-300'
-              : terms.excludedAccounts.has(account)
-              ? 'bg-destructive/10 text-destructive line-through'
-              : 'bg-sky-500/15 text-sky-700 dark:text-sky-300'}
-          "
-          onclick={() => query(toggleAccountInQuery(tagQuery, account))}
-        >
-          {account}
-        </button>
-      {/if}
-
       {#if !editingTags}
         {#if tags.length === 0}
           <p class="mt-2 text-xs text-muted-foreground">No tags</p>
@@ -851,13 +893,22 @@
             Every tag on screen is a search term (spec `tag-editing`): a click
             puts it in the query or takes it out, and the menu offers the
             other two things one can do to a tag, plus the vocabulary group
-            (`tag-vocabulary` design D9). The search marking is `activeTerms`'
-            (design D3), the sidebar's own colours, on the background only —
-            the text is the tag's category colour either way (design D6), so
-            the two stay visible together on a coloured tag. Grouped by
-            category (design D7): `groupedTags` above.
+            (`tag-vocabulary` design D9). Plain text, not a pill (design D3):
+            a pill's own fill competed with the marking that says a tag is in
+            the search. `rounded-md px-1 py-0.5` give the text a real box, so
+            `SEARCH_MARK_CLASS`'s background (design D3, amended
+            `tag-panel-polish` 2026-09-24 — no underline, no strike-through)
+            has something to tint beside `CATEGORY_TEXT_CLASS`'s category
+            colour, rather than replacing it. `searchMarkClass` (amended
+            again 2026-09-24) supplies `hover:bg-accent` only for a tag with
+            no mark, so an active or excluded tag keeps its own hover instead
+            of losing it to a competing neutral one. `cursor-pointer`
+            (`Button`'s own default, Tailwind 4 preflight otherwise leaves a
+            `<button>` at `cursor: default`): every clickable text in the
+            panel admits it. Grouped by category (`tag-vocabulary` design
+            D7): `groupedTags` above.
           -->
-          <ul class="mt-2 flex flex-wrap gap-1">
+          <ul class="mt-2 flex flex-wrap gap-x-2">
             {#each groupedTags as tag (tag)}
               <li>
                 <ContextMenu.Root>
@@ -866,21 +917,14 @@
                       <button
                         type="button"
                         {...props}
+                        class="
+                          cursor-pointer rounded-md px-1 py-0.5 text-xs
+                          {CATEGORY_TEXT_CLASS[vocabulary.categoryOf(tag)]}
+                          {searchMarkClass(searchMark(tag, terms.included, terms.excluded), 'hover:bg-accent')}
+                        "
                         onclick={() => query(toggleTagInQuery(tagQuery, tag))}
                       >
-                        <Badge
-                          variant="secondary"
-                          class="
-                            {terms.included.has(tag)
-                              ? 'bg-emerald-500/15'
-                              : terms.excluded.has(tag)
-                              ? 'bg-destructive/10 line-through'
-                              : ''}
-                            {CATEGORY_TEXT_CLASS[vocabulary.categoryOf(tag)]}
-                          "
-                        >
-                          {tag}
-                        </Badge>
+                        {tag}
                       </button>
                     {/snippet}
                   </ContextMenu.Trigger>
@@ -919,9 +963,12 @@
 
         {#if image.collections.length > 0}
           <!--
-            Each acts as a search term with the same marking the tag list uses
-            (spec "Shown in the inspector"): `terms` is `activeTerms`'s own
-            reader, shared with the sidebar section.
+            Each acts as a search term with the one marking style every
+            search-term reader uses (design D3: `SEARCH_MARK_CLASS` over
+            `searchMark`'s result), so a collection reads the same "in the
+            search" cue as a tag or the account row rather than its own
+            inline colours — `terms` is `activeTerms`'s own reader, shared
+            with the sidebar section.
           -->
           <ul class="flex flex-wrap gap-1">
             {#each image.collections as collectionId (collectionId)}
@@ -939,11 +986,13 @@
                         >
                           <Badge
                             variant="secondary"
-                            class={terms.collections.has(collectionSlug)
-                              ? 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-300'
-                              : terms.excludedCollections.has(collectionSlug)
-                              ? 'bg-destructive/10 text-destructive line-through'
-                              : ''}
+                            class={SEARCH_MARK_CLASS[
+                              searchMark(
+                                collectionSlug,
+                                terms.collections,
+                                terms.excludedCollections,
+                              )
+                            ]}
                           >
                             {collection.name}
                           </Badge>
@@ -1058,7 +1107,7 @@
 
 <!--
   Outside the menu above — see `collection-actions.ts` for why a dialog cannot
-  live inside one, and design D8 for why creating here also adds.
+  live inside one, and `collections` design D8 for why creating here also adds.
 -->
 <CollectionNameDialog
   collection={null}

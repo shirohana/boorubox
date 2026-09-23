@@ -4,8 +4,8 @@
 // component is untested by construction.
 
 import type { TagCategory } from '@boorubox/shared'
-import { parseTagSearch, sortTags } from './tag-utils'
-import { CATEGORY_ORDER } from './tag-categories'
+import { parseTagSearch } from './tag-utils'
+import { groupByCategory } from './tag-categories'
 
 /** Rows the popover offers at once — the legacy viewer showed eight. */
 export const SUGGESTION_LIMIT = 8
@@ -79,6 +79,25 @@ export function suggestionPrefix(value: string, caret: number): string | null {
 }
 
 /**
+ * Whether a field that has just gained focus should ask for suggestions at
+ * all (`TagInput`'s `onfocus`). An empty prefix lists the vocabulary's
+ * most-used tags (`initialHighlight`'s own comment) — a real feature while
+ * typing, through `oninput`, but not what a fresh focus asked for: the
+ * inspector's `focusEnd` (design D5) lands the caret on the empty token
+ * `editorText`'s trailing space leaves, and opening the editor is not a
+ * request to see the library's whole vocabulary. Gating here, before
+ * `suggest` is ever called, rather than dropping a completed answer after
+ * the fact, is what keeps a failed or slow request from racing a later one
+ * — there is no in-flight request to race in the first place. A caret
+ * parked in the middle of a partly typed word still suggests: only an
+ * empty prefix is gated, not `onfocus` itself.
+ */
+export function suggestsOnFocus(value: string, caret: number): boolean {
+  const prefix = suggestionPrefix(value, caret)
+  return prefix !== null && prefix.length > 0
+}
+
+/**
  * Drops the tags the input already names — including the one being typed, so an
  * exact match never offers itself — and caps what is left. SQL matched the
  * prefix; the parser is the only thing that can read a query string (design
@@ -148,8 +167,8 @@ export function completeToken(value: string, caret: number): TagInputText {
 
 /**
  * The text an image's tag editor opens with (`tag-vocabulary` design D6, D7):
- * one line per category that has any tag, in `CATEGORY_ORDER`, `sortTags`
- * within a line, and a space after the very last tag so the caret a click
+ * one line per category that has any tag (`groupByCategory`, `tag-panel-polish`
+ * design D1/D7), and a space after the very last tag so the caret a click
  * puts at the end is already on a new token. Without it the first thing
  * typed glued itself to the last tag and the owner had to type the space by
  * hand on every edit — and a click into the editor means a tag is about to
@@ -161,10 +180,7 @@ export function completeToken(value: string, caret: number): TagInputText {
  */
 export function editorText(tags: string[], categoryOf: (name: string) => TagCategory): string {
   if (tags.length === 0) return ''
-  const lines = CATEGORY_ORDER
-    .map((category) => sortTags(tags.filter((tag) => categoryOf(tag) === category)))
-    .filter((line) => line.length > 0)
-    .map((line) => line.join(' '))
+  const lines = groupByCategory(tags, (tag) => tag, categoryOf).map((group) => group.items.join(' '))
   return `${lines.join('\n')} `
 }
 

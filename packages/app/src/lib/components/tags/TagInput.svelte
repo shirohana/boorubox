@@ -17,6 +17,7 @@
     moveHighlight,
     SUGGESTION_FETCH,
     suggestionPrefix,
+    suggestsOnFocus,
     type TagInputText,
   } from '$lib/domain/tag-input'
   import {
@@ -87,6 +88,25 @@
    */
   export function blur() {
     field?.blur()
+  }
+
+  /**
+   * Puts the caret at the end of the field's text (design D5): the inspector's
+   * `startEditTags` calls this once the field has mounted, so opening the
+   * editor puts the caret on the fresh token `editorText`'s trailing space
+   * leaves, rather than at the start where a click would land it.
+   *
+   * `field.focus()` above fires the field's own `onfocus`, which reads the
+   * caret before the line below moves it — often 0, on a value that ends in
+   * `editorText`'s trailing space either way, so the token there is always
+   * empty. `suggestsOnFocus` (below, `onfocus`'s own guard) is what keeps
+   * that from opening the list unasked: left open, the first `Escape` would
+   * close the popover instead of cancelling the edit (`onescape` only fires
+   * once the list is already closed).
+   */
+  export function focusEnd() {
+    field?.focus()
+    field?.setSelectionRange(value.length, value.length)
   }
   let open = $state(false)
   let suggestions = $state<string[]>([])
@@ -200,7 +220,9 @@
       oninput?.()
       void refresh()
     },
-    'onfocus': () => void refresh(),
+    'onfocus': () => {
+      if (suggestsOnFocus(value, caretNow())) void refresh()
+    },
     'onblur': close,
     onkeydown,
   } as const)

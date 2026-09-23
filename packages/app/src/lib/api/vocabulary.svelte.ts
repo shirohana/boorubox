@@ -1,6 +1,6 @@
 // The library's tag vocabulary, for every place that reads "what category is
 // this tag, and is it pinned" (`tag-vocabulary` design D5): the inspector's
-// badges, the pinned chips, the sidebar's tag list and the editor's
+// tags, the pinned chips, the sidebar's tag list and the editor's
 // suggestion popover. One store, the shape of `collections.svelte.ts`, so
 // those readers cannot disagree about a tag's colour a moment after its
 // category changed.

@@ -1,11 +1,4 @@
-# tag-vocabulary Specification
-
-## Purpose
-The library's tag vocabulary: what a tag is beyond its name — its category and whether it is
-pinned — how a category is given and changed, and how the vocabulary outlives the images that
-carry it.
-
-## Requirements
+## MODIFIED Requirements
 
 ### Requirement: Every tag has one category
 Every tag in the library SHALL belong to exactly one of five categories — artist, copyright,
@@ -39,50 +32,6 @@ pin over none.
 #### Scenario: An older library
 - **WHEN** a library holding `Tagme` (artist, on image A) and `tagme` (meta, pinned, on image B) is opened
 - **THEN** it holds one tag `tagme`, meta, pinned, carried by A and B
-
-### Requirement: A prefix creates a tag under a category
-In every place tags are typed to be stored — the inspector's editor, the bulk edit's add
-list, a rule's tags — a token of the form `artist:name`, `copyright:name`, `character:name`,
-`meta:name` or `general:name` (case-insensitive prefix) SHALL tag the image `name` and, when
-no tag named `name` exists, SHALL create it under that category. When `name` already exists
-under the same category the token SHALL be accepted as the plain tag `name`. When `name`
-already exists under a different category the whole save SHALL be refused with a reason that
-names the tag and both categories, and nothing SHALL change. The prefix SHALL never change
-the category of an existing tag. A rule applied at capture time SHALL NOT refuse the capture
-over such a conflict: it SHALL link the existing tag as it is.
-
-#### Scenario: Creating an artist
-- **WHEN** no tag `kantoku` exists and the user saves `artist:kantoku 1girl`
-- **THEN** the image carries `kantoku` and `1girl`, `kantoku` is an artist tag, and `1girl` is general
-
-#### Scenario: An existing artist, tagged plainly
-- **WHEN** `kantoku` is an artist tag and the user saves `kantoku`
-- **THEN** the image carries `kantoku` and it is still an artist tag
-
-#### Scenario: An existing artist, tagged with the prefix
-- **WHEN** `kantoku` is an artist tag and the user saves `artist:kantoku`
-- **THEN** the save is accepted exactly as `kantoku` would be
-
-#### Scenario: A conflict
-- **WHEN** `cat` is a general tag and the user saves `artist:cat 1girl`
-- **THEN** the save is refused with a reason naming `cat`, that it is general, and that it cannot become an artist tag, and the image's tags are unchanged
-
-#### Scenario: A conflict in a bulk edit
-- **WHEN** `cat` is a general tag and the user adds `artist:cat` to a selection of fifty
-- **THEN** the edit is refused with the same reason and no image of the fifty is changed
-
-#### Scenario: A conflict in a rule at capture time
-- **WHEN** `cat` is a general tag and a rule's tags read `artist:cat`, and a capture matches the rule
-- **THEN** the capture succeeds carrying `cat`, and `cat` is still general
-
-### Requirement: A category is changed where the tag is shown
-The context menu of a tag — in the sidebar's tag list and on the inspector's tag badges —
-SHALL offer the five categories with the current one marked, and choosing one SHALL change the
-tag's category everywhere it is shown, without touching any image's tag set.
-
-#### Scenario: From the sidebar
-- **WHEN** the user opens the context menu of `azur_lane` in the sidebar and chooses Copyright
-- **THEN** `azur_lane` is drawn in the copyright colour in the sidebar, in every inspector badge and in the suggestion list
 
 ### Requirement: Tags are coloured by category where they are read
 Wherever a stored tag is displayed as text to be read — the inspector's tag list, the
@@ -137,17 +86,3 @@ image would be written.
 #### Scenario: Nothing pinned
 - **WHEN** no tag is pinned
 - **THEN** the inspector draws no pinned row and no heading for one
-
-### Requirement: The vocabulary outlives its carriers
-A tag that is not general, or is pinned, SHALL stay in the library's vocabulary when no image
-carries it any more, keeping its category and its pin, and SHALL be offered by the editor's
-suggestions. A general, unpinned tag SHALL leave the vocabulary with its last carrier, as it
-does today.
-
-#### Scenario: An artist's last image is trashed and deleted
-- **WHEN** `kantoku` is an artist tag on one image and that image is deleted for good
-- **THEN** `kantoku` is still an artist tag and is still suggested when `kan` is typed
-
-#### Scenario: A general tag's last image
-- **WHEN** `bench` is general and unpinned on one image and that tag is removed from it
-- **THEN** `bench` is no longer suggested

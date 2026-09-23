@@ -155,6 +155,15 @@ stays on the background (`bg-emerald-500/15`, `bg-destructive/10 line-through`),
 visible on a coloured tag. The hex-precise Danbooru palette is not copied: Tailwind's steps
 are what the rest of the app is drawn in, and the owner asked for a design for this app.
 
+*Amended (tag-panel-polish, 2026-09-24):* general is now coloured too —
+`text-blue-600 dark:text-blue-400`, Danbooru's own hue for it. Both reasons above have
+ended: blue stopped being spoken for the moment the account entry left the tag area for a
+facts row of its own (`tag-panel-polish` design D4), and the owner's taste call for that
+pass is that colouring the majority is the point of a Danbooru-style panel, not a problem —
+the four minority colours are still found by their hue, not by general's absence of one.
+`CATEGORY_ORDER` is amended in the same change, to `artist, copyright, character, general,
+meta` (`tag-panel-polish` design D1); this D6 keeps only the colour and label decision.
+
 `domain/tag-input.ts`: `editorText(tags, categoryOf)` groups by `CATEGORY_ORDER`, sorts each
 group with `sortTags`, joins groups with `\n` and tags with a space, and ends with a space
 (or with nothing for no tags), so the trailing-space rule of the existing tests holds per file.

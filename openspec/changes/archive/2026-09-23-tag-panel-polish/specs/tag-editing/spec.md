@@ -1,10 +1,4 @@
-# tag-editing Specification
-
-## Purpose
-Giving one image its tags: an editor beside the image that suggests what the library already
-uses, keeps the set clean and sorted, and turns any tag on screen into a search term.
-
-## Requirements
+## MODIFIED Requirements
 
 ### Requirement: The tags of one image can be edited
 The app SHALL let the user change the tags of the image currently shown in the inspector,
@@ -68,75 +62,6 @@ break SHALL count as a space. The space is not a change: a save trims.
 #### Scenario: An edit that names no image
 - **WHEN** the panel describes no image
 - **THEN** no tag editor is on screen
-
-### Requirement: A rating written as a tag sets the rating
-A tag of the form `rating:g`, `rating:s`, `rating:q` or `rating:e` SHALL set the image's
-rating rather than being stored as a tag, matching what the legacy library did with the same
-text. Any other tag beginning with `rating:` SHALL be stored as an ordinary tag.
-
-#### Scenario: Rating typed among the tags
-- **WHEN** the user saves the tags `cat rating:s`
-- **THEN** the image carries the tag `cat`, no tag named `rating:s`, and its rating is `s`
-
-#### Scenario: Not a rating
-- **WHEN** the user saves a tag `rating:unknown`
-- **THEN** it is stored as a tag and the image's rating is unchanged
-
-### Requirement: The editor suggests tags the library already uses
-While a tag is being typed the app SHALL offer tags already used in the library that begin
-with what has been typed, most used first, excluding tags already present in the input, each
-drawn in its category's colour. It SHALL NOT offer anything while the token being typed is a
-metatag or the `or` operator of the query language, nor while it begins with a category
-prefix. Accepting a suggestion SHALL replace the token being typed, preserving a leading `-`
-when the token has one.
-
-#### Scenario: Prefix
-- **WHEN** the library uses `cat`, `cathedral` and `dog`, and the user types `cat`
-- **THEN** `cathedral` is offered and `dog` is not
-
-#### Scenario: Already typed
-- **WHEN** the input already holds `cat` and the user starts typing `cat` again
-- **THEN** `cat` is not offered
-
-#### Scenario: Inside a metatag
-- **WHEN** the token being typed is `rating:` or `or`
-- **THEN** no suggestions appear
-
-#### Scenario: Behind a category prefix
-- **WHEN** the token being typed is `artist:kan`
-- **THEN** no suggestions appear
-
-#### Scenario: Accepting into an exclusion
-- **WHEN** the token being typed is `-cathe` and the suggestion `cathedral` is accepted
-- **THEN** the token becomes `-cathedral`
-
-### Requirement: Confirming a tag takes two steps
-Confirming SHALL first act on what is pending, then submit: while a suggestion is highlighted
-the first confirmation SHALL accept it and finish the token — a space after the tag, or none
-if one is already there — leaving the input ready for the next tag; with an unfinished token
-and no highlighted suggestion the first confirmation SHALL finish that token the same way;
-with nothing pending it SHALL submit the input. Dismissing the suggestions SHALL leave the
-typed text untouched.
-
-#### Scenario: Accept, then submit
-- **WHEN** the user types a prefix that highlights a suggestion and confirms twice without typing anything else
-- **THEN** the first confirmation inserts the suggested tag followed by a space, and the second submits the input
-
-#### Scenario: A tag the library does not have
-- **WHEN** the user types a tag no image carries and confirms twice
-- **THEN** the typed tag is kept as written and the input is submitted
-
-#### Scenario: Dismissing
-- **WHEN** suggestions are showing and the user dismisses them
-- **THEN** the list closes, the typed text is unchanged, and the next confirmation submits
-
-### Requirement: A tag can be removed without retyping the set
-The app SHALL offer a remove action on each tag shown for an image, and SHALL apply it to
-that image alone.
-
-#### Scenario: Remove one tag
-- **WHEN** the user removes one tag of an image carrying three
-- **THEN** that image carries the other two, no other image changes, and the image's last-changed time is now
 
 ### Requirement: Tags on screen are search terms
 Every tag shown for an image SHALL be usable as a search term: acting on it SHALL add it to
