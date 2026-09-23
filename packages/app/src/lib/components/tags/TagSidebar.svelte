@@ -10,16 +10,16 @@
   import type { TagCount } from '@boorubox/shared'
   import MinusIcon from '@lucide/svelte/icons/minus'
   import PlusIcon from '@lucide/svelte/icons/plus'
-  import { vocabulary } from '$lib/api'
+  import { settings, vocabulary } from '$lib/api'
   import * as ContextMenu from '$lib/components/ui/context-menu'
-  import { groupByCategory } from '$lib/domain/tag-categories'
+  import { CATEGORY_ORDER, categoryLabel, sidebarRows } from '$lib/domain/tag-categories'
   import {
     activeTerms,
     addTagToQuery,
     excludeTagFromQuery,
     toggleTagInQuery,
   } from '$lib/domain/tag-utils'
-  import { CATEGORY_TEXT_CLASS, searchMark, searchMarkClass } from './categories'
+  import { CATEGORY_ICON, CATEGORY_TEXT_CLASS, searchMark, searchMarkClass } from './categories'
   import TagVocabularyMenuItems from './TagVocabularyMenuItems.svelte'
 
   interface Props {
@@ -40,27 +40,29 @@
   const included = $derived(terms.included)
   const excluded = $derived(terms.excluded)
 
+  // A `$derived`, never an `$effect`: `settings.current` is reassigned
+  // wholesale (CLAUDE.md). A write to an unrelated field rebuilds this and
+  // `rows` below, which is cheap enough not to guard against.
+  const hidden = $derived(new Set(settings.current?.hiddenTagCategories ?? []))
+
   /**
-   * The list's order (design D7, amended `tag-panel-polish` 2026-09-23): the
-   * tags the search includes or excludes first, then the rest — each half
-   * through `groupByCategory` (artist, copyright, character, general, meta,
-   * alphabetical inside), so "category order, alphabetical inside" is
-   * written once and applied to both halves rather than re-typed as a
-   * second comparator here. No group labels: the colour carries the
-   * grouping, same as the inspector. `tags` already carries a zero row for
-   * every name the query includes or excludes that the result does not, and
-   * leaves out a name no tag has (`tag-panel-polish` design D8) — Rust is
-   * the one place that can tell the two apart, so nothing here merges the
-   * query back in.
+   * The order and the hiding rule are `sidebarRows`'s. `tags` already carries
+   * a zero row for every name the query includes or excludes that the result
+   * does not, and leaves out a name no tag has (`tag-panel-polish` design D8)
+   * — Rust is the one place that can tell the two apart, so nothing here
+   * merges the query back in.
    */
-  const rows = $derived.by(() => {
-    if (!tags) return null
-    const isActive = (row: TagCount) => included.has(row.name) || excluded.has(row.name)
-    const ordered = (part: TagCount[]) =>
-      groupByCategory(part, (row) => row.name, vocabulary.categoryOf)
-        .flatMap((group) => group.items)
-    return [...ordered(tags.filter(isActive)), ...ordered(tags.filter((row) => !isActive(row)))]
-  })
+  const rows = $derived(
+    tags === null
+      ? null
+      : sidebarRows(
+        tags,
+        (row) => row.name,
+        (name) => included.has(name) || excluded.has(name),
+        vocabulary.categoryOf,
+        hidden,
+      ),
+  )
 </script>
 
 <!--
@@ -78,8 +80,40 @@
 <section data-sidebar="tags" class="min-h-32 flex-1 overflow-y-auto p-2">
   <h2 class="px-1 pb-1 text-xs font-medium text-muted-foreground">Tags</h2>
 
-  {#if rows && rows.length === 0}
+  <!--
+    The five category toggles (`tag-category-visibility` design D5), doubling
+    as the list's colour legend: one plain button per `CATEGORY_ORDER` entry,
+    the `RatingPills` precedent rather than the shadcn `Toggle`, which is built
+    for toolbars. Pressed means shown, so the default row is five pressed
+    buttons and a hidden category is the odd one out, as it is on screen.
+    Stays drawn while `tags` is `null` and when every category is hidden, so
+    there is always a way back.
+  -->
+  <div role="group" aria-label="Tag categories" class="flex gap-0.5 px-1 pb-1">
+    {#each CATEGORY_ORDER as category (category)}
+      {@const isHidden = hidden.has(category)}
+      {@const label = categoryLabel(category)}
+      {@const Icon = CATEGORY_ICON[category]}
+      <button
+        type="button"
+        aria-pressed={!isHidden}
+        aria-label="{label} tags"
+        title={isHidden ? `Show ${label} tags` : `Hide ${label} tags`}
+        class="
+          rounded-sm p-0.5 hover:bg-sidebar-accent {CATEGORY_TEXT_CLASS[category]}
+          {isHidden ? 'opacity-40' : ''}
+        "
+        onclick={() => void settings.setTagCategoryHidden(category, !isHidden)}
+      >
+        <Icon class="size-3" />
+      </button>
+    {/each}
+  </div>
+
+  {#if tags && tags.length === 0}
     <p class="px-1 text-xs text-muted-foreground">No tags in these results</p>
+  {:else if rows && rows.length === 0}
+    <p class="px-1 text-xs text-muted-foreground">Every tag here is in a hidden category</p>
   {:else if rows}
     <!-- No gap and half the padding: the owner wants more rows on screen (2026-09-23). -->
     <ul class="flex flex-col">

@@ -566,6 +566,12 @@ export interface AppSettings {
    * not immediately.
    */
   openLastOnLaunch: boolean
+  /**
+   * Which tag categories the sidebar's list leaves out
+   * (`tag-category-visibility` design D1): a preference of this machine, not
+   * the library, so it survives a restart. Empty until the user hides one.
+   */
+  hiddenTagCategories: TagCategory[]
 }
 
 /**

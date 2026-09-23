@@ -8,6 +8,12 @@
 // both the order and the colour can still reach them from one module.
 
 import type { TagCategory } from '@boorubox/shared'
+import type { Component } from 'svelte'
+import CopyrightIcon from '@lucide/svelte/icons/copyright'
+import InfoIcon from '@lucide/svelte/icons/info'
+import PaletteIcon from '@lucide/svelte/icons/palette'
+import TagIcon from '@lucide/svelte/icons/tag'
+import UserIcon from '@lucide/svelte/icons/user'
 
 export { CATEGORY_ORDER } from '$lib/domain/tag-categories'
 
@@ -27,6 +33,20 @@ export const CATEGORY_TEXT_CLASS: Record<TagCategory, string> = {
   character: 'text-green-600 dark:text-green-400',
   general: 'text-blue-600 dark:text-blue-400',
   meta: 'text-amber-600 dark:text-amber-300',
+}
+
+/**
+ * One glyph per category (`tag-category-visibility` design D4), the second
+ * cue beside the colour for a reader who cannot tell them apart: the sidebar's
+ * toggle row draws each icon in `CATEGORY_TEXT_CLASS[category]`. Styling, like
+ * the colours above, so it lives here rather than in `domain/tag-categories.ts`.
+ */
+export const CATEGORY_ICON: Record<TagCategory, Component> = {
+  artist: PaletteIcon,
+  copyright: CopyrightIcon,
+  character: UserIcon,
+  general: TagIcon,
+  meta: InfoIcon,
 }
 
 /** Whether a name is in the current search, ruled out by it, or neither. */

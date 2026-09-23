@@ -1,4 +1,4 @@
-import type { AppSettings, Theme } from '@boorubox/shared'
+import type { AppSettings, TagCategory, Theme } from '@boorubox/shared'
 import {
   appSettings,
   setClickZoomCeilingPercent,
@@ -7,6 +7,7 @@ import {
   setNotesCollapsed,
   setOpenLastOnLaunch,
   setShowTileTags,
+  setTagCategoryHidden,
   setTheme,
 } from './commands'
 import { errorText } from './errors'
@@ -71,6 +72,14 @@ class Settings {
    */
   async setCollectionsCollapsed(collapsed: boolean): Promise<void> {
     this.current = await setCollectionsCollapsed(collapsed)
+  }
+
+  /**
+   * Hides `category`'s tags from the sidebar's list, or shows them again
+   * (`tag-category-visibility` design D2).
+   */
+  async setTagCategoryHidden(category: TagCategory, hidden: boolean): Promise<void> {
+    this.current = await setTagCategoryHidden(category, hidden)
   }
 
   /**

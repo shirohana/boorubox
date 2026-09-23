@@ -237,6 +237,7 @@ pub fn run() {
             commands::note_set,
             commands::set_notes_collapsed,
             commands::set_collections_collapsed,
+            commands::set_tag_category_hidden,
             commands::booru_site_list,
             commands::booru_site_save,
             commands::booru_site_delete,

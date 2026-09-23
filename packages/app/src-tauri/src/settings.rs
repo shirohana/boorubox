@@ -12,7 +12,7 @@ use crate::error::{AppError, Result};
 use crate::from_tauri;
 use crate::model::{
     CLICK_ZOOM_CEILING_DEFAULT, CLICK_ZOOM_CEILING_MAX, CLICK_ZOOM_CEILING_MIN, DEFAULT_PORT,
-    GRID_TILE_DEFAULT, GRID_TILE_MAX, GRID_TILE_MIN, Theme,
+    GRID_TILE_DEFAULT, GRID_TILE_MAX, GRID_TILE_MIN, TagCategory, Theme,
 };
 
 /// Resolved against the app config dir by tauri-plugin-store.
@@ -30,6 +30,7 @@ const RECENT_LIBRARIES: &str = "recentLibraries";
 const NOTES_COLLAPSED: &str = "notesCollapsed";
 const COLLECTIONS_COLLAPSED: &str = "collectionsCollapsed";
 const OPEN_LAST_ON_LAUNCH: &str = "openLastOnLaunch";
+const HIDDEN_TAG_CATEGORIES: &str = "hiddenTagCategories";
 
 /// How many folders the recent list keeps (design D4). A bound, not a
 /// measurement: the list is there to be clicked through, and a longer one is a
@@ -64,6 +65,11 @@ pub struct Settings {
     /// file, which has never written this key, keeps today's behaviour.
     /// Off leaves the start screen showing the recent list instead.
     pub open_last_on_launch: bool,
+    /// Which tag categories the sidebar's list leaves out
+    /// (`tag-category-visibility` design D1). A preference of this machine,
+    /// not the library, so it survives a restart and is the same for every
+    /// library opened here. Empty by default — nothing hidden.
+    pub hidden_tag_categories: Vec<TagCategory>,
 }
 
 impl Default for Settings {
@@ -84,6 +90,7 @@ impl Default for Settings {
             notes_collapsed: false,
             collections_collapsed: false,
             open_last_on_launch: true,
+            hidden_tag_categories: Vec::new(),
         }
     }
 }
@@ -103,6 +110,21 @@ impl Settings {
     pub fn forget_recent(&mut self, path: &Path) {
         self.recent_libraries.retain(|known| known != path);
     }
+
+    /// Hides `category`'s tags from the sidebar's list, or shows them again
+    /// (`tag-category-visibility` design D2): hiding adds the category if it
+    /// is absent, showing removes it. Idempotent either way, so hiding an
+    /// already-hidden category keeps it hidden once, not twice.
+    pub fn set_tag_category_hidden(&mut self, category: TagCategory, hidden: bool) {
+        if hidden {
+            if !self.hidden_tag_categories.contains(&category) {
+                self.hidden_tag_categories.push(category);
+            }
+        } else {
+            self.hidden_tag_categories
+                .retain(|known| *known != category);
+        }
+    }
 }
 
 impl From<&Settings> for crate::model::AppSettings {
@@ -115,6 +137,7 @@ impl From<&Settings> for crate::model::AppSettings {
             notes_collapsed: settings.notes_collapsed,
             collections_collapsed: settings.collections_collapsed,
             open_last_on_launch: settings.open_last_on_launch,
+            hidden_tag_categories: settings.hidden_tag_categories.clone(),
         }
     }
 }
@@ -207,6 +230,26 @@ fn load_from<R: Runtime>(app: &AppHandle<R>, file: &str) -> Settings {
             .as_ref()
             .and_then(JsonValue::as_bool)
             .unwrap_or(defaults.open_last_on_launch),
+        // Per element rather than all-or-nothing (design D1): a non-array
+        // value reads as empty, and inside an array a name the build does not
+        // know is dropped without costing the rest — the same reasoning as
+        // every other field's fallback, applied inside the list. A repeated
+        // name is kept once; order carries no meaning, so the file's own
+        // order is kept as read.
+        hidden_tag_categories: store
+            .get(HIDDEN_TAG_CATEGORIES)
+            .as_ref()
+            .and_then(JsonValue::as_array)
+            .map(|entries| {
+                let mut seen = std::collections::HashSet::new();
+                entries
+                    .iter()
+                    .filter_map(JsonValue::as_str)
+                    .filter_map(|name| name.parse::<TagCategory>().ok())
+                    .filter(|category| seen.insert(*category))
+                    .collect()
+            })
+            .unwrap_or_else(|| defaults.hidden_tag_categories.clone()),
     }
 }
 
@@ -240,6 +283,12 @@ fn save_to<R: Runtime>(app: &AppHandle<R>, file: &str, settings: &Settings) -> R
     store.set(RECENT_LIBRARIES, recent);
     store.set(NOTES_COLLAPSED, settings.notes_collapsed);
     store.set(COLLECTIONS_COLLAPSED, settings.collections_collapsed);
+    let hidden_tag_categories: Vec<&str> = settings
+        .hidden_tag_categories
+        .iter()
+        .map(|category| category.as_str())
+        .collect();
+    store.set(HIDDEN_TAG_CATEGORIES, hidden_tag_categories);
     store.save().map_err(from_tauri)
 }
 
@@ -279,6 +328,7 @@ mod tests {
             notes_collapsed: true,
             collections_collapsed: true,
             open_last_on_launch: false,
+            hidden_tag_categories: vec![TagCategory::Artist, TagCategory::Meta],
         };
 
         // Written by one app and read back by another: sharing one app would
@@ -460,6 +510,72 @@ mod tests {
         store.save().unwrap();
 
         assert!(load_from(mock_app().handle(), file).open_last_on_launch);
+    }
+
+    /// `tag-category-visibility` design D1: a file that predates this setting
+    /// must hide nothing, the same reasoning every other field's fallback
+    /// follows.
+    #[test]
+    fn a_file_without_the_hidden_tag_categories_key_hides_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("settings.json");
+        let file = file.to_str().unwrap();
+        let writer = mock_app();
+        let store = writer.handle().store(file).unwrap();
+        store.set(GRID_TILE_SIZE, GRID_TILE_DEFAULT);
+        store.save().unwrap();
+
+        assert_eq!(
+            load_from(mock_app().handle(), file).hidden_tag_categories,
+            Vec::new(),
+        );
+    }
+
+    #[test]
+    fn unknown_names_in_hidden_tag_categories_are_dropped_and_the_rest_kept() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("settings.json");
+        let file = file.to_str().unwrap();
+        let writer = mock_app();
+        let store = writer.handle().store(file).unwrap();
+        store.set(
+            HIDDEN_TAG_CATEGORIES,
+            serde_json::json!(["artist", "chartreuse", 3, "artist", "meta"]),
+        );
+        store.save().unwrap();
+
+        assert_eq!(
+            load_from(mock_app().handle(), file).hidden_tag_categories,
+            vec![TagCategory::Artist, TagCategory::Meta],
+        );
+    }
+
+    #[test]
+    fn a_hidden_tag_categories_value_that_is_not_a_list_reads_as_empty() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("settings.json");
+        let file = file.to_str().unwrap();
+        let writer = mock_app();
+        let store = writer.handle().store(file).unwrap();
+        store.set(HIDDEN_TAG_CATEGORIES, "artist");
+        store.save().unwrap();
+
+        assert_eq!(
+            load_from(mock_app().handle(), file).hidden_tag_categories,
+            Vec::new(),
+        );
+    }
+
+    #[test]
+    fn hiding_a_category_twice_keeps_it_once_and_showing_it_removes_it() {
+        let mut settings = Settings::default();
+
+        settings.set_tag_category_hidden(TagCategory::Artist, true);
+        settings.set_tag_category_hidden(TagCategory::Artist, true);
+        assert_eq!(settings.hidden_tag_categories, vec![TagCategory::Artist]);
+
+        settings.set_tag_category_hidden(TagCategory::Artist, false);
+        assert_eq!(settings.hidden_tag_categories, Vec::new());
     }
 
     #[test]

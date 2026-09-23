@@ -48,3 +48,29 @@ export function groupByCategory<T>(
     return { category, items: sortTags(inCategory.map(nameOf)).map((name) => byName.get(name)!) }
   }).filter((group) => group.items.length > 0)
 }
+
+/**
+ * The sidebar's whole list order (`tag-category-visibility` design D3): the
+ * rows the search is using first, then the rest — each half through
+ * {@link groupByCategory} — with `hidden` applied to the second half only.
+ * That placement *is* the rule "a tag the search uses stays visible, whatever
+ * its category": a row `isActive` calls out is never dropped for being
+ * hidden, so a term can always be taken out of the search from where it is
+ * shown. Generic over the row like `groupByCategory`, so a caller passes a
+ * `TagCount` (or anything else with a name) without this module importing it.
+ */
+export function sidebarRows<T>(
+  rows: T[],
+  nameOf: (row: T) => string,
+  isActive: (name: string) => boolean,
+  categoryOf: (name: string) => TagCategory,
+  hidden: ReadonlySet<TagCategory>,
+): T[] {
+  const grouped = (part: T[]) =>
+    groupByCategory(part, nameOf, categoryOf).flatMap((group) => group.items)
+  const active = rows.filter((row) => isActive(nameOf(row)))
+  const inactive = rows.filter(
+    (row) => !isActive(nameOf(row)) && !hidden.has(categoryOf(nameOf(row))),
+  )
+  return [...grouped(active), ...grouped(inactive)]
+}

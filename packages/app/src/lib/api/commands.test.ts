@@ -72,6 +72,7 @@ import {
   setRating,
   setShowTileTags,
   setTagCategory,
+  setTagCategoryHidden,
   setTagPinned,
   setTheme,
   stampsDelete,
@@ -170,6 +171,7 @@ it('app_settings takes no arguments', async () => {
     notesCollapsed: false,
     collectionsCollapsed: false,
     openLastOnLaunch: true,
+    hiddenTagCategories: [],
   }
   const calls = spyIPC(settings)
   await expect(appSettings()).resolves.toEqual(settings)
@@ -185,6 +187,7 @@ it('set_theme passes the theme and returns the settings', async () => {
     notesCollapsed: false,
     collectionsCollapsed: false,
     openLastOnLaunch: true,
+    hiddenTagCategories: [],
   }
   const calls = spyIPC(settings)
   await expect(setTheme('dark')).resolves.toEqual(settings)
@@ -200,6 +203,7 @@ it('set_grid_tile_size passes the size', async () => {
     notesCollapsed: false,
     collectionsCollapsed: false,
     openLastOnLaunch: true,
+    hiddenTagCategories: [],
   })
   await setGridTileSize(10_000)
   expect(calls).toHaveBeenCalledWith('set_grid_tile_size', { size: 10_000 })
@@ -214,6 +218,7 @@ it('set_show_tile_tags passes the flag and returns the settings', async () => {
     notesCollapsed: false,
     collectionsCollapsed: false,
     openLastOnLaunch: true,
+    hiddenTagCategories: [],
   }
   const calls = spyIPC(settings)
   await expect(setShowTileTags(true)).resolves.toEqual(settings)
@@ -229,6 +234,7 @@ it('set_click_zoom_ceiling_percent passes the percent', async () => {
     notesCollapsed: false,
     collectionsCollapsed: false,
     openLastOnLaunch: true,
+    hiddenTagCategories: [],
   })
   await setClickZoomCeilingPercent(10_000)
   expect(calls).toHaveBeenCalledWith('set_click_zoom_ceiling_percent', { percent: 10_000 })
@@ -243,6 +249,7 @@ it('set_notes_collapsed passes the flag and returns the settings', async () => {
     notesCollapsed: true,
     collectionsCollapsed: false,
     openLastOnLaunch: true,
+    hiddenTagCategories: [],
   }
   const calls = spyIPC(settings)
   await expect(setNotesCollapsed(true)).resolves.toEqual(settings)
@@ -258,10 +265,27 @@ it('set_collections_collapsed passes the flag and returns the settings', async (
     notesCollapsed: false,
     collectionsCollapsed: true,
     openLastOnLaunch: true,
+    hiddenTagCategories: [],
   }
   const calls = spyIPC(settings)
   await expect(setCollectionsCollapsed(true)).resolves.toEqual(settings)
   expect(calls).toHaveBeenCalledWith('set_collections_collapsed', { collapsed: true })
+})
+
+it('set_tag_category_hidden passes the category and the flag and returns the settings', async () => {
+  const settings: AppSettings = {
+    theme: 'system',
+    gridTileSize: GRID_TILE_DEFAULT,
+    showTileTags: false,
+    clickZoomCeilingPercent: CLICK_ZOOM_CEILING_DEFAULT,
+    notesCollapsed: false,
+    collectionsCollapsed: false,
+    openLastOnLaunch: true,
+    hiddenTagCategories: ['artist'],
+  }
+  const calls = spyIPC(settings)
+  await expect(setTagCategoryHidden('artist', true)).resolves.toEqual(settings)
+  expect(calls).toHaveBeenCalledWith('set_tag_category_hidden', { category: 'artist', hidden: true })
 })
 
 it('set_open_last_on_launch passes the flag and returns the settings', async () => {
@@ -273,6 +297,7 @@ it('set_open_last_on_launch passes the flag and returns the settings', async () 
     notesCollapsed: false,
     collectionsCollapsed: false,
     openLastOnLaunch: false,
+    hiddenTagCategories: [],
   }
   const calls = spyIPC(settings)
   await expect(setOpenLastOnLaunch(false)).resolves.toEqual(settings)

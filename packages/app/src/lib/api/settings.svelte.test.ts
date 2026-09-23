@@ -23,6 +23,7 @@ const stored: AppSettings = {
   notesCollapsed: false,
   collectionsCollapsed: false,
   openLastOnLaunch: true,
+  hiddenTagCategories: [],
 }
 
 it('asks Rust once and keeps the answer', async () => {
@@ -50,6 +51,7 @@ it('keeps what the write answered, not what it was asked for', async () => {
         notesCollapsed: true,
         collectionsCollapsed: true,
         openLastOnLaunch: true,
+        hiddenTagCategories: ['artist'],
       }) satisfies AppSettings,
   )
 
@@ -76,4 +78,7 @@ it('keeps what the write answered, not what it was asked for', async () => {
 
   await settings.setOpenLastOnLaunch(false)
   expect(settings.current?.openLastOnLaunch).toBe(true)
+
+  await settings.setTagCategoryHidden('artist', true)
+  expect(settings.current?.hiddenTagCategories).toEqual(['artist'])
 })

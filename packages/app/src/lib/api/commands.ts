@@ -109,6 +109,15 @@ export function setCollectionsCollapsed(collapsed: boolean): Promise<AppSettings
   return invoke('set_collections_collapsed', { collapsed })
 }
 
+/**
+ * Hides `category`'s tags from the sidebar's list, or shows them again
+ * (`tag-category-visibility` design D2). One category per call: the dedupe
+ * rule lives in Rust, next to the load that validates the same list.
+ */
+export function setTagCategoryHidden(category: TagCategory, hidden: boolean): Promise<AppSettings> {
+  return invoke('set_tag_category_hidden', { category, hidden })
+}
+
 /** Clamped by Rust to `GRID_TILE_MIN`…`GRID_TILE_MAX`, never refused. */
 export function setGridTileSize(size: number): Promise<AppSettings> {
   return invoke('set_grid_tile_size', { size })

@@ -734,7 +734,7 @@ pub enum Theme {
 /// The preferences the webview reads and writes one field at a time (design D5).
 /// The listener port is not here: it is already on `LibraryStatus.listener`, and
 /// a second copy would be a second thing to keep in step.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AppSettings {
     pub theme: Theme,
@@ -762,6 +762,11 @@ pub struct AppSettings {
     /// user to pick one (`launch-screen` design D3). Takes effect at the
     /// next launch, not immediately.
     pub open_last_on_launch: bool,
+    /// Which tag categories the sidebar's list leaves out
+    /// (`tag-category-visibility` design D1), kept with the app's other
+    /// preferences on this machine rather than in the library. Empty until
+    /// the user hides one.
+    pub hidden_tag_categories: Vec<TagCategory>,
 }
 
 /// One entry of the start screen's recent list. `name` and `available` are
@@ -1123,10 +1128,11 @@ mod tests {
             notes_collapsed: true,
             collections_collapsed: true,
             open_last_on_launch: false,
+            hidden_tag_categories: vec![TagCategory::Artist],
         };
 
         assert_eq!(
-            serde_json::to_value(settings).unwrap(),
+            serde_json::to_value(&settings).unwrap(),
             serde_json::json!({
                 "theme": "dark",
                 "gridTileSize": 180,
@@ -1135,6 +1141,7 @@ mod tests {
                 "notesCollapsed": true,
                 "collectionsCollapsed": true,
                 "openLastOnLaunch": false,
+                "hiddenTagCategories": ["artist"],
             }),
         );
     }

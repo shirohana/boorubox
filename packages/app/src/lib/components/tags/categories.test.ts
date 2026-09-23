@@ -1,6 +1,6 @@
 import type { TagCategory } from '@boorubox/shared'
 import { describe, expect, it } from 'vitest'
-import { CATEGORY_TEXT_CLASS, searchMark, searchMarkClass, SEARCH_MARK_CLASS } from './categories'
+import { CATEGORY_ICON, CATEGORY_ORDER, CATEGORY_TEXT_CLASS, searchMark, searchMarkClass, SEARCH_MARK_CLASS } from './categories'
 
 const ALL_CATEGORIES: TagCategory[] = ['artist', 'copyright', 'character', 'meta', 'general']
 
@@ -17,6 +17,12 @@ describe('CATEGORY_TEXT_CLASS', () => {
 
   it('names every TagCategory exactly once', () => {
     expect(Object.keys(CATEGORY_TEXT_CLASS).sort()).toEqual([...ALL_CATEGORIES].sort())
+  })
+})
+
+describe('CATEGORY_ICON', () => {
+  it('names every CATEGORY_ORDER entry exactly once', () => {
+    expect(Object.keys(CATEGORY_ICON).sort()).toEqual([...CATEGORY_ORDER].sort())
   })
 })
 

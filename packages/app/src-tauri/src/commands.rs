@@ -350,6 +350,22 @@ pub fn set_collections_collapsed<R: Runtime>(
     })
 }
 
+/// Hides `category`'s tags from the sidebar's list, or shows them again
+/// (`tag-category-visibility` design D2): the dedupe rule lives on
+/// `Settings::set_tag_category_hidden`, unit-tested there without a store, so
+/// this command is argument marshalling only, like the rest of the file.
+#[tauri::command]
+pub fn set_tag_category_hidden<R: Runtime>(
+    category: TagCategory,
+    hidden: bool,
+    app: AppHandle<R>,
+    state: State<'_, AppState>,
+) -> Result<AppSettings> {
+    write_settings(&app, &state, |settings| {
+        settings.set_tag_category_hidden(category, hidden);
+    })
+}
+
 /// Whether `setup` reopens the remembered library automatically at the next
 /// launch (`launch-screen` design D3). Takes effect next launch: this launch
 /// already decided whether to open before the webview could call it.
@@ -3063,6 +3079,44 @@ mod tests {
         assert!(answered.collections_collapsed);
         assert!(app_settings(app.state()).collections_collapsed);
         assert!(settings::load(app.handle()).collections_collapsed);
+    }
+
+    /// A hidden category is a preference too, so it has to survive the
+    /// process, the same as the notes and collections folds' own tests; and
+    /// showing the category again has to clear it from all three places too.
+    #[test]
+    fn the_hidden_categories_reach_the_state_and_the_store() {
+        let app = mock_app();
+
+        let answered =
+            set_tag_category_hidden(TagCategory::Artist, true, app.handle().clone(), app.state())
+                .unwrap();
+
+        assert_eq!(answered.hidden_tag_categories, vec![TagCategory::Artist]);
+        assert_eq!(
+            app_settings(app.state()).hidden_tag_categories,
+            vec![TagCategory::Artist]
+        );
+        assert_eq!(
+            settings::load(app.handle()).hidden_tag_categories,
+            vec![TagCategory::Artist]
+        );
+
+        let answered = set_tag_category_hidden(
+            TagCategory::Artist,
+            false,
+            app.handle().clone(),
+            app.state(),
+        )
+        .unwrap();
+
+        assert!(answered.hidden_tag_categories.is_empty());
+        assert!(app_settings(app.state()).hidden_tag_categories.is_empty());
+        assert!(
+            settings::load(app.handle())
+                .hidden_tag_categories
+                .is_empty()
+        );
     }
 
     // ---- damage, the backfill and the rebuild (`library-sidecars` tasks
