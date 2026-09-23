@@ -78,7 +78,7 @@ them.
 ### Requirement: Edit mode applies the active stamp by a click
 The library screen SHALL offer an edit mode, entered and left by a toolbar control — no key
 for now: a key belongs to the most frequent day-to-day action, and a mode where a click writes
-is not one (owner, 2026-09-24) — and shown plainly while it is on. Entering it SHALL show
+is not one (owner, 2026-09-23) — and shown plainly while it is on. Entering it SHALL show
 a stamp bar above the grid holding a field first — for typing a stamp, or showing the active
 one's text — and the saved stamps under it. The active stamp SHALL be whatever the field
 currently parses to: a blank field or text that does not parse SHALL leave none active, the

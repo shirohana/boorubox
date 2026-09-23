@@ -2,7 +2,7 @@
 
 In edit mode a click applies the active stamp to a tile, and nothing on the tile says what
 the image carried before or carries after — the owner had to open the inspector per image to
-know whether a click was needed (2026-09-24). Danbooru's edit mode shows the post's tags
+know whether a click was needed (2026-09-23). Danbooru's edit mode shows the post's tags
 under the preview for the same reason. Requirements §6 (Danbooru-style tagging).
 
 ## What Changes
@@ -11,7 +11,7 @@ under the preview for the same reason. Requirements §6 (Danbooru-style tagging)
   the app's category order and colour, three lines, and the whole list while the tile is hovered. Always on in edit mode.
 - The grid's row height grows by the footer while a footer is shown, so the windowed rows
   stay exact.
-- **A view setting for the footer outside edit mode** (2026-09-24, from the running app: the
+- **A view setting for the footer outside edit mode** (2026-09-23, from the running app: the
   owner found the footer useful for browsing too, not just editing). A toolbar toggle beside
   the thumbnail-size slider turns it on or off for ordinary browsing, kept with the tile size
   in `settings.json` (design D3); edit mode still forces it on and disables the toggle rather

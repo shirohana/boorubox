@@ -35,7 +35,7 @@ overlay, which stay over the image only.
 *Why a fixed height:* the grid windows rows by one `rowHeight`; a footer that grows with
 its text would need a per-row measurement the grid does not do.
 
-*Amended (owner, 2026-09-24):* two lines cut a heavily tagged image short, and the owner
+*Amended (owner, 2026-09-23):* two lines cut a heavily tagged image short, and the owner
 wants the whole list. A row height that follows its tallest footer would need per-row
 measurement in the windowed grid, with the scrollbar shifting as rows measure, so the strip
 stays fixed and grows in two cheaper ways: `TAG_FOOTER` is three lines (56 px), and while the
@@ -61,7 +61,7 @@ adds height only.
 
 Reversing this change's original non-goal ("a footer in browse mode; a view toggle for
 one"): the owner ran the shipped edit-mode footer and found it useful for ordinary browsing
-too (2026-09-24) — the non-goal was right while the footer only existed to say what a stamp
+too (2026-09-23) — the non-goal was right while the footer only existed to say what a stamp
 click would change, and stopped being right the moment it turned out to answer "what tags
 does this have" on its own. `showTileTags: boolean` (default `false`) joins `Settings` and
 `AppSettings` beside `grid_tile_size`/`gridTileSize`: it is a display preference of this

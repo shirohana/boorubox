@@ -19,7 +19,7 @@ list SHALL show the tags the search includes or excludes first, then the rest, e
 grouped by category in the app's one category order — artist, copyright, character, general,
 meta — alphabetical within a group, with no group label: a count order reshuffles the list
 with every search, and the owner reads the rest by colour and category rather than a labelled
-section (2026-09-23, amended 2026-09-24 — the labels were noise once the colour already told
+section (2026-09-23, amended 2026-09-23 — the labels were noise once the colour already told
 the story, and the search's own tags read better surfaced at the top than buried in their
 category's place).
 

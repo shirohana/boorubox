@@ -34,7 +34,7 @@
       Hand check: with the owner's library open, the sidebar shows one `tagme` (meta) and no
       `Tagme`; typing `Cat` in the search finds the `cat` images and marks `cat` in both
       panels; saving `artist:Tagme` on an image is refused naming `tagme`.
-      Seen by the lead on a scratch copy of test-1 (smoke run 2026-09-24): the copy opened at
+      Seen by the lead on a scratch copy of test-1 (smoke run 2026-09-23): the copy opened at
       v8 and came up at v9 with no error in the dev log; `Bride`/`Cicero`/`Lorem` read
       lowercase in the sidebar; saving `Cat DOG` stored `cat` and `dog`; `artist:Kantoku`
       folded into the existing `kantoku` (one row); `meta:kantoku` was refused naming

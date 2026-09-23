@@ -57,7 +57,7 @@
       both menus open; "New collection…" opens its dialog; Escape inside an open menu closes the
       menu and leaves the viewer open; Escape again closes the viewer. Beside the grid nothing
       has changed.
-      Seen by the lead on a scratch copy of test-1 (2026-09-24 early, driven through accessibility, not
+      Seen by the lead on a scratch copy of test-1 (2026-09-23 early, driven through accessibility, not
       the owner's hands): inside the viewer in inspect mode, "Add to…" opened its list over the image
       (sixteen collections, scrolling). Escape and the badge menus were not exercised.
 

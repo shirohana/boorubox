@@ -65,7 +65,7 @@
       Enter — active, a click rates and untags; Save as stamp… → Reviewed appears in the bar and
       on /settings; `E` again — the bar is gone and a click focuses; `e` typed into the search
       field is a character.
-      Seen by the lead on a scratch copy of test-1 (2026-09-24 early, driven through accessibility, not
+      Seen by the lead on a scratch copy of test-1 (2026-09-23 early, driven through accessibility, not
       the owner's hands): E showed the bar with the toggle pressed; a one-off `tagme rating:s` needed
       Enter twice (the owner note below) and then a click on a tile rated it S and tagged it `tagme`
       at once, the sidebar counts following, the viewer not opening. Saved stamps, Apply to selection,
@@ -134,7 +134,7 @@
       so; Save as stamp… seeds the dialog with the field's text and the new chip reads
       pressed after saving; a refused click's message disappears when the field is retyped;
       Edit… on a chip leaves the field alone; Escape in the field then E leaves the mode.
-      Seen by the lead on a scratch copy of test-1 (smoke run 2026-09-24): the field first
+      Seen by the lead on a scratch copy of test-1 (smoke run 2026-09-23): the field first
       and full width with the Cat chip below; clicking Cat filled the field and the chip; a
       hovered tile showed the orange wash with "Apply cat animal" and a click applied both
       tags; clearing the field un-filled the chip, hover showed nothing and a click only

@@ -34,7 +34,7 @@ export type SearchMark = 'included' | 'excluded' | 'none'
 
 /**
  * One marking for "in the search", read wherever a tag or an account is
- * drawn as text (design D3, amended `tag-panel-polish` 2026-09-24 from the
+ * drawn as text (design D3, amended `tag-panel-polish` 2026-09-23 from the
  * running app): background only, on the whole hoverable box, not the text
  * itself — an underline makes English hard to read, and a coloured word
  * struck through is one colour too many once every tag carries its
@@ -42,7 +42,7 @@ export type SearchMark = 'included' | 'excluded' | 'none'
  * change left: the tint alone did not read as "this is the one that's
  * active" next to its neighbours. Each state carries its own hover shade
  * (`hover:bg-emerald-500/25`, `hover:bg-destructive/20`) — amended again,
- * 2026-09-24: a caller's neutral `hover:bg-accent` on the same element as
+ * 2026-09-23: a caller's neutral `hover:bg-accent` on the same element as
  * the tint outranks it at equal specificity, so hovering an active tag lost
  * its marking. Read through `searchMarkClass` below rather than indexed
  * directly, so a neutral hover is never placed on the same element as a
@@ -68,7 +68,7 @@ export function searchMark(name: string, included: Set<string>, excluded: Set<st
 
 /**
  * `mark`'s class, with `neutralHover` standing in only for `'none'` (design
- * D3, amended 2026-09-24): `included` and `excluded` already carry their own
+ * D3, amended 2026-09-23): `included` and `excluded` already carry their own
  * hover shade, so a caller that concatenated its neutral hover onto them too
  * put two hover backgrounds on one element, and the neutral one — same
  * specificity, later in the class list — always won. Every caller (the

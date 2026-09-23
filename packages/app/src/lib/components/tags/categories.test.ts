@@ -56,7 +56,7 @@ describe('SEARCH_MARK_CLASS', () => {
     expect(SEARCH_MARK_CLASS.excluded).not.toBe('')
   })
 
-  it('is background only, no underline or strike-through (owner, 2026-09-24)', () => {
+  it('is background only, no underline or strike-through (owner, 2026-09-23)', () => {
     expect(SEARCH_MARK_CLASS.included).not.toMatch(/underline|line-through/)
     expect(SEARCH_MARK_CLASS.excluded).not.toMatch(/underline|line-through/)
   })

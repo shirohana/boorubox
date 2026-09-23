@@ -13,7 +13,7 @@
       `SEARCH_MARK_CLASS` and `searchMark` per D3 with a test (`categories.test.ts`) covering
       included / excluded / none for a tag and for an account. Amend the archived
       `openspec/changes/archive/2026-09-23-tag-vocabulary/design.md` D6 with a dated
-      *Amended (tag-panel-polish, 2026-09-24)* paragraph carrying D2's argument.
+      *Amended (tag-panel-polish, 2026-09-23)* paragraph carrying D2's argument.
       Verify: `pnpm --filter @boorubox/app test tag-categories tag-input categories` pass.
 - [x] 1.2 `Inspector.svelte` per D3, D4, D5, D6: tags as plain text with the shared marking;
       the account row in the facts list above Page and the old button removed; `startEditTags`
@@ -26,7 +26,7 @@
       caret after the trailing space; pinned chips show a pin glyph and still toggle. Edit
       opens with no suggestion list; one Escape cancels.
       Seen by the lead on a scratch copy of test-1 seeded through the UI (smoke run
-      2026-09-24, driven through accessibility, not the owner's hands): red/violet/green/blue
+      2026-09-23, driven through accessibility, not the owner's hands): red/violet/green/blue
       plain text grouped by colour; the searched tag carried the tint and underline in both
       panels; the Account row sat between Source and Page on an X image and was absent on a
       local one; Edit put the caret after the trailing space with no popover and one Escape
@@ -38,7 +38,7 @@
       Hand check: with no search, the list reads Artist, Copyright, Character, General, Meta
       groups, each alphabetical; with `cat` searched, the order does not change and `cat` is
       marked.
-      Seen by the lead (smoke run 2026-09-24): ARTIST, COPYRIGHT, CHARACTER, GENERAL, META
+      Seen by the lead (smoke run 2026-09-23): ARTIST, COPYRIGHT, CHARACTER, GENERAL, META
       labels in that order, alphabetical inside, general blue, meta amber; the searched row
       kept its place and carried the marking.
 
@@ -52,13 +52,13 @@
       component's comment says so. Verify: `mise run check` green.
       Hand check: searching `non-exist` shows "No tags in these results"; searching `-dog`
       on a result with no `dog` still lists `dog 0`, marked excluded, with a working menu.
-      Seen by the lead (smoke run 2026-09-24): `zzzq` gave "No tags in these results";
+      Seen by the lead (smoke run 2026-09-23): `zzzq` gave "No tags in these results";
       `-blue_archive` listed `blue_archive 0` struck through, and its right-click menu opened
       with the categories and Pin.
 
 ## 3. Unit E — the panels after the owner checked the app (`packages/app`), folded into this change
 
-> Owner, 2026-09-24, from the running app: the group labels are noise (the colour tells the
+> Owner, 2026-09-23, from the running app: the group labels are noise (the colour tells the
 > story); the underline makes English hard to read; the search-marked tags belong on top as
 > before; a background alone is the marking, on the whole hoverable area, and no
 > strike-through now that tags are coloured; the Account row does not look clickable. The
@@ -83,7 +83,7 @@
       comments rewritten. Verify: `mise run check` green.
       Hand check: with `1girl -highres` searched, the list reads `1girl` (green row) then
       `highres` (red row, no strike-through), then the rest grouped by colour with no labels.
-      Seen by the lead on the seeded scratch vault (smoke run 2026-09-24, second pass): a flat
+      Seen by the lead on the seeded scratch vault (smoke run 2026-09-23, second pass): a flat
       list with no labels, red/violet/green then blue then amber; with `blue_archive -highres`
       searched both rows came first, green and red full-row tints, no underline or strike;
       hovering the green row kept it green, brighter. Rows tightened afterwards (owner: more
@@ -104,12 +104,12 @@
       hover background and a pointer, and a green block when in the search. Hovering an
       active tag keeps its tint, darker; an excluded account or collection in the sidebar
       shows a red row with no strike-through.
-      Seen by the lead (smoke run 2026-09-24, second pass): the searched tag a green block over
+      Seen by the lead (smoke run 2026-09-23, second pass): the searched tag a green block over
       its padded box, hover still green; `@handle` with a hover background, pointer and tooltip,
       a green block once clicked with `account:` in the search; excluded entries red with no
       strike in the account rail (grouped by X account) and the collections rows.
 - [x] 3.4 Docs: design D3 amended (background only, why), D7 amended (no labels, active
-      first, why: owner 2026-09-24), each as an *Amended* paragraph keeping the earlier
+      first, why: owner 2026-09-23), each as an *Amended* paragraph keeping the earlier
       argument; the tag-sidebar delta (archived copy and `openspec/specs/tag-sidebar/spec.md`)
       requirement "The sidebar lists…" says: the tags the search includes or excludes first,
       then the rest, each part in the category order, alphabetical inside, no labels; its
@@ -240,10 +240,10 @@ Landed 3.1–3.4, `packages/app` only, from the owner's read of the running app:
   `rounded-md px-1 py-0.5 hover:bg-accent`, plus `cursor-pointer`; its label is now `@{account}`
   (the stored handle is unchanged — this is display only, `toggleAccountInQuery` still gets
   the bare handle). Both comments (the tag-list one above the `<ul>`, the Account row's above
-  the `<dt>`) rewritten to the new shapes and the owner's 2026-09-24 reasons. The collection
+  the `<dt>`) rewritten to the new shapes and the owner's 2026-09-23 reasons. The collection
   chips were not touched — they already read `SEARCH_MARK_CLASS`, so the background-only class
   reached them for free.
-- Docs: `design.md` D3 and D7 each gained an *Amended (tag-panel-polish, 2026-09-24)* paragraph
+- Docs: `design.md` D3 and D7 each gained an *Amended (tag-panel-polish, 2026-09-23)* paragraph
   keeping the original argument and recording why it stopped holding (D3: the underline/
   strike-through traded against readability once every tag carried colour; D7: the labels were
   noise once colour carried the grouping, and D7's own "active-first is gone" sentence is

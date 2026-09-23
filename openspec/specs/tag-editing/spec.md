@@ -150,7 +150,7 @@ pill: a pill's own fill competes with the marking that says the tag is in the se
 marking the tag sidebar uses, so the list reads as a set of toggles; that marking SHALL be a
 background on the tag's whole box, with no underline and no strike-through — an underline
 makes English hard to read, and a tag already carrying its category's colour struck through
-is one colour too many (owner, 2026-09-24). The marking SHALL sit beside the tag's category
+is one colour too many (owner, 2026-09-23). The marking SHALL sit beside the tag's category
 colour, not replace it; an included tag SHALL also carry extra weight, the one change of
 weight the marking makes, since a background alone is easy to miss as the only cue once the
 underline is gone. The tags SHALL be shown grouped by category in the app's one category
@@ -199,7 +199,7 @@ handle as a row of the image's facts, labelled Account, above the Page row — a
 page, beside the page's other facts, and apart from the tags: with artist tags in the
 vocabulary, a handle among the tags read as a second artist (owner, 2026-09-23). The row
 SHALL show the handle as a button reading `@handle`, padded and hover-highlighted so it looks
-clickable like the account bar it is, not a plain fact to merely read (owner, 2026-09-24: the
+clickable like the account bar it is, not a plain fact to merely read (owner, 2026-09-23: the
 row did not look clickable). Acting on it SHALL add `account:<handle>` to the tag search, and
 acting on it while the search already names that account SHALL take the term out again; it
 SHALL show whether the search includes or excludes it in the marking a tag uses. The handle

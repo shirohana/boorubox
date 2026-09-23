@@ -78,7 +78,7 @@ the weight never reflows the list.
 The inspector's tag list becomes a `flex flex-wrap gap-x-2 gap-y-1` of `<button type="button"
 class="text-xs …">` — no `Badge`. The context menu trigger and its items are unchanged.
 
-**Amended (tag-panel-polish, 2026-09-24), from the owner's reading of the running app:**
+**Amended (tag-panel-polish, 2026-09-23), from the owner's reading of the running app:**
 `SEARCH_MARK_CLASS` drops the underline and the strike-through — `included:
 'bg-emerald-500/15 font-medium'`, `excluded: 'bg-destructive/10'`, `none: ''`. An underline
 makes English hard to read, and a tag already carrying its category's colour struck through
@@ -93,7 +93,7 @@ underline, weight is what tells the active row from its neighbours at a glance, 
 original "weight never reflows the list" no longer holds — one word is heavier, and the list
 does not reflow because weight was never the thing rows are ordered by.
 
-**Amended again (tag-panel-polish, 2026-09-24), from review:** a caller's own neutral hover
+**Amended again (tag-panel-polish, 2026-09-23), from review:** a caller's own neutral hover
 (`hover:bg-accent` on the inspector's tag buttons and its Account button) sat on the same
 element as `SEARCH_MARK_CLASS`'s tint, at equal specificity — the neutral hover, later in the
 class string, always won, so hovering an active or excluded tag lost its marking. `included`
@@ -141,7 +141,7 @@ empty. Active-first and count order are gone: the same rule holds with or withou
 so a reader knows where general ends and meta begins without relying on colour alone. The
 count stays on each row.
 
-**Amended (tag-panel-polish, 2026-09-24), from the owner's reading of the running app:**
+**Amended (tag-panel-polish, 2026-09-23), from the owner's reading of the running app:**
 the group labels are gone — the colour already carries the grouping, and a label row per
 category was noise on top of it. The order they existed to explain stays, but changes shape:
 the tags the current search includes or excludes come first, then the rest, each half

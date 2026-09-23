@@ -568,7 +568,7 @@
   amber/violet/red/green/blue text loses its contrast against it. The fill
   state is the pin itself: solid (`fill-current`) while the image carries
   the tag, an outline while it does not, half-solid over a selection that
-  is split — a ring alone was unreadable at 1× (smoke run, 2026-09-24). A
+  is split — a ring alone was unreadable at 1× (smoke run, 2026-09-23). A
   faint foreground tint and a ring (`all`) or a dashed outline (`some`,
   Tailwind's `ring-*` utilities have no dashed style, so `some` uses
   `outline-*` instead) back the pin up without competing with the category
@@ -714,9 +714,9 @@
           from the stored one, so this row does not flip with the form. No
           colour of its own (blue is general's now, design D2) — the padded,
           hoverable box and the pointer cursor are what say it is a control,
-          not a fact to merely read (owner, 2026-09-24: the row did not look
+          not a fact to merely read (owner, 2026-09-23: the row did not look
           clickable). `searchMarkClass` (design D3, amended again
-          2026-09-24) supplies `hover:bg-accent` only while the row carries
+          2026-09-23) supplies `hover:bg-accent` only while the row carries
           no tint, so hovering an active account keeps its mark instead of
           losing it to a competing neutral hover.
         -->
@@ -897,10 +897,10 @@
             a pill's own fill competed with the marking that says a tag is in
             the search. `rounded-md px-1 py-0.5` give the text a real box, so
             `SEARCH_MARK_CLASS`'s background (design D3, amended
-            `tag-panel-polish` 2026-09-24 — no underline, no strike-through)
+            `tag-panel-polish` 2026-09-23 — no underline, no strike-through)
             has something to tint beside `CATEGORY_TEXT_CLASS`'s category
             colour, rather than replacing it. `searchMarkClass` (amended
-            again 2026-09-24) supplies `hover:bg-accent` only for a tag with
+            again 2026-09-23) supplies `hover:bg-accent` only for a tag with
             no mark, so an active or excluded tag keeps its own hover instead
             of losing it to a competing neutral one. `cursor-pointer`
             (`Button`'s own default, Tailwind 4 preflight otherwise leaves a

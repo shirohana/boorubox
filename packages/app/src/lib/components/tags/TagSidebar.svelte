@@ -4,7 +4,7 @@
   // (`tags-and-ratings` design D8), zero rows for the query's own tags included
   // (`tag-panel-polish` design D8) — the only thing computed here is the order:
   // the search's own tags first, then the rest (`tag-panel-polish` D7, amended
-  // 2026-09-24 from the running app — no group labels, the colour carries the
+  // 2026-09-23 from the running app — no group labels, the colour carries the
   // grouping, and a count or category order under the search's own tags read
   // as noise once the labels were gone).
   import type { TagCount } from '@boorubox/shared'
@@ -41,7 +41,7 @@
   const excluded = $derived(terms.excluded)
 
   /**
-   * The list's order (design D7, amended `tag-panel-polish` 2026-09-24): the
+   * The list's order (design D7, amended `tag-panel-polish` 2026-09-23): the
    * tags the search includes or excludes first, then the rest — each half
    * through `groupByCategory` (artist, copyright, character, general, meta,
    * alphabetical inside), so "category order, alphabetical inside" is
@@ -81,7 +81,7 @@
   {#if rows && rows.length === 0}
     <p class="px-1 text-xs text-muted-foreground">No tags in these results</p>
   {:else if rows}
-    <!-- No gap and half the padding: the owner wants more rows on screen (2026-09-24). -->
+    <!-- No gap and half the padding: the owner wants more rows on screen (2026-09-23). -->
     <ul class="flex flex-col">
       {#each rows as { name, count } (name)}
         <li>
@@ -89,10 +89,10 @@
             <ContextMenu.Trigger>
               {#snippet child({ props })}
                 <!--
-                  The search marking (design D3, amended `tag-panel-polish` 2026-09-24)
+                  The search marking (design D3, amended `tag-panel-polish` 2026-09-23)
                   sits on the whole row — the hoverable box, not just the name — same
                   as it did before unit C's pass moved it onto the name alone.
-                  `searchMarkClass` (amended again 2026-09-24) supplies
+                  `searchMarkClass` (amended again 2026-09-23) supplies
                   `hover:bg-sidebar-accent` only for a row with no mark, so an
                   active or excluded row keeps its own hover instead of losing
                   it to a competing neutral one at equal specificity.

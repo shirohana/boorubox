@@ -155,7 +155,7 @@ stays on the background (`bg-emerald-500/15`, `bg-destructive/10 line-through`),
 visible on a coloured tag. The hex-precise Danbooru palette is not copied: Tailwind's steps
 are what the rest of the app is drawn in, and the owner asked for a design for this app.
 
-*Amended (tag-panel-polish, 2026-09-24):* general is now coloured too —
+*Amended (tag-panel-polish, 2026-09-23):* general is now coloured too —
 `text-blue-600 dark:text-blue-400`, Danbooru's own hue for it. Both reasons above have
 ended: blue stopped being spoken for the moment the account entry left the tag area for a
 facts row of its own (`tag-panel-polish` design D4), and the owner's taste call for that

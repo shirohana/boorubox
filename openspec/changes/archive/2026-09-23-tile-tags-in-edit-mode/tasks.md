@@ -21,7 +21,7 @@
       rows still align, scrolling stays exact at the bottom of a long result; click a tile
       with Cat active — its strip gains `cat animal` at once; `E` again — strips gone, rows
       back to square.
-      Seen by the lead on the seeded scratch vault (smoke run 2026-09-24): footers under every
+      Seen by the lead on the seeded scratch vault (smoke run 2026-09-23): footers under every
       tile, rows aligned, "No tags" where empty, the focus ring ending above the footer, the last
       row fully visible at the bottom; Cat then a click added `animal cat` to that footer at
       once; E removed the footers. The tags ran together with no space — fixed after the run
@@ -30,7 +30,7 @@
 
 ## 2. Unit G — the footer as a view setting (`packages/app`), folded into this change
 
-> Owner, 2026-09-24, from the running app: the footer is useful outside edit mode too — a
+> Owner, 2026-09-23, from the running app: the footer is useful outside edit mode too — a
 > toggle for normal browsing, always on in edit mode. No key (the owner's rule: keys go to
 > the most frequent day-to-day actions, after a discussion). Agent G (Sonnet), alone in the
 > tree. Gate: `mise run check` green. Do not commit; do not tick a hand check. Folded into
@@ -59,7 +59,7 @@
       tile and the button fills; restart the app — still on; enter edit mode — the button is
       filled and disabled, footers stay; leave — back to the setting; click again — footers
       gone.
-      Seen by the lead on the seeded scratch vault (smoke run 2026-09-24, third pass): the
+      Seen by the lead on the seeded scratch vault (smoke run 2026-09-23, third pass): the
       button plain between the slider and the inspector button; a click filled it and every
       tile grew a footer, tags separated by spaces; after Cmd+Q and a relaunch the button was
       still filled and `showTileTags: true` was in settings.json; in edit mode it read filled
@@ -68,7 +68,7 @@
       forced them back with the setting off.
 - [x] 2.3 Docs: `proposal.md` — the non-goal "A footer outside edit mode, or a view toggle
       for one" is removed and "What Changes" gains the toggle, with the reason (owner found
-      the footer useful for browsing, 2026-09-24); `design.md` gains D3 (the setting lives
+      the footer useful for browsing, 2026-09-23); `design.md` gains D3 (the setting lives
       in settings.json beside the tile size because it is a display preference of this
       machine, not of the library; the button sits with the grid's display controls; edit
       mode forces it on and disables the button rather than hiding it, so the state stays
@@ -77,7 +77,7 @@
       toolbar toggles, kept with the thumbnail size; in the mode it is always shown", plus a
       scenario "A footer while browsing". Verify: `openspec validate --specs` passes.
 
-- [x] 2.4 Three lines and the whole list on hover (owner, 2026-09-24, after seeing a
+- [x] 2.4 Three lines and the whole list on hover (owner, 2026-09-23, after seeing a
       heavily tagged image cut short): `TAG_FOOTER` = 56, `line-clamp-3`, the strip's box
       absolute inside the fixed placeholder and expanded over the row below while hovered and
       overflowing (`markOverflow`). Verify: `mise run check` green.
@@ -195,7 +195,7 @@ clippy, and the Rust + web builds) and `openspec validate --specs` passes
   whenever `editMode` makes the two diverge, so while it's clickable
   `showTags` already equals the setting.
 - Docs folded into this change's own history: `proposal.md`'s non-goal
-  removed, "What Changes" gained the toggle with the 2026-09-24 owner
+  removed, "What Changes" gained the toggle with the 2026-09-23 owner
   finding as the reason, `Impact` lists the new Rust/shared/API files.
   `design.md` gained D3, recording why "a footer outside edit mode" was
   right until the shipped footer turned out to answer browsing too, and why
