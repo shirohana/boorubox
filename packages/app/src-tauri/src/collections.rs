@@ -53,6 +53,25 @@ fn require_collection(conn: &Connection, id: &str) -> Result<Collection> {
     }
 }
 
+/// The id of the collection whose slug is `slug_value`, or the refusal
+/// `tags::apply_edit` (`stamps` design D2) answers a stamp naming one that
+/// does not exist with. Resolved before any write of a stamp's edit: a bad
+/// slug must refuse the whole thing rather than leave some ids of it changed
+/// and others not.
+pub(crate) fn id_for_slug(conn: &Connection, slug_value: &str) -> Result<String> {
+    conn.query_row(
+        "SELECT id FROM collections WHERE slug = ?1",
+        [slug_value],
+        |row| row.get(0),
+    )
+    .map_err(|error| match error {
+        rusqlite::Error::QueryReturnedNoRows => {
+            AppError::BadRequest(format!("no collection named `{slug_value}`"))
+        }
+        other => other.into(),
+    })
+}
+
 /// The name of whichever other collection already holds `slug_value`, or
 /// `None` when it is free — the one check `create` and `rename` share, so a
 /// slug clash always names the collection that holds it (spec `collections`,
@@ -163,20 +182,16 @@ pub fn delete(library: &Library, id: &str) -> Result<()> {
     Ok(())
 }
 
-/// Put every id in `ids` into `collection_id` (design D3): idempotent per id
-/// (`INSERT OR IGNORE`), one transaction, and — deliberately — no
-/// `images.updated_at` stamp, since favouriting is not an edit of the picture
-/// and must not reorder "Changed last" (design D3). Answers with the written
-/// rows (design D8), so the caller can `replace` them without a second
-/// `search`.
-pub fn add(library: &Library, ids: &[String], collection_id: &str) -> Result<Vec<ImageRecord>> {
-    require_collection(&library.conn, collection_id)?;
-    if ids.is_empty() {
-        return Ok(Vec::new());
-    }
-
+/// The transaction body of [`add`] (`stamps` design D2): idempotent per id
+/// (`INSERT OR IGNORE`), no `images.updated_at` mark, since favouriting is
+/// not an edit of the picture and must not reorder "Changed last" (design
+/// D3). Split out at the transaction boundary, not copied, so
+/// `tags::apply_edit` can run it inside the one transaction a stamp's whole
+/// edit shares — a membership change is one part of an edit among several,
+/// and opening a second transaction for it here would break the "one write"
+/// guarantee the rest of the edit is under.
+pub(crate) fn add_in(tx: &Connection, ids: &[String], collection_id: &str) -> Result<()> {
     let now = db::now_ms();
-    let tx = library.conn.unchecked_transaction()?;
     for id in ids {
         tx.execute(
             "INSERT OR IGNORE INTO image_collections (image_id, collection_id, added_at)
@@ -184,6 +199,32 @@ pub fn add(library: &Library, ids: &[String], collection_id: &str) -> Result<Vec
             params![id, collection_id, now],
         )?;
     }
+    Ok(())
+}
+
+/// The transaction body of [`remove`], the same split as [`add_in`] and for
+/// the same reason.
+pub(crate) fn remove_in(tx: &Connection, ids: &[String], collection_id: &str) -> Result<()> {
+    for id in ids {
+        tx.execute(
+            "DELETE FROM image_collections WHERE image_id = ?1 AND collection_id = ?2",
+            params![id, collection_id],
+        )?;
+    }
+    Ok(())
+}
+
+/// Put every id in `ids` into `collection_id` (design D3): idempotent per id,
+/// one transaction. Answers with the written rows (design D8), so the caller
+/// can `replace` them without a second `search`.
+pub fn add(library: &Library, ids: &[String], collection_id: &str) -> Result<Vec<ImageRecord>> {
+    require_collection(&library.conn, collection_id)?;
+    if ids.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let tx = library.conn.unchecked_transaction()?;
+    add_in(&tx, ids, collection_id)?;
     tx.commit()?;
 
     // FIXME(collections D9): every bulk sidecar write in this module — here,
@@ -201,8 +242,8 @@ pub fn add(library: &Library, ids: &[String], collection_id: &str) -> Result<Vec
 }
 
 /// Take every id in `ids` out of `collection_id` (design D3): idempotent per
-/// id, one transaction, no `images.updated_at` stamp — the same rule [`add`]
-/// follows, for the same reason. Answers with the written rows (design D8).
+/// id, one transaction — the same rule [`add_in`] follows, for the same
+/// reason. Answers with the written rows (design D8).
 pub fn remove(library: &Library, ids: &[String], collection_id: &str) -> Result<Vec<ImageRecord>> {
     require_collection(&library.conn, collection_id)?;
     if ids.is_empty() {
@@ -210,12 +251,7 @@ pub fn remove(library: &Library, ids: &[String], collection_id: &str) -> Result<
     }
 
     let tx = library.conn.unchecked_transaction()?;
-    for id in ids {
-        tx.execute(
-            "DELETE FROM image_collections WHERE image_id = ?1 AND collection_id = ?2",
-            params![id, collection_id],
-        )?;
-    }
+    remove_in(&tx, ids, collection_id)?;
     tx.commit()?;
 
     crate::sidecar::write_for(&library.paths, &library.conn, ids)?;
@@ -285,6 +321,30 @@ mod tests {
     fn slug_of_a_blank_name_is_empty() {
         assert_eq!(slug(""), "");
         assert_eq!(slug("   "), "");
+    }
+
+    // -- id_for_slug (`stamps` design D2) -------------------------------------
+
+    #[test]
+    fn id_for_slug_finds_the_collection_that_slug_resolves_to() {
+        let (_dir, library) = library();
+        let created = create(&library, "To upload").unwrap();
+
+        let id = id_for_slug(&library.conn, "to_upload").unwrap();
+
+        assert_eq!(id, created.id);
+    }
+
+    #[test]
+    fn id_for_slug_of_an_unknown_slug_is_refused_naming_it() {
+        let (_dir, library) = library();
+
+        let error = id_for_slug(&library.conn, "nope").unwrap_err();
+
+        let AppError::BadRequest(reason) = error else {
+            panic!("got {error}")
+        };
+        assert!(reason.contains("nope"), "{reason}");
     }
 
     // -- list / create -------------------------------------------------------
@@ -506,7 +566,7 @@ mod tests {
     }
 
     #[test]
-    fn add_never_stamps_updated_at() {
+    fn add_never_marks_updated_at() {
         let (_dir, library) = library();
         store(&library, "a");
         let before = ingest::require_record(&library.conn, "a")
@@ -572,7 +632,7 @@ mod tests {
     }
 
     #[test]
-    fn remove_never_stamps_updated_at() {
+    fn remove_never_marks_updated_at() {
         let (_dir, library) = library();
         store(&library, "a");
         let favorites = favorites(&library);

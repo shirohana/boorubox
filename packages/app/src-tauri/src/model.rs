@@ -186,6 +186,25 @@ pub struct TagEntry {
     pub pinned: bool,
 }
 
+/// One edit's every part (`stamps` design D1, D2): parsed from a stamp's text
+/// in the webview, or built directly by the bulk tag dialog and the pinned
+/// chip filling only the parts they mean. `tags::apply_edit` is the one door
+/// every caller of this shape writes through, so a stamp, the dialog and the
+/// chip cannot disagree about what one transaction contains. `add_collections`
+/// and `remove_collections` are slugs (`collections::slug`), resolved to ids
+/// before anything is written; `rating` sets and never clears — clearing has
+/// its own control (`set_rating(None)`), which no metatag spells.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TagEditSpec {
+    pub add: Vec<String>,
+    pub remove: Vec<String>,
+    pub add_collections: Vec<String>,
+    pub remove_collections: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rating: Option<String>,
+}
+
 /// What a site adapter extracted, verbatim. `fields` stays untyped JSON: the
 /// extension owns extraction, and rejecting a capture over an adapter field
 /// shape the app does not read yet would lose the image.
@@ -904,6 +923,33 @@ pub struct RulesRunReport {
     pub invalid: Vec<RuleRunCount>,
 }
 
+/// A saved edit, written once in the tag language and applied by a click
+/// (`stamps` design D1, D3): the text is stored exactly as typed, never the
+/// parsed [`TagEditSpec`] — the grammar belongs to the webview, and storing
+/// the parsed lists would freeze a stamp the user meant to keep editing.
+/// Shaped like [`Rule`]: library-level, listed by creation order rather than
+/// by name, since there is no reordering (`stamps` design D3).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Stamp {
+    pub id: String,
+    pub name: String,
+    pub text: String,
+    /// Epoch milliseconds.
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+
+/// What `stamps_upsert` takes: `id` absent creates, present edits (design D3).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StampInput {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    pub name: String,
+    pub text: String,
+}
+
 /// The library's one free-text scratchpad (`notes` design D3). A library that
 /// has never been written to reads as an empty note, never an error.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -1087,6 +1133,42 @@ mod tests {
                 category,
             );
         }
+    }
+
+    /// `stamps` task 1.1: `TagEditSpec`'s wire shape — camelCase keys, and
+    /// `rating` absent from the JSON entirely when a stamp does not set one,
+    /// the same convention `RuleInput.id` already follows for an absent field.
+    #[test]
+    fn a_tag_edit_spec_crosses_the_wire_in_camel_case() {
+        let edit = TagEditSpec {
+            add: vec!["cat".to_string(), "animal".to_string()],
+            remove: vec!["dog".to_string()],
+            add_collections: vec!["cute".to_string()],
+            remove_collections: vec!["uncategorized".to_string()],
+            rating: Some("g".to_string()),
+        };
+
+        assert_eq!(
+            serde_json::to_value(&edit).unwrap(),
+            serde_json::json!({
+                "add": ["cat", "animal"],
+                "remove": ["dog"],
+                "addCollections": ["cute"],
+                "removeCollections": ["uncategorized"],
+                "rating": "g",
+            }),
+        );
+
+        let tag_only = TagEditSpec {
+            add: vec!["cat".to_string()],
+            ..Default::default()
+        };
+        let json = serde_json::to_value(&tag_only).unwrap();
+        assert!(json.get("rating").is_none(), "{json}");
+        assert_eq!(
+            serde_json::from_value::<TagEditSpec>(json).unwrap(),
+            tag_only
+        );
     }
 
     fn bare_image(id: &str) -> ImageRecord {
@@ -1526,6 +1608,50 @@ mod tests {
         assert_eq!(
             serde_json::to_value(&editing).unwrap()["id"],
             "r-1".to_string()
+        );
+    }
+
+    /// `stamps` task 1.2: the same drift risk `a_rule_and_its_list_entry_
+    /// cross_the_wire_in_camel_case` pins for `Rule` — camelCase keys, and
+    /// `StampInput.id` absent from the JSON entirely when creating.
+    #[test]
+    fn a_stamp_and_its_input_cross_the_wire_in_camel_case() {
+        let stamp = Stamp {
+            id: "s-1".to_string(),
+            name: "Cat".to_string(),
+            text: "cat animal".to_string(),
+            created_at: 1_700_000_000_000,
+            updated_at: 1_700_000_000_001,
+        };
+
+        assert_eq!(
+            serde_json::to_value(&stamp).unwrap(),
+            serde_json::json!({
+                "id": "s-1",
+                "name": "Cat",
+                "text": "cat animal",
+                "createdAt": 1_700_000_000_000i64,
+                "updatedAt": 1_700_000_000_001i64,
+            }),
+        );
+
+        let creating = StampInput {
+            id: None,
+            name: "Cat".to_string(),
+            text: "cat animal".to_string(),
+        };
+        assert_eq!(
+            serde_json::to_value(&creating).unwrap(),
+            serde_json::json!({ "name": "Cat", "text": "cat animal" }),
+        );
+
+        let editing = StampInput {
+            id: Some("s-1".to_string()),
+            ..creating
+        };
+        assert_eq!(
+            serde_json::to_value(&editing).unwrap()["id"],
+            "s-1".to_string()
         );
     }
 

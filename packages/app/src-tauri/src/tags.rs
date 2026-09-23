@@ -1,18 +1,19 @@
 //! The one tag write path, the rating write, and the autocomplete vocabulary.
 //!
 //! Every rule about what a tag edit *means* to the library lives here rather
-//! than in the webview (§6, design D3): `bulk_update_tags` and the auto-tag
-//! rules will write tags without ever passing through the editor, and each
-//! would otherwise need its own copy of the rating rule and the orphan sweep.
+//! than in the webview (§6, design D3): `apply_edit` and the auto-tag rules
+//! will write tags without ever passing through the editor, and each would
+//! otherwise need its own copy of the rating rule and the orphan sweep.
 
 use rusqlite::types::Value;
 use rusqlite::{Connection, params, params_from_iter};
 
+use crate::collections;
 use crate::db;
 use crate::error::{AppError, Result};
 use crate::ingest;
 use crate::library::Library;
-use crate::model::{ImageRecord, TagCategory, TagCount, TagEntry};
+use crate::model::{ImageRecord, TagCategory, TagCount, TagEditSpec, TagEntry};
 use crate::query::{ID_CHUNK, placeholders};
 
 /// Ensure the tag row exists — general, unless [`link_one_tag`] already gave
@@ -55,7 +56,7 @@ pub fn update_tags(library: &Library, id: &str, tags: &[String]) -> Result<Image
     let tx = library.conn.unchecked_transaction()?;
     // First, so that an image that is not there refuses the edit before any tag
     // row is written; the transaction rolls the rest back on the way out.
-    stamp(&tx, id, text.rating.as_deref())?;
+    mark_updated(&tx, id, text.rating.as_deref())?;
     let unlinked = unlink_tags_other_than(&tx, id, &text.tags)?;
     let categorised = link_tags(&tx, id, &text, Conflict::Refuse)?;
     collect_orphans(&tx, &unlinked)?;
@@ -97,26 +98,79 @@ pub fn set_rating(library: &Library, id: &str, rating: Option<&str>) -> Result<I
     ingest::require_record(&library.conn, id)
 }
 
-/// One tag edit across every id in `ids`, in a single transaction
-/// (`selection-and-bulk` design D10): every id gets `add` linked and `remove`
-/// unlinked, orphans are collected once at the end, and the whole thing commits
-/// together or not at all — an id partway through a large selection failing
-/// must not leave the ones before it edited and the ones after it untouched.
+/// One write for every part of a stamp (`stamps` design D2): tags added and
+/// removed, collections joined and left, the rating set, and a category
+/// prefix's tag created, over every id in `ids`, in a single transaction — a
+/// stamp applied to one image or to a selection lands whole or not at all, an
+/// id partway through a large selection failing must not leave the ones
+/// before it edited and the ones after it untouched (design D2), so it, the
+/// bulk tag dialog and the pinned chip's edit — each filling only their own
+/// part of `edit` — cannot disagree about what one transaction contains.
 ///
-/// Reuses [`link_tags`], [`remove_tags`] and `collect_orphans` rather than
-/// looping `update_tags`: that command replaces an image's *whole* tag set from
-/// free text, which is not what a bulk add/remove means, and a loop of it would
-/// also be one transaction per image (design D10's "not a loop over the
-/// single-image command"). `add` is read once for the whole call (design D4):
-/// a category prefix in it creates a tag the same way the editor's does, and a
-/// conflicting one refuses the whole edit before any id is touched.
-pub fn bulk_update_tags(
+/// Collection slugs are resolved to ids through [`collections::id_for_slug`]
+/// before anything is written: an edit naming a collection that does not
+/// exist refuses the whole thing, over however many ids, rather than leaving
+/// the ones already processed changed.
+///
+/// [`mark_updated`] runs only when `edit.add`, `edit.remove` or `edit.rating`
+/// is non-empty (spec "An apply is one write"): an edit that only moves an
+/// image between collections must not move `updated_at`, the rule
+/// [`collections::add`]/[`collections::remove`] already follow for the
+/// collection menus.
+///
+/// A spec with nothing set in any part answers with the records read straight
+/// back, before any transaction opens and before a single sidecar is touched
+/// (review finding 5): it is a no-op, and a no-op costs nothing more than
+/// reading what was asked for. A spec that moves collections but marks
+/// nothing still has to name a missing id (review finding 4): with no
+/// `mark_updated` call to catch it — the only per-id check the rest of this
+/// function makes — a collection-only edit over an id nobody has would
+/// otherwise close its transaction having silently done nothing.
+///
+/// A `rating` outside [`RATINGS`] is refused before the transaction opens,
+/// the same guard [`set_rating`] and [`bulk_set_rating`] apply to every other
+/// door onto `images.rating` (review finding 2).
+///
+/// Answers with the written rows (design D2), so a single-tile apply in edit
+/// mode can show the result without a search re-run — the same reason
+/// [`collections::add`]/[`collections::remove`] already answer this way. Read
+/// once, after the commit, rather than through [`crate::sidecar::write_for`]'s
+/// own `load_records` and then a second time for the answer (review finding
+/// 3): [`crate::sidecar::write_for_records`] writes the sidecars from the same
+/// records this function already has to load to answer with.
+pub fn apply_edit(
     library: &Library,
     ids: &[String],
-    add: &[String],
-    remove: &[String],
-) -> Result<()> {
-    let text = read_metatags(add);
+    edit: &TagEditSpec,
+) -> Result<Vec<ImageRecord>> {
+    let marks = !edit.add.is_empty() || !edit.remove.is_empty() || edit.rating.is_some();
+    let moves_collections = !edit.add_collections.is_empty() || !edit.remove_collections.is_empty();
+    if !marks && !moves_collections {
+        return ingest::load_records(&library.conn, ids);
+    }
+
+    if let Some(value) = &edit.rating
+        && !RATINGS.contains(&value.as_str())
+    {
+        return Err(AppError::BadRequest(format!("{value:?} is not a rating")));
+    }
+
+    let text = read_metatags(&edit.add);
+
+    let add_to: Vec<String> = edit
+        .add_collections
+        .iter()
+        .map(|slug| collections::id_for_slug(&library.conn, slug))
+        .collect::<Result<_>>()?;
+    let remove_from: Vec<String> = edit
+        .remove_collections
+        .iter()
+        .map(|slug| collections::id_for_slug(&library.conn, slug))
+        .collect::<Result<_>>()?;
+
+    if !marks {
+        ingest::require_records_exist(&library.conn, ids)?;
+    }
 
     let tx = library.conn.unchecked_transaction()?;
     let mut unlinked = Vec::new();
@@ -124,18 +178,27 @@ pub fn bulk_update_tags(
     for id in ids {
         // First, so an id with no row fails the whole call before any tag link
         // changes — the transaction rolls every earlier id back on the way out.
-        stamp(&tx, id, None)?;
-        unlinked.extend(remove_tags(&tx, id, remove)?);
+        if marks {
+            mark_updated(&tx, id, edit.rating.as_deref())?;
+        }
+        unlinked.extend(remove_tags(&tx, id, &edit.remove)?);
         categorised |= link_tags(&tx, id, &text, Conflict::Refuse)?;
+    }
+    for collection_id in &add_to {
+        collections::add_in(&tx, ids, collection_id)?;
+    }
+    for collection_id in &remove_from {
+        collections::remove_in(&tx, ids, collection_id)?;
     }
     collect_orphans(&tx, &unlinked)?;
     tx.commit()?;
 
-    crate::sidecar::write_for(&library.paths, &library.conn, ids)?;
+    let records = ingest::load_records(&library.conn, ids)?;
+    crate::sidecar::write_for_records(&library.paths, &records)?;
     if categorised {
         crate::sidecar::write_library(&library.paths, &library.conn)?;
     }
-    Ok(())
+    Ok(records)
 }
 
 /// Link `id` to each of `tags`, creating a plain, general `tags` row for one
@@ -392,7 +455,7 @@ pub struct TagText {
 /// Read `tags` into [`TagText`]: the category prefix reads at the same pass
 /// over the same tokens as the rating metatag, not a second walk over the
 /// list. Called by the tag editor's write path (`update_tags`), by
-/// `bulk_update_tags`'s add list, and by ingest's and the auto-tag rules' own
+/// `apply_edit`'s add list, and by ingest's and the auto-tag rules' own
 /// application of a rule's tags, so a rule's `artist:cat` or `rating:e` and
 /// one typed into the editor mean the same thing.
 ///
@@ -497,7 +560,7 @@ pub enum Conflict {
 /// Link `image_id` to every tag in `text.tags`, creating a row under its named
 /// category for one not seen before, and settling every category `text`
 /// named against whatever category the tag already has (`tag-vocabulary`
-/// design D4). `update_tags`, `bulk_update_tags` and the rule application
+/// design D4). `update_tags`, `apply_edit` and the rule application
 /// (`ingest::insert_rows`, `rules::apply_rules_to_image`) all go through here,
 /// so a categorised tag is created identically everywhere it can be created.
 ///
@@ -660,7 +723,7 @@ pub fn set_pinned(library: &Library, name: &str, pinned: bool) -> Result<Vec<Tag
 
 /// Record the edit against the image, and refuse one that names no image.
 /// Called by the tag editor's writers and by `rules::apply_rules_to_image`, so
-/// a run stamps a row exactly as an edit does.
+/// a run marks a row exactly as an edit does.
 ///
 /// A missing rating token leaves the rating alone rather than clearing it: the
 /// tag box has no way to spell "take the rating away", which is what
@@ -668,7 +731,7 @@ pub fn set_pinned(library: &Library, name: &str, pinned: bool) -> Result<Vec<Tag
 ///
 /// `updated_at` moves on every edit, or "sort by last change" — one of the four
 /// sorts — would be a lie (design D9).
-pub(crate) fn stamp(conn: &Connection, id: &str, rating: Option<&str>) -> Result<()> {
+pub(crate) fn mark_updated(conn: &Connection, id: &str, rating: Option<&str>) -> Result<()> {
     let now = db::now_ms();
     let changed = match rating {
         Some(rating) => conn.execute(
@@ -1053,7 +1116,7 @@ mod tests {
             store(&library, id, None, &[]);
         }
 
-        let error = bulk_update_tags(&library, &ids, &strs(&["artist:cat"]), &[]).unwrap_err();
+        let error = apply_edit(&library, &ids, &spec(&["artist:cat"], &[])).unwrap_err();
 
         assert!(matches!(error, AppError::BadRequest(_)), "got {error}");
         for id in &ids {
@@ -1304,7 +1367,7 @@ mod tests {
     }
 
     #[test]
-    fn an_edit_stamps_the_image_as_changed() {
+    fn an_edit_marks_the_image_as_changed() {
         let (_dir, library) = library();
         store(&library, "a", None, &[]);
         let before = ingest::require_record(&library.conn, "a").unwrap();
@@ -1347,6 +1410,16 @@ mod tests {
         values.iter().map(|value| (*value).to_string()).collect()
     }
 
+    /// A tag-only [`TagEditSpec`], for a test that only cares about `add` and
+    /// `remove`.
+    fn spec(add: &[&str], remove: &[&str]) -> TagEditSpec {
+        TagEditSpec {
+            add: strs(add),
+            remove: strs(remove),
+            ..Default::default()
+        }
+    }
+
     #[test]
     fn bulk_add_reaches_every_selected_image() {
         let (_dir, library) = library();
@@ -1355,7 +1428,7 @@ mod tests {
             store(&library, id, None, &[]);
         }
 
-        bulk_update_tags(&library, &ids, &strs(&["cat", "cute"]), &[]).unwrap();
+        apply_edit(&library, &ids, &spec(&["cat", "cute"], &[])).unwrap();
 
         for id in &ids {
             assert_eq!(
@@ -1370,7 +1443,7 @@ mod tests {
         let (_dir, library) = library();
         store(&library, "a", None, &["cat"]);
 
-        bulk_update_tags(&library, &strs(&["a"]), &strs(&["cat"]), &strs(&["dog"])).unwrap();
+        apply_edit(&library, &strs(&["a"]), &spec(&["cat"], &["dog"])).unwrap();
 
         assert_eq!(
             ingest::require_record(&library.conn, "a").unwrap().tags,
@@ -1383,7 +1456,7 @@ mod tests {
         let (_dir, library) = library();
         store(&library, "a", None, &["cat", "old"]);
 
-        bulk_update_tags(&library, &strs(&["a"]), &strs(&["new"]), &strs(&["old"])).unwrap();
+        apply_edit(&library, &strs(&["a"]), &spec(&["new"], &["old"])).unwrap();
 
         assert_eq!(
             ingest::require_record(&library.conn, "a").unwrap().tags,
@@ -1397,11 +1470,10 @@ mod tests {
         store(&library, "a", None, &["cat"]);
         store(&library, "b", None, &["cat"]);
 
-        let error = bulk_update_tags(
+        let error = apply_edit(
             &library,
             &strs(&["a", "no-such-id", "b"]),
-            &strs(&["new"]),
-            &[],
+            &spec(&["new"], &[]),
         )
         .unwrap_err();
 
@@ -1425,7 +1497,7 @@ mod tests {
             store(&library, id, None, &[]);
         }
 
-        bulk_update_tags(&library, &ids, &strs(&["cat", "cute"]), &[]).unwrap();
+        apply_edit(&library, &ids, &spec(&["cat", "cute"], &[])).unwrap();
 
         for id in &ids {
             let sidecar = crate::sidecar::read(&crate::sidecar::path(&library.paths, id)).unwrap();
@@ -1439,9 +1511,285 @@ mod tests {
         store(&library, "a", None, &["cat", "solo"]);
         store(&library, "b", None, &["cat"]);
 
-        bulk_update_tags(&library, &strs(&["a", "b"]), &[], &strs(&["solo"])).unwrap();
+        apply_edit(&library, &strs(&["a", "b"]), &spec(&[], &["solo"])).unwrap();
 
         assert_eq!(tag_names(&library), vec!["cat".to_string()]);
+    }
+
+    /// `apply_edit` answers with the written rows (design D2), so a
+    /// single-tile apply in edit mode can show the result without a search
+    /// re-run — proven directly rather than only through the sidecar or the
+    /// tag-table tests above, none of which look at the answer.
+    #[test]
+    fn apply_edit_answers_with_the_written_rows() {
+        let (_dir, library) = library();
+        store(&library, "a", None, &[]);
+        store(&library, "b", None, &[]);
+
+        let records = apply_edit(&library, &strs(&["a", "b"]), &spec(&["cat"], &[])).unwrap();
+
+        assert_eq!(records.len(), 2);
+        for record in &records {
+            assert_eq!(record.tags, vec!["cat".to_string()]);
+        }
+    }
+
+    // -- `stamps` spec "A stamp is an edit" / "An apply is one write" --------
+
+    fn full_spec(
+        add: &[&str],
+        remove: &[&str],
+        add_collections: &[&str],
+        remove_collections: &[&str],
+        rating: Option<&str>,
+    ) -> TagEditSpec {
+        TagEditSpec {
+            add: strs(add),
+            remove: strs(remove),
+            add_collections: strs(add_collections),
+            remove_collections: strs(remove_collections),
+            rating: rating.map(str::to_string),
+        }
+    }
+
+    #[test]
+    fn tags_both_ways() {
+        let (_dir, library) = library();
+        store(&library, "a", None, &["dog", "cute"]);
+
+        apply_edit(&library, &strs(&["a"]), &spec(&["cat", "animal"], &["dog"])).unwrap();
+
+        assert_eq!(
+            ingest::require_record(&library.conn, "a").unwrap().tags,
+            vec!["animal".to_string(), "cat".to_string(), "cute".to_string()],
+        );
+    }
+
+    #[test]
+    fn moving_between_collections() {
+        let (_dir, library) = library();
+        store(&library, "a", None, &[]);
+        let cute = crate::collections::create(&library, "Cute").unwrap();
+        crate::collections::add(&library, &strs(&["a"]), "favorites").unwrap();
+
+        apply_edit(
+            &library,
+            &strs(&["a"]),
+            &full_spec(&[], &[], &["cute"], &["favorites"], None),
+        )
+        .unwrap();
+
+        assert_eq!(
+            ingest::require_record(&library.conn, "a")
+                .unwrap()
+                .collections,
+            vec![cute.id],
+        );
+    }
+
+    #[test]
+    fn a_rating_sets_and_stays() {
+        let (_dir, library) = library();
+        store(&library, "a", Some("s"), &[]);
+
+        apply_edit(
+            &library,
+            &strs(&["a"]),
+            &full_spec(&[], &[], &[], &[], Some("g")),
+        )
+        .unwrap();
+        assert_eq!(rating_of(&library, "a").as_deref(), Some("g"));
+
+        apply_edit(
+            &library,
+            &strs(&["a"]),
+            &full_spec(&[], &[], &[], &[], Some("g")),
+        )
+        .unwrap();
+        assert_eq!(rating_of(&library, "a").as_deref(), Some("g"));
+    }
+
+    #[test]
+    fn an_unknown_collection_refuses_with_nothing_written_over_fifty_ids() {
+        let (_dir, library) = library();
+        let ids: Vec<String> = (0..50).map(|index| format!("img-{index}")).collect();
+        for id in &ids {
+            store(&library, id, None, &["cat"]);
+        }
+
+        let error =
+            apply_edit(&library, &ids, &full_spec(&[], &[], &["nope"], &[], None)).unwrap_err();
+
+        let AppError::BadRequest(reason) = error else {
+            panic!("got {error}")
+        };
+        assert!(reason.contains("nope"), "{reason}");
+        for id in &ids {
+            assert_eq!(
+                ingest::require_record(&library.conn, id).unwrap().tags,
+                vec!["cat".to_string()],
+                "nothing of the fifty is changed",
+            );
+        }
+    }
+
+    #[test]
+    fn a_category_conflict_refuses() {
+        let (_dir, library) = library();
+        store(&library, "a", None, &["cat"]);
+
+        let error = apply_edit(&library, &strs(&["a"]), &spec(&["artist:cat"], &[])).unwrap_err();
+
+        assert!(matches!(error, AppError::BadRequest(_)), "got {error}");
+        assert_eq!(
+            ingest::require_record(&library.conn, "a").unwrap().tags,
+            vec!["cat".to_string()],
+        );
+        assert_eq!(category_of(&library, "cat"), TagCategory::General);
+    }
+
+    #[test]
+    fn collection_only_leaves_updated_at() {
+        let (_dir, library) = library();
+        store(&library, "a", None, &[]);
+        let cute = crate::collections::create(&library, "Cute").unwrap();
+        let before = ingest::require_record(&library.conn, "a")
+            .unwrap()
+            .updated_at;
+
+        apply_edit(
+            &library,
+            &strs(&["a"]),
+            &full_spec(&[], &[], &["cute"], &[], None),
+        )
+        .unwrap();
+
+        assert_eq!(
+            ingest::require_record(&library.conn, "a")
+                .unwrap()
+                .updated_at,
+            before,
+            "a collection-only apply is not a change to the picture",
+        );
+        assert_eq!(
+            ingest::require_record(&library.conn, "a")
+                .unwrap()
+                .collections,
+            vec![cute.id],
+        );
+    }
+
+    /// Review finding 2: `apply_edit` must refuse a rating outside
+    /// [`RATINGS`] before the transaction opens, the same guard `set_rating`
+    /// and `bulk_set_rating` already apply.
+    #[test]
+    fn an_invalid_rating_refuses_before_anything_is_written() {
+        let (_dir, library) = library();
+        store(&library, "a", None, &["cat"]);
+
+        let error = apply_edit(
+            &library,
+            &strs(&["a"]),
+            &full_spec(&["dog"], &[], &[], &[], Some("x")),
+        )
+        .unwrap_err();
+
+        assert!(matches!(error, AppError::BadRequest(_)), "got {error}");
+        assert_eq!(
+            ingest::require_record(&library.conn, "a").unwrap().tags,
+            vec!["cat".to_string()],
+            "nothing is written when the rating is refused",
+        );
+    }
+
+    /// Review finding 4: a collection-only spec never runs `mark_updated`, the
+    /// only per-id check the rest of `apply_edit` makes — without a check of
+    /// its own, a remove-only or add-only spec over an id nobody has would
+    /// close its transaction having silently done nothing.
+    #[test]
+    fn a_collection_only_spec_over_an_unknown_id_refuses_with_not_found() {
+        let (_dir, library) = library();
+        crate::collections::create(&library, "Cute").unwrap();
+
+        let error = apply_edit(
+            &library,
+            &strs(&["no-such-id"]),
+            &full_spec(&[], &[], &["cute"], &[], None),
+        )
+        .unwrap_err();
+
+        assert!(matches!(error, AppError::NotFound(_)), "got {error}");
+    }
+
+    /// Review finding 5: a spec with nothing set in any part is a no-op, read
+    /// straight back with no transaction and no sidecar rewrite — proven here
+    /// by the sidecar's own file never being touched, the same way
+    /// `a_general_prefixed_save_does_not_rewrite_library_json_but_a_
+    /// categorised_one_does` pins the library-file case.
+    #[test]
+    fn an_entirely_empty_spec_changes_nothing_and_rewrites_no_sidecar() {
+        let (_dir, library) = library();
+        store(&library, "a", None, &["cat"]);
+        let sidecar_path = crate::sidecar::path(&library.paths, "a");
+        let before = std::fs::metadata(&sidecar_path)
+            .unwrap()
+            .modified()
+            .unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(10));
+
+        let records = apply_edit(&library, &strs(&["a"]), &TagEditSpec::default()).unwrap();
+
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].tags, vec!["cat".to_string()]);
+        assert_eq!(
+            std::fs::metadata(&sidecar_path)
+                .unwrap()
+                .modified()
+                .unwrap(),
+            before,
+            "an entirely empty spec must not rewrite the sidecar",
+        );
+    }
+
+    /// Review finding 3: `apply_edit` used to build one `IN (…)` over every id
+    /// twice — once inside `sidecar::write_for`, once for its own answer —
+    /// neither chunked; `load_records` chunks now, proven here past the size
+    /// that used to be one statement with one placeholder per id.
+    #[test]
+    fn apply_edit_reaches_every_id_past_the_sqlite_variable_chunk_size() {
+        let (_dir, library) = library();
+        let ids: Vec<String> = (0..2500).map(|index| format!("img-{index}")).collect();
+        for id in &ids {
+            bare_image(&library, id);
+        }
+
+        let records = apply_edit(&library, &ids, &spec(&["cat"], &[])).unwrap();
+
+        assert_eq!(records.len(), 2500);
+        for id in &ids {
+            assert_eq!(
+                ingest::require_record(&library.conn, id).unwrap().tags,
+                vec!["cat".to_string()],
+            );
+        }
+    }
+
+    #[test]
+    fn a_tag_part_moves_it() {
+        let (_dir, library) = library();
+        store(&library, "a", None, &[]);
+        let before = ingest::require_record(&library.conn, "a")
+            .unwrap()
+            .updated_at;
+
+        apply_edit(&library, &strs(&["a"]), &spec(&["cat"], &[])).unwrap();
+
+        assert!(
+            ingest::require_record(&library.conn, "a")
+                .unwrap()
+                .updated_at
+                > before,
+        );
     }
 
     #[test]
@@ -1774,7 +2122,7 @@ mod tests {
                 .unwrap()
                 .updated_at,
             before.updated_at,
-            "a refused rating must not stamp the row either",
+            "a refused rating must not mark the row either",
         );
     }
 
@@ -1799,7 +2147,7 @@ mod tests {
     }
 
     #[test]
-    fn setting_a_rating_stamps_the_image_as_changed() {
+    fn setting_a_rating_marks_the_image_as_changed() {
         let (_dir, library) = library();
         store(&library, "a", None, &[]);
         let before = ingest::require_record(&library.conn, "a").unwrap();

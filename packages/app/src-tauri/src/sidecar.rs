@@ -17,11 +17,12 @@ use crate::error::{AppError, Result};
 use crate::ingest;
 use crate::library::LibraryPaths;
 use crate::model::{
-    BooruSite, Collection, ImageRecord, ImageSource, Note, PostRef, Rule, SiteAdapterRecord,
+    BooruSite, Collection, ImageRecord, ImageSource, Note, PostRef, Rule, SiteAdapterRecord, Stamp,
     TagEntry,
 };
 use crate::notes;
 use crate::rules;
+use crate::stamps;
 use crate::tags;
 
 /// The sidecar format's own number (design D1): what a future reader has to
@@ -116,13 +117,13 @@ impl From<&ImageRecord> for Sidecar {
     }
 }
 
-/// `library.json`: the rules, the booru sites, the note, the collections and
-/// the tag vocabulary's exceptions — everything in the library that is not
-/// per image (design D3). Rule and site ids are the
-/// database's own, written and restored verbatim: `posts.site` holds a site
-/// id and rule ids travel in the export format, so regenerating either on
-/// rebuild would break a reference. No API key, ever: `BooruSite` has no field
-/// for one (`booru-sites` design D7), so that is a property of the type
+/// `library.json`: the rules, the booru sites, the note, the collections, the
+/// tag vocabulary's exceptions and the stamps — everything in the library
+/// that is not per image (design D3, `stamps` design D3). Rule and site ids
+/// are the database's own, written and restored verbatim: `posts.site` holds
+/// a site id and rule ids travel in the export format, so regenerating either
+/// on rebuild would break a reference. No API key, ever: `BooruSite` has no
+/// field for one (`booru-sites` design D7), so that is a property of the type
 /// serialized here, not a rule this module has to remember.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -151,6 +152,13 @@ pub struct LibraryFile {
     /// restored onto the rows verbatim.
     #[serde(default)]
     pub tags: Option<Vec<TagEntry>>,
+    /// The stamps, by creation order (`stamps` design D3). The same `Option`
+    /// reasoning as `collections` and `tags` above: `None` is a file written
+    /// before this change and says nothing about stamps, while `Some` — empty
+    /// included — is restored onto the table verbatim; this build always
+    /// writes `Some`.
+    #[serde(default)]
+    pub stamps: Option<Vec<Stamp>>,
 }
 
 /// Where `id`'s sidecar lives: the same bucket as its image, through
@@ -227,12 +235,21 @@ pub fn write(paths: &LibraryPaths, sidecar: &Sidecar) -> Result<()> {
 }
 
 /// Write every id in `ids`' sidecar from the row it has right now: one
-/// `load_records` call for the whole slice (design D4), then one file per id.
+/// `load_records` call for the whole slice (design D4), then [`write_for_records`].
 /// An id with no row is silently skipped — `load_records` already drops it —
 /// rather than failing the whole call over a caller's stale id.
 pub fn write_for(paths: &LibraryPaths, conn: &Connection, ids: &[String]) -> Result<()> {
-    for record in ingest::load_records(conn, ids)? {
-        write(paths, &Sidecar::from(&record))?;
+    write_for_records(paths, &ingest::load_records(conn, ids)?)
+}
+
+/// [`write_for`]'s own body, split out for a caller that already holds the
+/// records (review finding 3, `stamps`): `tags::apply_edit` reads `ids` once,
+/// for its own answer, and writes the sidecars from that same read rather
+/// than through `write_for`'s own second `load_records` call over the same
+/// ids.
+pub fn write_for_records(paths: &LibraryPaths, records: &[ImageRecord]) -> Result<()> {
+    for record in records {
+        write(paths, &Sidecar::from(record))?;
     }
     Ok(())
 }
@@ -272,8 +289,8 @@ pub fn read_library(path: &Path) -> Result<LibraryFile> {
 }
 
 /// Write `library.json` from the rules, the booru sites, the note, the
-/// collections and the tag vocabulary as they stand right now (design D3,
-/// `tag-vocabulary` design D2).
+/// collections, the tag vocabulary and the stamps as they stand right now
+/// (design D3, `tag-vocabulary` design D2, `stamps` design D3).
 pub fn write_library(paths: &LibraryPaths, conn: &Connection) -> Result<()> {
     let file = LibraryFile {
         version: LIBRARY_VERSION,
@@ -285,6 +302,7 @@ pub fn write_library(paths: &LibraryPaths, conn: &Connection) -> Result<()> {
         note: notes::get(conn)?,
         collections: Some(collections::list(conn)?),
         tags: Some(tags::vocabulary(conn)?),
+        stamps: Some(stamps::list(conn)?),
     };
     let bytes = serde_json::to_vec_pretty(&file).map_err(|error| {
         AppError::BadRequest(format!("library file cannot be encoded: {error}"))
@@ -675,6 +693,15 @@ mod tests {
         notes::set(&library, "remember to tag these").unwrap();
         store(&library, "a", &[]);
         crate::tags::update_tags(&library, "a", &["artist:kantoku".to_string()]).unwrap();
+        let stamp = crate::stamps::upsert(
+            &library,
+            &crate::model::StampInput {
+                id: None,
+                name: "Cat".to_string(),
+                text: "cat animal".to_string(),
+            },
+        )
+        .unwrap();
 
         write_library(&library.paths, &library.conn).unwrap();
         let file = read_library(&library_path(&library.paths)).unwrap();
@@ -698,6 +725,8 @@ mod tests {
                 pinned: false,
             }]
         );
+        let stamps = file.stamps.expect("the key is always written");
+        assert_eq!(stamps, vec![stamp]);
     }
 
     /// `tag-vocabulary` design D2: additive, so a `library.json` written
@@ -717,6 +746,25 @@ mod tests {
         let read_back = read_library(&file).unwrap();
 
         assert_eq!(read_back.tags, None);
+    }
+
+    /// `stamps` design D3: the same additive rule as `tags` and `collections`
+    /// above — a `library.json` written before this change has no `stamps`
+    /// key at all and reads as `None` rather than failing to parse.
+    #[test]
+    fn a_library_file_from_before_stamps_with_no_stamps_key_reads_as_none() {
+        let (_dir, library) = library();
+
+        write_library(&library.paths, &library.conn).unwrap();
+        let file = library_path(&library.paths);
+        let mut json: serde_json::Value =
+            serde_json::from_slice(&fs::read(&file).unwrap()).unwrap();
+        json.as_object_mut().unwrap().remove("stamps");
+        fs::write(&file, serde_json::to_vec_pretty(&json).unwrap()).unwrap();
+
+        let read_back = read_library(&file).unwrap();
+
+        assert_eq!(read_back.stamps, None);
     }
 
     #[test]

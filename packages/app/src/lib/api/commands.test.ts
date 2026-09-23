@@ -13,7 +13,10 @@ import type {
   RulesImportReport,
   RulesRunReport,
   SearchRequest,
+  Stamp,
+  StampInput,
   TagCounts,
+  TagEditSpec,
   TagEntry,
 } from '@boorubox/shared'
 import {
@@ -26,9 +29,9 @@ import { img } from '$lib/domain/image-fixture'
 import { clearMocks, mockIPC } from '@tauri-apps/api/mocks'
 import { afterEach, expect, it, vi } from 'vitest'
 import {
+  applyEdit,
   appSettings,
   bulkSetRating,
-  bulkUpdateTags,
   bundlePlan,
   closeLibrary,
   deleteForever,
@@ -70,6 +73,9 @@ import {
   setTagCategory,
   setTagPinned,
   setTheme,
+  stampsDelete,
+  stampsList,
+  stampsUpsert,
   tagCounts,
   tagSuggestions,
   tagVocabulary,
@@ -392,14 +398,18 @@ it('matching_ids wraps the request and the candidate ids and returns the subset 
   expect(calls).toHaveBeenCalledWith('matching_ids', { req: request, ids: ['a', 'b'] })
 })
 
-it('bulk_update_tags passes the ids, the tags to add and the tags to remove', async () => {
-  const calls = spyIPC(null)
-  await bulkUpdateTags(['a', 'b'], ['cat'], ['dog'])
-  expect(calls).toHaveBeenCalledWith('bulk_update_tags', {
-    ids: ['a', 'b'],
+it('apply_edit passes the ids and the edit, and returns the written rows', async () => {
+  const edit: TagEditSpec = {
     add: ['cat'],
     remove: ['dog'],
-  })
+    addCollections: ['cute'],
+    removeCollections: [],
+    rating: 'g',
+  }
+  const records = [img({ id: 'a', tags: ['cat'] })]
+  const calls = spyIPC(records)
+  await expect(applyEdit(['a', 'b'], edit)).resolves.toEqual(records)
+  expect(calls).toHaveBeenCalledWith('apply_edit', { ids: ['a', 'b'], edit })
 })
 
 it('bulk_set_rating passes the ids and the rating, and null to clear it', async () => {
@@ -550,6 +560,33 @@ it('rules_import passes the path and returns the report', async () => {
   const calls = spyIPC(report)
   await expect(rulesImport('/library/rules.json')).resolves.toEqual(report)
   expect(calls).toHaveBeenCalledWith('rules_import', { path: '/library/rules.json' })
+})
+
+const stamp: Stamp = {
+  id: 's-1',
+  name: 'Cat',
+  text: 'cat animal',
+  createdAt: 1_700_000_000_000,
+  updatedAt: 1_700_000_000_000,
+}
+
+it('stamps_list takes no arguments and returns the list', async () => {
+  const calls = spyIPC([stamp])
+  await expect(stampsList()).resolves.toEqual([stamp])
+  expect(calls).toHaveBeenCalledWith('stamps_list', {})
+})
+
+it('stamps_upsert passes the input and returns the row', async () => {
+  const input: StampInput = { name: 'Cat', text: 'cat animal' }
+  const calls = spyIPC(stamp)
+  await expect(stampsUpsert(input)).resolves.toEqual(stamp)
+  expect(calls).toHaveBeenCalledWith('stamps_upsert', { input })
+})
+
+it('stamps_delete passes the id', async () => {
+  const calls = spyIPC(null)
+  await stampsDelete('s-1')
+  expect(calls).toHaveBeenCalledWith('stamps_delete', { id: 's-1' })
 })
 
 it('note_get takes no arguments and returns the note', async () => {

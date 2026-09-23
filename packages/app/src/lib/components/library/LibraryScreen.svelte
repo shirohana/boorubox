@@ -5,7 +5,7 @@
   // the search, the viewer, the inspector and the selection are the same
   // components in both. The view decides the request that is searched, which
   // actions each control offers, and what the empty state says — nothing else.
-  import type { DeleteReport, ExportReport, ImageRecord, Rating } from '@boorubox/shared'
+  import type { DeleteReport, ExportReport, ImageRecord, Rating, TagEditSpec } from '@boorubox/shared'
   import {
     CLICK_ZOOM_CEILING_DEFAULT,
     GRID_TILE_DEFAULT,
@@ -13,12 +13,13 @@
     GRID_TILE_MIN,
   } from '@boorubox/shared'
   import PanelRightIcon from '@lucide/svelte/icons/panel-right'
+  import StampIcon from '@lucide/svelte/icons/stamp'
   import {
+    applyEdit,
     booruSites,
     browseSession,
     buildSearchRequest,
     bulkSetRating,
-    bulkUpdateTags,
     deleteForever,
     emptyTrash,
     errorText,
@@ -31,6 +32,7 @@
     searchIds,
     searchPosition,
     settings,
+    stamps,
     trash,
     trashImages,
     vocabulary,
@@ -42,6 +44,7 @@
   import CollectionsSection from '$lib/components/tags/CollectionsSection.svelte'
   import RatingPills from '$lib/components/tags/RatingPills.svelte'
   import TagSidebar from '$lib/components/tags/TagSidebar.svelte'
+  import { parseStamp } from '$lib/domain/stamp'
   import DeleteReportCard from './DeleteReportCard.svelte'
   import EmptyState from './EmptyState.svelte'
   import { isOrphanedFocus } from './focus-handback'
@@ -57,16 +60,19 @@
   import type { ConfirmPrompt, PendingWrite } from './pending-write'
   import { confirmPrompt, needsConfirmation } from './pending-write'
   import SelectionToolbar from './SelectionToolbar.svelte'
+  import StampBar from './StampBar.svelte'
   import type { TrashActions } from './trash-actions'
   import ViewControls from './ViewControls.svelte'
   import { Button } from '$lib/components/ui/button'
   import { Input } from '$lib/components/ui/input'
   import { Slider } from '$lib/components/ui/slider'
   import { useSidebar } from '$lib/components/ui/sidebar'
+  import { Toggle } from '$lib/components/ui/toggle'
   import {
     blurOnEscape,
     isInDialog,
     isTypingTarget,
+    KEY_EDIT_MODE,
     KEY_ENTER,
     KEY_ESCAPE,
     KEY_SEARCH,
@@ -154,6 +160,46 @@
    * selection-survives-the-question rule in step.
    */
   let pendingWrite = $state<PendingWrite | null>(null)
+
+  /**
+   * Edit mode (`stamps` design D4): one boolean, toggled by the toolbar's
+   * `Toggle` and by `E`. `stampText` is the bar's field, cleared the moment
+   * the mode is left below, since a one-off stamp is meant to be lost that
+   * way (design D5 risk: "Save as stamp…" is the way to keep it).
+   */
+  let editMode = $state(false)
+  let stampText = $state('')
+  /**
+   * A stamp click Rust refused (`stamps` design D4), shown in the bar rather
+   * than in `actionError` above the grid — the bar is what the user is
+   * looking at while clicking, and the banner sits above a grid the click
+   * never scrolled away from. Keyed to the text that earned it, not cleared
+   * by an effect: the refusal belongs to the field's text at the moment it
+   * was refused, so the template below only shows it while `stampText` still
+   * equals `stampError.text` — any edit to the field changes that comparison
+   * and the message disappears on its own, with no separate clear to forget.
+   */
+  let stampError = $state<{ text: string, message: string } | null>(null)
+
+  $effect(() => {
+    if (!editMode) stampText = ''
+  })
+
+  /**
+   * What a plain click on a thumbnail applies while edit mode is on: an id
+   * and a name when the field's text matches a saved stamp (first by list
+   * order), `undefined`/`null` for a one-off (owner's review, 2026-09-23 —
+   * amending design D4's own `$state`). The field is the one signal now, so
+   * this is a `$derived` of it rather than a second place to hold what is
+   * active: blank or unparseable text is `null`, same as leaving the mode.
+   */
+  type ActiveStamp = { id?: string, name: string | null, text: string, edit: TagEditSpec }
+  const activeStamp = $derived.by((): ActiveStamp | null => {
+    const parsed = parseStamp(stampText)
+    if ('error' in parsed) return null
+    const saved = stamps.list.find((stamp) => stamp.text === stampText)
+    return { id: saved?.id, name: saved?.name ?? null, text: stampText, edit: parsed.edit }
+  })
 
   const libraryPath = $derived(library.status?.libraryPath ?? null)
   const focused = $derived(results.at(selection.focus) ?? null)
@@ -363,23 +409,87 @@
 
   /**
    * The pinned chip's write over a selection (`tag-vocabulary` design D8):
-   * the same "one or many" rule as {@link rateSelection}. Exposed for the
-   * inspector to call through an `onedit` prop once `Inspector.svelte`
-   * grows one (unit W2a) — one image writes through `results.saveTags`
-   * directly and never reaches here.
+   * the same "one or many" rule as {@link rateSelection}. Called through the
+   * inspector's `onedit` prop, whose signature stays `(ids, add, remove)`
+   * (`stamps` design D5): the chip only ever fills one of the two, so it has
+   * nothing to gain from building a `TagEditSpec` itself, and this is the one
+   * place that does — the bulk dialog builds its own, for the same reason it
+   * always has (design D8). `label` is the tag itself: `confirmPrompt` never
+   * reads it for a single-tag edit, which this always is.
    */
   function editSelectionTags(ids: string[], add: string[], remove: string[]): void {
-    const pending: Extract<PendingWrite, { kind: 'edit' }> = { kind: 'edit', ids, add, remove }
+    const spec: TagEditSpec = { add, remove, addCollections: [], removeCollections: [] }
+    const pending: Extract<PendingWrite, { kind: 'edit' }> = {
+      kind: 'edit',
+      ids,
+      spec,
+      label: add[0] ?? remove[0] ?? '',
+    }
     if (needsConfirmation(ids.length)) pendingWrite = pending
     else void writeEdit(pending)
   }
 
+  /**
+   * The confirmed half of every `edit` write, whatever built the spec — the
+   * bulk dialog, the pinned chip, or `applyStampToSelection` below.
+   * `afterWrite`, not `results.replaceMany`: a spec can move an image out of
+   * the current search (a tag removed, a collection left), and only a re-run
+   * prunes the selection to what still matches — the same reason every other
+   * selection-wide writer below ends there.
+   */
   async function writeEdit(pending: Extract<PendingWrite, { kind: 'edit' }>) {
     try {
-      await bulkUpdateTags(pending.ids, pending.add, pending.remove)
+      await applyEdit(pending.ids, pending.spec)
       await afterWrite()
     } catch (error) {
       actionError = errorText(error)
+    }
+  }
+
+  /**
+   * Slot StampBar · Apply to N selected (design D5): the same confirm/write
+   * split as {@link editSelectionTags}, over the active stamp's whole spec
+   * instead of one tag — `label` is the stamp's name, or its text while it is
+   * still a one-off with none. A live range has to become ids before the
+   * pending write can name them, same as every other selection-wide writer.
+   */
+  async function applyStampToSelection(): Promise<void> {
+    if (!activeStamp) return
+    const stamp = activeStamp
+    const ids = await selection.ids()
+    const pending: Extract<PendingWrite, { kind: 'edit' }> = {
+      kind: 'edit',
+      ids,
+      spec: stamp.edit,
+      label: stamp.name ?? stamp.text,
+    }
+    if (needsConfirmation(ids.length)) pendingWrite = pending
+    else void writeEdit(pending)
+  }
+
+  /**
+   * Slot Grid · onstamp (design D4): a plain click in edit mode applies the
+   * active stamp to just the image clicked. `applyEdit`'s own returned rows
+   * go straight to `results.replaceMany`, not `afterWrite` — a click has to
+   * show its result at once (spec `stamps`, "Enter and stamp"), and a whole
+   * search re-run is `applyStampToSelection`'s job, not a single tile's. The
+   * clicked card becomes current, as a focusing click would, but the
+   * selection is left exactly as it stood (spec `selection`, "A plain click
+   * in edit mode"). `vocabulary.refresh()` only when the spec could have
+   * created a tag — a stamp that only removes, rates or moves collections
+   * cannot.
+   */
+  async function onStamp(index: number, id: string): Promise<void> {
+    const stamp = activeStamp
+    if (!stamp) return
+    try {
+      const records = await applyEdit([id], stamp.edit)
+      results.replaceMany(records)
+      selection.focusAt(index)
+      if (stamp.edit.add.length > 0) void vocabulary.refresh()
+      stampError = null
+    } catch (error) {
+      stampError = { text: stampText, message: errorText(error) }
     }
   }
 
@@ -500,11 +610,12 @@
   })
 
   /**
-   * The two bindings that belong to this screen rather than to one region of it
+   * The bindings that belong to this screen rather than to one region of it
    * (`app-shell` design D14, `selection-and-bulk` D5 amended). They live here
-   * and not in the layout because both are about what this screen holds — the
-   * toolbar's search field and the current result; bound in the layout they
-   * would fire on /settings, where neither exists.
+   * and not in the layout because each is about what this screen holds — the
+   * toolbar's search field, the current result, and now edit mode
+   * (`stamps` design D4); bound in the layout they would fire on /settings,
+   * where none of the three exists.
    *
    * Select-all was the grid's until the owner found it only worked once the
    * grid had been clicked into — with the focus anywhere else the webview's own
@@ -542,6 +653,15 @@
       // the user could have meant by it is lost.
       event.preventDefault()
       selection.selectAll(results.total)
+      return
+    }
+
+    if (event.key === KEY_EDIT_MODE) {
+      // Unmodified, like `i` in the grid: the guard above already excludes a
+      // text field, a dialog and the viewer, which is every place `E` should
+      // still type or do nothing (spec `stamps`, "Typing is not the shortcut").
+      event.preventDefault()
+      editMode = !editMode
       return
     }
 
@@ -622,6 +742,22 @@
   />
 
   <div class="flex-1"></div>
+
+  <!--
+    Design D4: before `SelectionToolbar`, not inside it — the toggle has to
+    stay reachable while a selection stands, so the mode can be left without
+    clearing the selection first. One render site covers both toolbars, since
+    nothing here conditions it on `selection.count`.
+  -->
+  <Toggle
+    size="sm"
+    variant="outline"
+    bind:pressed={editMode}
+    aria-label="Edit mode"
+    title="Edit mode (E): click an image to apply the active stamp"
+  >
+    <StampIcon />
+  </Toggle>
 
   {#if selection.count > 0}
     <SelectionToolbar
@@ -746,6 +882,15 @@
   </p>
 {/if}
 
+{#if editMode}
+  <StampBar
+    bind:text={stampText}
+    selectionCount={selection.count}
+    onapplyselection={() => void applyStampToSelection()}
+    error={stampError?.text === stampText ? stampError.message : null}
+  />
+{/if}
+
 <div class="flex min-h-0 flex-1">
   <div class="flex min-w-0 flex-1 flex-col">
     <!-- Above everything the results area can be: the grid, the empty library
@@ -781,6 +926,8 @@
           onrate={rate}
           ontoggleinspector={() => (browseSession.inspectorOpen = !browseSession.inspectorOpen)}
           onerror={(message) => (actionError = message)}
+          onstamp={editMode && activeStamp ? (index, id) => void onStamp(index, id) : undefined}
+          stampLabel={editMode ? activeStamp?.text : undefined}
         />
       {/if}
     </div>

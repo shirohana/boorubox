@@ -29,9 +29,12 @@ import type {
   RulesRunReport,
   SearchRequest,
   SearchResult,
+  Stamp,
+  StampInput,
   TagCategory,
   TagCount,
   TagCounts,
+  TagEditSpec,
   TagEntry,
   Theme,
 } from '@boorubox/shared'
@@ -270,13 +273,18 @@ export function tagCounts(req: SearchRequest): Promise<TagCounts> {
 }
 
 /**
- * Adds `add` and removes `remove` across every id in `ids`, as one transaction
- * (design D10). The caller re-runs its current search once this resolves,
- * rather than being handed back updated rows: the selection can span pages it
- * never loaded.
+ * Applies one edit — tags added and removed, collection memberships moved,
+ * the rating set, a categorised tag created — to every id in `ids`, in one
+ * transaction (`stamps` design D2, replacing `bulk_update_tags`, which this
+ * folds in as the `add`/`remove`-only case). Answers with the written rows:
+ * a single-tile apply in edit mode shows the result without a search re-run
+ * (design D2), the same reason `collectionAdd`/`collectionRemove` answer
+ * this way. A caller over a selection that can span pages it never loaded
+ * re-runs its own search instead of trusting these back (`browse-fixes`
+ * design D1's rule, unchanged).
  */
-export function bulkUpdateTags(ids: string[], add: string[], remove: string[]): Promise<void> {
-  return invoke('bulk_update_tags', { ids, add, remove })
+export function applyEdit(ids: string[], edit: TagEditSpec): Promise<ImageRecord[]> {
+  return invoke('apply_edit', { ids, edit })
 }
 
 /** One rating across every id in `ids` (design D10). `null` clears it. */
@@ -410,6 +418,30 @@ export function rulesExport(path: string): Promise<void> {
  */
 export function rulesImport(path: string): Promise<RulesImportReport> {
   return invoke('rules_import', { path })
+}
+
+/**
+ * The library's stamps, by creation order (`stamps` design D3) — what
+ * `api/stamps.svelte.ts` reads on refresh.
+ */
+export function stampsList(): Promise<Stamp[]> {
+  return invoke('stamps_list')
+}
+
+/**
+ * Creates a stamp when `input.id` is absent, or edits the one it names;
+ * refused with the reason for an empty name or an empty text (design D3).
+ * `input.text` is stored exactly as sent — validate it with `domain/stamp`'s
+ * `parseStamp` before calling, since Rust only refuses an empty string, never
+ * an invalid grammar.
+ */
+export function stampsUpsert(input: StampInput): Promise<Stamp> {
+  return invoke('stamps_upsert', { input })
+}
+
+/** Deletes a stamp; idempotent, and no image it was ever applied to is touched. */
+export function stampsDelete(id: string): Promise<void> {
+  return invoke('stamps_delete', { id })
 }
 
 /** Every collection in the library, by name (`collections` design D3). */

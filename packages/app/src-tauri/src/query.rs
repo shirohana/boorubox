@@ -1717,7 +1717,7 @@ mod tests {
 
     /// The `sort-and-group` scenario "Sorting by last change": an old capture
     /// edited now comes first. The edit goes through the real write path, which
-    /// is what stamps `updated_at` (design D9).
+    /// is what marks `updated_at` (design D9).
     #[test]
     fn sorting_by_last_change_follows_an_edit_rather_than_the_capture() {
         let fixture = sortable();

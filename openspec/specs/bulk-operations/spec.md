@@ -12,7 +12,8 @@ selected image and removes another set from every selected image. Adding a tag a
 carries and removing one it does not carry SHALL both leave that image unchanged. The add list
 SHALL read a category prefix as `tag-vocabulary` describes, refusing the whole edit on a
 conflict. The edit SHALL apply to the whole selection or to none of it: no run SHALL leave
-some selected images edited and others not.
+some selected images edited and others not. It SHALL be the same write a stamp makes, with
+only its tag parts filled (`stamps`).
 
 #### Scenario: Adding to many
 - **WHEN** fifty images are selected and the user adds two tags

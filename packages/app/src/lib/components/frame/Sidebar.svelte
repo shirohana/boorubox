@@ -13,6 +13,7 @@
     library,
     libraryCounts,
     sidecarsBackfill,
+    stamps,
     trash,
     vocabulary,
   } from '$lib/api'
@@ -77,6 +78,9 @@
     // collections just above, so it re-reads on the same path change — the
     // badges, the sidebar's tag list and the suggestion popover all need it.
     void vocabulary.refresh()
+    // `stamps` design D3: stamps are per library too — the settings screen's
+    // list and the library screen's stamp bar both read this store.
+    void stamps.refresh()
   })
 
   // The per-source counts also follow every import, library switch or not,

@@ -18,6 +18,7 @@ pub mod recover;
 pub mod rules;
 pub mod settings;
 pub mod sidecar;
+pub mod stamps;
 pub mod tags;
 pub mod thumbs;
 pub mod trash;
@@ -204,7 +205,7 @@ pub fn run() {
             commands::import_pause,
             commands::import_resume,
             commands::import_cancel,
-            commands::bulk_update_tags,
+            commands::apply_edit,
             commands::bulk_set_rating,
             commands::selection_tag_counts,
             commands::tag_vocabulary,
@@ -228,6 +229,9 @@ pub fn run() {
             commands::collection_delete,
             commands::collection_add,
             commands::collection_remove,
+            commands::stamps_list,
+            commands::stamps_upsert,
+            commands::stamps_delete,
             commands::note_get,
             commands::note_set,
             commands::set_notes_collapsed,

@@ -4,7 +4,7 @@
 // per caller — is what lets every caller ask through the same `ConfirmDialog`
 // rather than each keeping its own copy of the question and the count rule.
 
-import type { Rating } from '@boorubox/shared'
+import type { Rating, TagEditSpec } from '@boorubox/shared'
 import { ratingLabel } from '$lib/domain/format'
 
 /**
@@ -12,19 +12,19 @@ import { ratingLabel } from '$lib/domain/format'
  * The two irreversible acts have always been here (design D7); `trash` joined
  * them for the multi-image case only (design D12, amended), and `rate` for
  * the same reason (`bulk-confirm` design D1): a bulk rating write replaces
- * ratings that cannot be recovered afterwards. `edit` is the pinned chip's
- * write over a selection (`tag-vocabulary` design D8): one activation adds
- * `add` or removes `remove` — a click only ever fills one of the two — across
- * every id in `ids`. Introduced here with just the two fields this change
- * needs; the later `stamps` change widens the same kind for collections and
- * rating.
+ * ratings that cannot be recovered afterwards. `edit` is one apply of a
+ * `TagEditSpec` over a selection (`stamps` design D5, widened from
+ * `tag-vocabulary` design D8's `{ add, remove }`): the pinned chip's single
+ * tag, the bulk dialog's two lists, or a stamp's whole edit, across every id
+ * in `ids`. `label` names what a stamp apply is for, read only when `spec` is
+ * not a single tag add or remove — `confirmPrompt` below decides which.
  */
 export type PendingWrite
   = | { kind: 'trash', ids: string[] }
     | { kind: 'delete', ids: string[] }
     | { kind: 'empty' }
     | { kind: 'rate', ids: string[], rating: Rating | null }
-    | { kind: 'edit', ids: string[], add: string[], remove: string[] }
+    | { kind: 'edit', ids: string[], spec: TagEditSpec, label: string }
 
 /**
  * Design D12, amended: trashing is reversible, so one image goes without a
@@ -59,6 +59,25 @@ function capitalized(word: string): string {
 }
 
 /**
+ * The pinned chip's own shape of edit — exactly one tag, added or removed,
+ * nothing else touched — so its prompt can keep naming the tag the way it
+ * always has (design D5), rather than falling back to the stamp wording a
+ * chip never carries a label for.
+ */
+function singleTagEdit(spec: TagEditSpec): { adding: boolean, tag: string } | null {
+  const nothingElse = spec.addCollections.length === 0 && spec.removeCollections.length === 0
+    && spec.rating === undefined
+  if (!nothingElse) return null
+  if (spec.add.length === 1 && spec.remove.length === 0) {
+    return { adding: true, tag: spec.add[0] }
+  }
+  if (spec.remove.length === 1 && spec.add.length === 0) {
+    return { adding: false, tag: spec.remove[0] }
+  }
+  return null
+}
+
+/**
  * The question the one `ConfirmDialog` asks, per pending write. Here rather
  * than in the markup because the reversible act and the irreversible ones have
  * to read differently — "cannot be undone" belongs only to the ones that cannot.
@@ -88,16 +107,25 @@ export function confirmPrompt(pending: PendingWrite, trashCount: number): Confir
     }
   }
   if (pending.kind === 'edit') {
-    // D8: exactly one of `add`/`remove` is filled per activation, so the tag
-    // named is whichever list is not empty.
-    const adding = pending.add.length > 0
-    const tag = adding ? pending.add[0] : pending.remove[0]
+    const single = singleTagEdit(pending.spec)
+    if (single) {
+      return {
+        title: single.adding
+          ? `Add “${single.tag}” to ${images(count)}?`
+          : `Remove “${single.tag}” from ${images(count)}?`,
+        description: 'Every other tag each image carries is left as it is.',
+        confirmLabel: single.adding ? 'Add tag' : 'Remove tag',
+        destructive: false,
+      }
+    }
+    // `stamps` design D5: a stamp's edit can touch tags, collections and the
+    // rating at once, so there is no one part left to name — the label the
+    // caller gave it (the stamp's own name, or its text with no name yet) is
+    // the only thing that says what this apply does.
     return {
-      title: adding
-        ? `Add “${tag}” to ${images(count)}?`
-        : `Remove “${tag}” from ${images(count)}?`,
-      description: 'Every other tag each image carries is left as it is.',
-      confirmLabel: adding ? 'Add tag' : 'Remove tag',
+      title: `Apply “${pending.label}” to ${images(count)}?`,
+      description: 'There is no undo.',
+      confirmLabel: 'Apply',
       destructive: false,
     }
   }

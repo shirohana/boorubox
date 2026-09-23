@@ -20,6 +20,10 @@ keys — when that is a different thumbnail, so the two clicks that Finder and E
 to select two images select two images here. The per-tile selection control SHALL select only
 its own image: a checkbox names exactly the image it is drawn on.
 
+While edit mode is on with an active stamp (`stamps`), a plain click on a thumbnail SHALL apply
+the stamp to that image instead of focusing it and clearing the selection; every other gesture
+above SHALL select as it does outside the mode.
+
 #### Scenario: Looking at an image
 - **WHEN** the user clicks a thumbnail with no modifier held
 - **THEN** that thumbnail is focused, its facts are shown, and nothing is selected
@@ -51,6 +55,10 @@ its own image: a checkbox names exactly the image it is drawn on.
 #### Scenario: Clearing by clicking away
 - **WHEN** images are selected and the user clicks a thumbnail with no modifier
 - **THEN** the selection is emptied and only the clicked thumbnail is focused
+
+#### Scenario: A plain click in edit mode
+- **WHEN** edit mode is on with an active stamp, three images are selected, and the user clicks a fourth thumbnail with no modifier
+- **THEN** the stamp is applied to the fourth image and the three stay selected
 
 ### Requirement: The keyboard selects
 The app SHALL extend the browsing keyboard map with the bindings below, SHALL NOT act on any of

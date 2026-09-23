@@ -44,6 +44,20 @@
     ontoggleinspector: () => void
     /** Reported like every other action failure on this screen (`collections` design D8). */
     onerror: (message: string) => void
+    /**
+     * Set only while edit mode holds an active stamp (`stamps` design D4): the
+     * screen owns that decision, so this prop being present is the grid's
+     * whole knowledge of the mode. Present, a plain click routes here instead
+     * of `selection.click` and the tile's second click applies again instead
+     * of opening the viewer — absent, nothing below the screen changes.
+     */
+    onstamp?: (index: number, id: string) => void
+    /**
+     * The active stamp's text (`stamps` design D4/D5, owner's review,
+     * 2026-09-23): passed straight through to every tile as `stampLabel`, for
+     * the cursor and the hover overlay naming what a click would apply.
+     */
+    stampLabel?: string
   }
 
   let {
@@ -57,6 +71,8 @@
     onrate,
     ontoggleinspector,
     onerror,
+    onstamp,
+    stampLabel,
   }: Props = $props()
 
   /**
@@ -331,11 +347,30 @@
               focused={index === selection.focus}
               selected={selection.has(index, image?.id)}
               onfocus={() => selection.focusEntered(index)}
-              onselect={(modifiers) => void selection.click(index, image?.id, modifiers)}
+              onselect={(modifiers) => {
+                // Design D4: a plain click applies the active stamp instead of
+                // selecting or focusing — every other gesture (a range, the
+                // multi-select modifier, the tile menu opening on an
+                // unselected tile) still means what it means outside the
+                // mode, so only the plain-click branch is rerouted. `menu` is
+                // `ImageCard`'s context-menu trigger making an unselected tile
+                // current (design D8) — current-ness only, never a stamp, so
+                // it is excluded here the same way `multi`/`range` are.
+                if (onstamp && !modifiers.multi && !modifiers.range && !modifiers.menu && image) {
+                  onstamp(index, image.id)
+                  return
+                }
+                void selection.click(index, image?.id, modifiers)
+              }}
               ontoggle={() => {
                 if (image) void selection.toggle(index, image.id)
               }}
-              onactivate={() => onactivate(index)}
+              // Withheld, not conditioned inside `ImageCard` itself (design D4):
+              // the screen owns the mode, so the grid is the one place that
+              // reads `onstamp`, and the tile's own click path never has to
+              // know what a stamp is — undefined here is what turns its
+              // second click from "open" into "apply again".
+              onactivate={onstamp ? undefined : () => onactivate(index)}
               onrate={(rating) => {
                 if (image) onrate(image, rating)
               }}
@@ -345,6 +380,7 @@
               onwritten={onCollectionsWritten}
               {onerror}
               onnewcollection={(target) => (creatingCollectionFor = target)}
+              {stampLabel}
             />
           {/each}
         </div>

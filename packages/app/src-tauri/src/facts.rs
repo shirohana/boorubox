@@ -10,21 +10,21 @@ use crate::library::Library;
 use crate::model::{FactsEdit, ImageRecord};
 use crate::tags;
 
-/// Validate `edit`, write the three facts, stamp the image as changed, rewrite
+/// Validate `edit`, write the three facts, mark the image as changed, rewrite
 /// its sidecar, and answer with the row as it now stands.
 ///
 /// Addresses are validated before the transaction opens, so a bad one never
-/// touches the database. Inside it, `tags::stamp` runs first — the same shape
-/// `tags::update_tags` uses — so an id with no row refuses the whole edit
-/// before the three-column update runs; the transaction rolls back on the way
-/// out either way.
+/// touches the database. Inside it, `tags::mark_updated` runs first — the
+/// same shape `tags::update_tags` uses — so an id with no row refuses the
+/// whole edit before the three-column update runs; the transaction rolls back
+/// on the way out either way.
 pub fn update(library: &Library, id: &str, edit: &FactsEdit) -> Result<ImageRecord> {
     let page_title = clean(edit.page_title.as_deref());
     let page_url = validated_address(edit.page_url.as_deref())?;
     let image_url = validated_address(edit.image_url.as_deref())?;
 
     let tx = library.conn.unchecked_transaction()?;
-    tags::stamp(&tx, id, None)?;
+    tags::mark_updated(&tx, id, None)?;
     tx.execute(
         "UPDATE images SET page_title = ?1, page_url = ?2, image_url = ?3 WHERE id = ?4",
         params![page_title, page_url, image_url, id],
@@ -190,7 +190,7 @@ mod tests {
         assert_eq!(after.page_url, None);
         assert_eq!(
             after.updated_at, before.updated_at,
-            "a refused edit must not stamp the row"
+            "a refused edit must not mark the row"
         );
     }
 
@@ -214,7 +214,7 @@ mod tests {
     }
 
     #[test]
-    fn an_edit_stamps_the_image_as_changed() {
+    fn an_edit_marks_the_image_as_changed() {
         let (_dir, library) = library();
         store(&library, "a");
         let before = ingest::require_record(&library.conn, "a").unwrap();

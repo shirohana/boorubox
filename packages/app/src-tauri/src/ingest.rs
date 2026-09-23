@@ -3,7 +3,7 @@
 //! transaction. Extension captures, local import and legacy-bundle import all
 //! call `store_image`; none of them writes to `images/` itself.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs::File;
 use std::io::Write;
 use std::path::Path;
@@ -14,6 +14,7 @@ use crate::db;
 use crate::error::{AppError, Result};
 use crate::library::Library;
 use crate::model::{ImageRecord, ImageSource, PostRef, SiteAdapterRecord};
+use crate::query::{ID_CHUNK, placeholders};
 use crate::rules;
 use crate::tags;
 
@@ -321,76 +322,89 @@ pub fn load_record(conn: &Connection, id: &str) -> Result<Option<ImageRecord>> {
 
 /// Load records for `ids`, in the order given; ids with no row are dropped.
 ///
-/// Four statements however many ids are asked for, never one per image: this
-/// is also what `booru-upload` design D5 relies on for `ImageRecord.posts` and
-/// what `collections` design D4 relies on for `ImageRecord.collections` — both
-/// are joined in here alongside the existing tags fill, so every caller of
+/// Four statements per chunk, never one per image: this is also what
+/// `booru-upload` design D5 relies on for `ImageRecord.posts` and what
+/// `collections` design D4 relies on for `ImageRecord.collections` — both are
+/// joined in here alongside the existing tags fill, so every caller of
 /// `load_record`/`load_records` (a search page and a single-image read alike)
 /// gets them for free.
+///
+/// Chunked to [`ID_CHUNK`] ids per `IN (…)` (review finding 3, `stamps`): one
+/// `IN` over a whole selection is the same "too many SQL variables" failure
+/// mode `bulk_set_rating` and `selection_tag_counts` already chunk against,
+/// and `apply_edit` calls this once for its own answer and once more, through
+/// `sidecar::write_for`, per selection — chunking here is the one place that
+/// fixes `write_for` and `collections::add`/`remove` too, rather than each
+/// caller of this function chunking its own `ids` slice first.
 pub fn load_records(conn: &Connection, ids: &[String]) -> Result<Vec<ImageRecord>> {
     if ids.is_empty() {
         return Ok(Vec::new());
     }
-    let placeholders = vec!["?"; ids.len()].join(", ");
+    let mut by_id: HashMap<String, ImageRecord> = HashMap::new();
 
-    let mut stmt = conn.prepare(&format!(
-        "SELECT {IMAGE_COLUMNS} FROM images WHERE id IN ({placeholders})"
-    ))?;
-    let mut by_id: HashMap<String, ImageRecord> = stmt
-        .query_map(params_from_iter(ids), row_to_record)?
-        .map(|record| record.map(|record| (record.id.clone(), record)))
-        .collect::<rusqlite::Result<_>>()?;
+    for chunk in ids.chunks(ID_CHUNK) {
+        let in_list = placeholders(chunk.len());
 
-    let mut stmt = conn.prepare(&format!(
-        "SELECT image_tags.image_id, tags.name FROM image_tags
-         JOIN tags ON tags.id = image_tags.tag_id
-         WHERE image_tags.image_id IN ({placeholders})
-         ORDER BY tags.name"
-    ))?;
-    let mut rows = stmt.query(params_from_iter(ids))?;
-    while let Some(row) = rows.next()? {
-        let image_id: String = row.get(0)?;
-        if let Some(record) = by_id.get_mut(&image_id) {
-            record.tags.push(row.get(1)?);
+        let mut stmt = conn.prepare(&format!(
+            "SELECT {IMAGE_COLUMNS} FROM images WHERE id IN ({in_list})"
+        ))?;
+        by_id.extend(
+            stmt.query_map(params_from_iter(chunk), row_to_record)?
+                .map(|record| record.map(|record| (record.id.clone(), record)))
+                .collect::<rusqlite::Result<Vec<_>>>()?,
+        );
+
+        let mut stmt = conn.prepare(&format!(
+            "SELECT image_tags.image_id, tags.name FROM image_tags
+             JOIN tags ON tags.id = image_tags.tag_id
+             WHERE image_tags.image_id IN ({in_list})
+             ORDER BY tags.name"
+        ))?;
+        let mut rows = stmt.query(params_from_iter(chunk))?;
+        while let Some(row) = rows.next()? {
+            let image_id: String = row.get(0)?;
+            if let Some(record) = by_id.get_mut(&image_id) {
+                record.tags.push(row.get(1)?);
+            }
         }
-    }
 
-    // `remote_id`/`posted_at IS NOT NULL`: both columns are nullable from
-    // Phase 1's empty table (design D1) and `booru::posts::record` — the only
-    // writer — always sets both, so a row missing either came from outside
-    // this app. Reading one into `PostRef`'s non-optional fields would fail
-    // the whole query, so every page of the grid holding such a row would
-    // fail to load; dropping the row costs one label.
-    let mut stmt = conn.prepare(&format!(
-        "SELECT image_id, site, remote_id, posted_at FROM posts
-         WHERE image_id IN ({placeholders})
-           AND remote_id IS NOT NULL AND posted_at IS NOT NULL
-         ORDER BY site"
-    ))?;
-    let mut rows = stmt.query(params_from_iter(ids))?;
-    while let Some(row) = rows.next()? {
-        let image_id: String = row.get(0)?;
-        if let Some(record) = by_id.get_mut(&image_id) {
-            record.posts.push(PostRef {
-                site: row.get(1)?,
-                remote_id: row.get(2)?,
-                posted_at: row.get(3)?,
-            });
+        // `remote_id`/`posted_at IS NOT NULL`: both columns are nullable from
+        // Phase 1's empty table (design D1) and `booru::posts::record` — the
+        // only writer — always sets both, so a row missing either came from
+        // outside this app. Reading one into `PostRef`'s non-optional fields
+        // would fail the whole query, so every page of the grid holding such
+        // a row would fail to load; dropping the row costs one label.
+        let mut stmt = conn.prepare(&format!(
+            "SELECT image_id, site, remote_id, posted_at FROM posts
+             WHERE image_id IN ({in_list})
+               AND remote_id IS NOT NULL AND posted_at IS NOT NULL
+             ORDER BY site"
+        ))?;
+        let mut rows = stmt.query(params_from_iter(chunk))?;
+        while let Some(row) = rows.next()? {
+            let image_id: String = row.get(0)?;
+            if let Some(record) = by_id.get_mut(&image_id) {
+                record.posts.push(PostRef {
+                    site: row.get(1)?,
+                    remote_id: row.get(2)?,
+                    posted_at: row.get(3)?,
+                });
+            }
         }
-    }
 
-    // Ids, sorted (`collections` design D4): the one column with no natural
-    // order of its own, unlike tags (by name) and posts (by site).
-    let mut stmt = conn.prepare(&format!(
-        "SELECT image_id, collection_id FROM image_collections
-         WHERE image_id IN ({placeholders})
-         ORDER BY collection_id"
-    ))?;
-    let mut rows = stmt.query(params_from_iter(ids))?;
-    while let Some(row) = rows.next()? {
-        let image_id: String = row.get(0)?;
-        if let Some(record) = by_id.get_mut(&image_id) {
-            record.collections.push(row.get(1)?);
+        // Ids, sorted (`collections` design D4): the one column with no
+        // natural order of its own, unlike tags (by name) and posts (by site).
+        let mut stmt = conn.prepare(&format!(
+            "SELECT image_id, collection_id FROM image_collections
+             WHERE image_id IN ({in_list})
+             ORDER BY collection_id"
+        ))?;
+        let mut rows = stmt.query(params_from_iter(chunk))?;
+        while let Some(row) = rows.next()? {
+            let image_id: String = row.get(0)?;
+            if let Some(record) = by_id.get_mut(&image_id) {
+                record.collections.push(row.get(1)?);
+            }
         }
     }
 
@@ -400,6 +414,33 @@ pub fn load_records(conn: &Connection, ids: &[String]) -> Result<Vec<ImageRecord
 /// The record, or `NotFound`. What every command answering with one row uses.
 pub fn require_record(conn: &Connection, id: &str) -> Result<ImageRecord> {
     load_record(conn, id)?.ok_or_else(|| AppError::NotFound(format!("image {id}")))
+}
+
+/// Refuse with `NotFound` naming the first of `ids` with no row, or answer
+/// with nothing when every id has one.
+///
+/// `apply_edit`'s own per-id check ([`tags::mark_updated`]) only runs when the
+/// edit marks the image (review finding 4, `stamps`); a spec that only moves
+/// collections has no other per-id check at all, so a remove-only spec over an
+/// id nobody has would otherwise close its transaction having silently done
+/// nothing. Chunked to [`ID_CHUNK`] ids per `IN (…)`, the same reason
+/// [`load_records`] is.
+pub fn require_records_exist(conn: &Connection, ids: &[String]) -> Result<()> {
+    let mut found: HashSet<String> = HashSet::new();
+    for chunk in ids.chunks(ID_CHUNK) {
+        let mut stmt = conn.prepare(&format!(
+            "SELECT id FROM images WHERE id IN ({})",
+            placeholders(chunk.len())
+        ))?;
+        let rows = stmt.query_map(params_from_iter(chunk), |row| row.get::<_, String>(0))?;
+        for row in rows {
+            found.insert(row?);
+        }
+    }
+    match ids.iter().find(|id| !found.contains(id.as_str())) {
+        Some(missing) => Err(AppError::NotFound(format!("image {missing}"))),
+        None => Ok(()),
+    }
 }
 
 #[cfg(test)]
@@ -725,6 +766,69 @@ mod tests {
 
         let got: Vec<&str> = records.iter().map(|record| record.id.as_str()).collect();
         assert_eq!(got, vec!["c", "a"]);
+    }
+
+    /// A row with no file and no thumbnail — cheap to insert by the thousand,
+    /// the same fixture `tags.rs`'s own tests use for a chunk-boundary case.
+    fn bare_image(library: &Library, id: &str) {
+        library
+            .conn
+            .execute(
+                "INSERT INTO images (id, ext, mime, size, width, height, source,
+                                     captured_at, created_at, updated_at)
+                 VALUES (?1, 'png', 'image/png', 1, 1, 1, 'local', 0, 0, 0)",
+                [id],
+            )
+            .unwrap();
+    }
+
+    /// Review finding 3 (`stamps`): `load_records` used to build one
+    /// `IN (…)` over every id in one statement — chunked now to
+    /// `query::ID_CHUNK`, the same reason `bulk_set_rating` and
+    /// `selection_tag_counts` already chunk, proven here across the chunk
+    /// boundary with the order guarantee above still holding.
+    #[test]
+    fn load_records_reaches_every_id_past_the_sqlite_variable_chunk_size() {
+        let (_dir, library) = library();
+        let ids: Vec<String> = (0..2500).map(|index| format!("img-{index}")).collect();
+        for id in &ids {
+            bare_image(&library, id);
+        }
+
+        let records = load_records(&library.conn, &ids).unwrap();
+
+        let got: Vec<&str> = records.iter().map(|record| record.id.as_str()).collect();
+        let expected: Vec<&str> = ids.iter().map(String::as_str).collect();
+        assert_eq!(got, expected, "every id is loaded, in the order asked for");
+    }
+
+    /// Review finding 4 (`stamps`): the check `apply_edit` needs when its spec
+    /// marks nothing at all — refuses naming the missing id, chunked the same
+    /// way `load_records` is.
+    #[test]
+    fn require_records_exist_refuses_naming_the_first_missing_id() {
+        let (_dir, library) = library();
+        bare_image(&library, "a");
+
+        let error = require_records_exist(&library.conn, &strs(&["a", "no-such-id"])).unwrap_err();
+
+        let AppError::NotFound(reason) = error else {
+            panic!("got {error}")
+        };
+        assert!(reason.contains("no-such-id"), "{reason}");
+    }
+
+    #[test]
+    fn require_records_exist_over_every_id_present_answers_nothing() {
+        let (_dir, library) = library();
+        bare_image(&library, "a");
+        bare_image(&library, "b");
+
+        require_records_exist(&library.conn, &strs(&["a", "b"])).unwrap();
+    }
+
+    fn strs(values: &[&str]) -> Vec<String> {
+        values.iter().map(|value| (*value).to_string()).collect()
     }
 
     /// `collections` task 1.4: `load_records` fills `collections` the same

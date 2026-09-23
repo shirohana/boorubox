@@ -1,5 +1,8 @@
+import type { TagEditSpec } from '@boorubox/shared'
 import { describe, expect, it } from 'vitest'
 import { confirmedCount, confirmPrompt, needsConfirmation } from './pending-write'
+
+const NO_COLLECTIONS = { addCollections: [], removeCollections: [] }
 
 describe('needsConfirmation', () => {
   it('lets one image go without a dialog', () => {
@@ -24,8 +27,8 @@ describe('confirmedCount', () => {
   })
 
   it('counts the ids of an edit write, the same rule as every other kind', () => {
-    expect(confirmedCount({ kind: 'edit', ids: ['a', 'b', 'c'], add: ['tagme'], remove: [] }, 0))
-      .toBe(3)
+    const spec: TagEditSpec = { add: ['tagme'], remove: [], addCollections: [], removeCollections: [] }
+    expect(confirmedCount({ kind: 'edit', ids: ['a', 'b', 'c'], spec, label: 'tagme' }, 0)).toBe(3)
   })
 })
 
@@ -66,16 +69,37 @@ describe('confirmPrompt', () => {
   })
 
   it('names the tag being added and the count, not destructive', () => {
-    const prompt = confirmPrompt({ kind: 'edit', ids: ['a', 'b'], add: ['tagme'], remove: [] }, 0)
+    const spec: TagEditSpec = { add: ['tagme'], remove: [], ...NO_COLLECTIONS }
+    const prompt = confirmPrompt({ kind: 'edit', ids: ['a', 'b'], spec, label: 'tagme' }, 0)
     expect(prompt.title).toBe('Add “tagme” to 2 images?')
     expect(prompt.confirmLabel).toBe('Add tag')
     expect(prompt.destructive).toBe(false)
   })
 
   it('names the tag being removed and the count, not destructive', () => {
-    const prompt = confirmPrompt({ kind: 'edit', ids: ['a', 'b'], add: [], remove: ['tagme'] }, 0)
+    const spec: TagEditSpec = { add: [], remove: ['tagme'], ...NO_COLLECTIONS }
+    const prompt = confirmPrompt({ kind: 'edit', ids: ['a', 'b'], spec, label: 'tagme' }, 0)
     expect(prompt.title).toBe('Remove “tagme” from 2 images?')
     expect(prompt.confirmLabel).toBe('Remove tag')
     expect(prompt.destructive).toBe(false)
+  })
+
+  it('names the stamp by its label and says there is no undo, once no single tag reads', () => {
+    const spec: TagEditSpec = { add: ['cat', 'animal'], remove: [], ...NO_COLLECTIONS }
+    const prompt = confirmPrompt({ kind: 'edit', ids: ['a', 'b'], spec, label: 'Cat' }, 0)
+    expect(prompt.title).toBe('Apply “Cat” to 2 images?')
+    expect(prompt.confirmLabel).toBe('Apply')
+    expect(prompt.destructive).toBe(false)
+    expect(prompt.description).toContain('no undo')
+  })
+
+  it('reads a collection-only or rated edit as a stamp apply, not a single tag', () => {
+    const collectionOnly: TagEditSpec = { add: [], remove: [], addCollections: ['cute'], removeCollections: [] }
+    expect(confirmPrompt({ kind: 'edit', ids: ['a'], spec: collectionOnly, label: 'Cute' }, 0).title)
+      .toBe('Apply “Cute” to 1 image?')
+
+    const rated: TagEditSpec = { add: ['tagme'], remove: [], ...NO_COLLECTIONS, rating: 'g' }
+    expect(confirmPrompt({ kind: 'edit', ids: ['a'], spec: rated, label: 'Reviewed' }, 0).title)
+      .toBe('Apply “Reviewed” to 1 image?')
   })
 })

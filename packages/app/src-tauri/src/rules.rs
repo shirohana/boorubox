@@ -468,7 +468,7 @@ fn apply_rules_to_image(
         };
         tags::link_tags(&tx, &image.id, &to_write, tags::Conflict::Keep)?
     };
-    tags::stamp(&tx, &image.id, written_rating.as_deref())?;
+    tags::mark_updated(&tx, &image.id, written_rating.as_deref())?;
     tx.commit()?;
 
     // After the commit, never inside it (`library-sidecars` design D4, D5):

@@ -22,12 +22,14 @@ use crate::model::{
     ExportReport, FactsEdit, GRID_TILE_MAX, GRID_TILE_MIN, ImageCounts, ImageRecord, ImportReport,
     LibraryStatus, ListenerStatus, Note, PostRef, RebuildProgress, RebuildReport, RecentLibrary,
     Rule, RuleInput, RuleListEntry, RulesImportReport, RulesRunReport, SearchRequest, SearchResult,
-    SidecarsProgress, TagCategory, TagCount, TagCounts, TagEntry, Theme,
+    SidecarsProgress, Stamp, StampInput, TagCategory, TagCount, TagCounts, TagEditSpec, TagEntry,
+    Theme,
 };
 use crate::settings::Settings;
 use crate::{
     AppState, OpenFailureKind, VERSION, booru, collections, db, export, facts, from_tauri, http,
-    import, ingest, lock, maintenance, notes, query, recover, rules, settings, tags, thumbs, trash,
+    import, ingest, lock, maintenance, notes, query, recover, rules, settings, stamps, tags,
+    thumbs, trash,
 };
 
 /// Progress while `import_paths` runs. The webview subscribes under this name;
@@ -535,20 +537,20 @@ pub async fn tag_suggestions(
     .await
 }
 
-/// One tag edit across every id in `ids`, as a single transaction
-/// (`selection-and-bulk` design D10). The caller re-runs its current search
-/// once this answers, rather than being handed back updated rows: a selection
-/// can span pages the caller never loaded, so there is no record of most of
-/// them to hand back.
+/// One stamp's write across every id in `ids` (`stamps` design D2): tags
+/// added and removed, collections joined and left, and the rating set, all in
+/// one transaction. Answers with the written rows, so a single-tile apply in
+/// edit mode can show the result without a search re-run; the bulk tag dialog
+/// and the pinned chip's edit call this too, each filling only their own part
+/// of `edit`.
 #[tauri::command]
-pub async fn bulk_update_tags(
+pub async fn apply_edit(
     ids: Vec<String>,
-    add: Vec<String>,
-    remove: Vec<String>,
+    edit: TagEditSpec,
     state: State<'_, AppState>,
-) -> Result<()> {
+) -> Result<Vec<ImageRecord>> {
     with_library_off_main_thread(&state.library, move |library| {
-        tags::bulk_update_tags(library, &ids, &add, &remove)
+        tags::apply_edit(library, &ids, &edit)
     })
     .await
 }
@@ -833,6 +835,29 @@ pub async fn collection_remove(
     .await
 }
 
+/// The library's stamps, in creation order (`stamps` design D3).
+#[tauri::command]
+pub async fn stamps_list(state: State<'_, AppState>) -> Result<Vec<Stamp>> {
+    with_library_off_main_thread(&state.library, |library| stamps::list(&library.conn)).await
+}
+
+/// Create a stamp when `input.id` is absent, or edit the one it names;
+/// refused with the reason for an empty name or an empty text (design D3).
+#[tauri::command]
+pub async fn stamps_upsert(input: StampInput, state: State<'_, AppState>) -> Result<Stamp> {
+    with_library_off_main_thread(&state.library, move |library| {
+        stamps::upsert(library, &input)
+    })
+    .await
+}
+
+/// Delete a stamp; idempotent, and no image it was ever applied to is
+/// touched.
+#[tauri::command]
+pub async fn stamps_delete(id: String, state: State<'_, AppState>) -> Result<()> {
+    with_library_off_main_thread(&state.library, move |library| stamps::delete(library, &id)).await
+}
+
 /// The library's one note, empty on a library that has never been written to
 /// (`notes` design D3).
 #[tauri::command]
@@ -841,7 +866,7 @@ pub async fn note_get(state: State<'_, AppState>) -> Result<Note> {
 }
 
 /// Write the note and answer with it as stored, so the panel's autosave has
-/// the stamp without a second read.
+/// the timestamp without a second read.
 #[tauri::command]
 pub async fn note_set(content: String, state: State<'_, AppState>) -> Result<Note> {
     with_library_off_main_thread(&state.library, move |library| notes::set(library, &content)).await
@@ -2327,19 +2352,27 @@ mod tests {
     }
 
     #[test]
-    fn bulk_update_tags_reaches_every_selected_image_through_the_command() {
+    fn apply_edit_reaches_every_selected_image_through_the_command() {
         let (_library, app) = app_with_library();
         import(&app, &folder_of_images(2));
         let ids = ids_in_library(&app);
 
-        now(bulk_update_tags(
+        let records = now(apply_edit(
             ids.clone(),
-            vec!["cat".to_string()],
-            vec![],
+            TagEditSpec {
+                add: vec!["cat".to_string()],
+                ..Default::default()
+            },
             app.state(),
         ))
         .unwrap();
 
+        assert!(
+            records
+                .iter()
+                .all(|image| image.tags.contains(&"cat".to_string())),
+            "{records:?}",
+        );
         let result = search_all(&app);
         assert!(
             result
@@ -2482,10 +2515,9 @@ mod tests {
 
         let errors = [
             now(search_ids(everything(), app.state())).unwrap_err(),
-            now(bulk_update_tags(
+            now(apply_edit(
                 vec!["a".to_string()],
-                vec![],
-                vec![],
+                TagEditSpec::default(),
                 app.state(),
             ))
             .unwrap_err(),
@@ -2806,6 +2838,52 @@ mod tests {
 
         now(collection_delete(created.id, app.state())).unwrap();
         assert_eq!(now(collection_list(app.state())).unwrap().len(), 1);
+    }
+
+    fn new_stamp(name: &str, text: &str) -> StampInput {
+        StampInput {
+            id: None,
+            name: name.to_string(),
+            text: text.to_string(),
+        }
+    }
+
+    #[test]
+    fn stamps_list_upsert_and_delete_reach_the_open_library_through_the_commands() {
+        let (_library, app) = app_with_library();
+
+        let created = now(stamps_upsert(new_stamp("Cat", "cat animal"), app.state())).unwrap();
+        let listed = now(stamps_list(app.state())).unwrap();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0], created);
+
+        now(stamps_delete(created.id, app.state())).unwrap();
+        assert!(now(stamps_list(app.state())).unwrap().is_empty());
+    }
+
+    /// Design D3: the command surfaces the store's refusal reason, and
+    /// creates nothing.
+    #[test]
+    fn stamps_upsert_returns_the_refusal_reason() {
+        let (_library, app) = app_with_library();
+
+        let error = now(stamps_upsert(new_stamp("Cat", "   "), app.state())).unwrap_err();
+
+        assert!(matches!(error, AppError::BadRequest(_)), "{error:?}");
+        assert!(now(stamps_list(app.state())).unwrap().is_empty());
+    }
+
+    #[test]
+    fn the_stamps_commands_need_a_library_before_they_answer() {
+        let app = mock_app();
+
+        for error in [
+            now(stamps_list(app.state())).unwrap_err(),
+            now(stamps_upsert(new_stamp("a", "a"), app.state())).unwrap_err(),
+            now(stamps_delete("a".to_string(), app.state())).unwrap_err(),
+        ] {
+            assert!(matches!(error, AppError::NoLibrary), "{error:?}");
+        }
     }
 
     #[test]

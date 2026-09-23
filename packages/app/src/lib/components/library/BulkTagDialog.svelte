@@ -1,9 +1,9 @@
 <script lang="ts">
   // The bulk tag edit (design D8). A dialog because the operation is two
   // multi-value fields and a confirm, which is not a toolbar's shape.
-  import type { TagCount } from '@boorubox/shared'
+  import type { TagCount, TagEditSpec } from '@boorubox/shared'
   import type { Selection } from '$lib/api'
-  import { bulkUpdateTags, errorText, selectionTagCounts } from '$lib/api'
+  import { applyEdit, errorText, selectionTagCounts } from '$lib/api'
   import TagInput from '$lib/components/tags/TagInput.svelte'
   import { Badge } from '$lib/components/ui/badge'
   import { Button } from '$lib/components/ui/button'
@@ -95,7 +95,16 @@
     saving = true
     error = null
     try {
-      await bulkUpdateTags(await selection.ids(), tagList(add), tagList(remove))
+      // `stamps` design D2: the dialog's two lists are a `TagEditSpec` with
+      // only its tag parts filled, the same door a stamp or the pinned chip
+      // writes through.
+      const spec: TagEditSpec = {
+        add: tagList(add),
+        remove: tagList(remove),
+        addCollections: [],
+        removeCollections: [],
+      }
+      await applyEdit(await selection.ids(), spec)
       // The edit is on rows the grid and the inspector are drawing; a refresh
       // is the same list, so it keeps its scroll (design D4). Closed before
       // the await: `onapplied` prunes the selection, and a trigger that the

@@ -28,6 +28,7 @@
   import RebuildStatus from '$lib/components/common/RebuildStatus.svelte'
   import LibraryMenu from '$lib/components/frame/LibraryMenu.svelte'
   import RulesSection from '$lib/components/rules/RulesSection.svelte'
+  import StampsSection from '$lib/components/stamps/StampsSection.svelte'
   import { Button } from '$lib/components/ui/button'
   import { Input } from '$lib/components/ui/input'
   import { Kbd } from '$lib/components/ui/kbd'
@@ -379,6 +380,14 @@
       configuration, and one section named after neither would hold both.
     -->
     <BooruSection />
+
+    <!--
+      Slot Settings · Stamps (`stamps` design D5): a saved edit, applied to
+      an image by a click in edit mode. After Booru rather than beside
+      Rules: a stamp writes through the same door as the bulk tag dialog,
+      not a pattern matched against an arriving image.
+    -->
+    <StampsSection />
 
     <section class="flex flex-col gap-4">
       <h2 class="text-sm font-semibold">Appearance</h2>

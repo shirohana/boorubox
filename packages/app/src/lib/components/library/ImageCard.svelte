@@ -36,7 +36,13 @@
      * never the card the user was standing on the way a modifier-click does.
      */
     ontoggle: () => void
-    onactivate: () => void
+    /**
+     * `undefined` while the grid is routing a plain click to a stamp instead
+     * (`stamps` design D4): the click path here is unchanged, so this is the
+     * only thing that has to change for the second click to apply the stamp
+     * again rather than open the viewer.
+     */
+    onactivate?: () => void
     /** Slot Grid · tile: rates THIS image, not the inspector's (design D17). */
     onrate: (rating: Rating | null) => void
     /** Which pair of trash actions this tile offers (`trash` design D13). */
@@ -52,6 +58,16 @@
     selection: Selection
     /** A collection write from this menu, for the caller's own `replaceMany` (design D8/D10). */
     onwritten: (records: ImageRecord[]) => void
+    /**
+     * The active stamp's text while edit mode holds one (`stamps` design D4,
+     * risk "a click meant to focus lands as a stamp"); `undefined` outside
+     * the mode or with no active stamp. Draws `cursor: cell` on the tile so
+     * the mode reads at a glance, and on hover names what a click would
+     * apply (owner's review, 2026-09-23, "What a click will do": a wash and
+     * a cursor said a click does *something*, never what). The click path
+     * itself is `onactivate`'s job, not this one's.
+     */
+    stampLabel?: string
     /**
      * "New collection…" was chosen on this tile: the grid raises the one
      * dialog it owns for the whole grid, with what this tile's menu acts on.
@@ -78,6 +94,7 @@
     onwritten,
     onerror,
     onnewcollection,
+    stampLabel,
   }: Props = $props()
 
   let src = $state<string | null>(null)
@@ -208,8 +225,10 @@
     // A right-click on a tile outside the selection makes it current, as a
     // left click would (design D8) — the menu's ids follow from `selected`
     // either way, but the tile the user opened the menu on is the one the
-    // rest of the screen should agree is current.
-    if (open && image && !selected) onselect({})
+    // rest of the screen should agree is current. `menu: true` marks this as
+    // that current-ness alone: in edit mode the grid's router would otherwise
+    // read it as a plain click and apply the active stamp on a right-click.
+    if (open && image && !selected) onselect({ menu: true })
   }}
 >
   <ContextMenu.Trigger class="group/tile relative aspect-square">
@@ -279,18 +298,21 @@
               // describing opens it — and only if the pointer stayed still, since
               // a press the user dragged out of is a gesture they abandoned.
               if (shouldActivate(press, { x: event.clientX, y: event.clientY, ...modifiers })) {
-                onactivate()
+                onactivate?.()
               }
             }}
             ondblclick={(event) => {
               // A double click opens whatever the tile was, but a press that
               // travelled is still not a click (design D7).
-              if (!press || !travelled(press, { x: event.clientX, y: event.clientY })) onactivate()
+              if (!press || !travelled(press, { x: event.clientX, y: event.clientY })) {
+                onactivate?.()
+              }
             }}
             class="
               group relative block size-full overflow-hidden rounded-lg border border-border
               bg-muted/40 outline-none
               {ring}
+              {stampLabel !== undefined ? 'cursor-cell' : ''}
             "
           >
             {#if src}
@@ -385,6 +407,34 @@
               <span class="block truncate text-xs text-white">{title}</span>
               <span class="block text-[0.7rem] text-white/70">{capturedOn} · {image.source}</span>
             </span>
+
+            {#if stampLabel !== undefined}
+              <!--
+                "What a click will do" (owner's review, 2026-09-23): `cursor:
+                cell` above said a click does something, not what — this
+                names it, on the same unnamed `group` as the caption strip
+                above so both answer to hovering this tile alone. Below the
+                checkbox (that span renders after this button closes, so it
+                paints on top with no `z-index` needed): the checkbox is
+                still what a click on it toggles, stamp or not.
+              -->
+              <span
+                class="
+                  pointer-events-none absolute inset-0 flex items-center justify-center
+                  bg-orange-400/30 p-2 opacity-0 transition-opacity
+                  group-hover:opacity-100
+                "
+              >
+                <span
+                  class="
+                    line-clamp-2 rounded-md bg-background/85 px-2 py-1 text-center text-xs
+                    font-medium text-foreground
+                  "
+                >
+                  Apply {stampLabel}
+                </span>
+              </span>
+            {/if}
           </button>
         {/if}
 

@@ -319,6 +319,23 @@ export interface TagEntry {
 }
 
 /**
+ * One edit's every part (`stamps` design D1, D2): parsed from a stamp's text
+ * in the webview (`domain/stamp.ts`), or built directly by the bulk tag
+ * dialog and the pinned chip filling only the parts they mean. `applyEdit` is
+ * the one door every caller of this shape writes through, so a stamp, the
+ * dialog and the chip cannot disagree about what one transaction contains.
+ * `addCollections`/`removeCollections` are slugs, resolved to ids in Rust
+ * before anything is written; `rating` sets and never clears.
+ */
+export interface TagEditSpec {
+  add: string[]
+  remove: string[]
+  addCollections: string[]
+  removeCollections: string[]
+  rating?: Rating
+}
+
+/**
  * What `exportZip` answers with (`selection-and-bulk` design D11): how many of
  * the selection made it into the archive, and which ids did not because their
  * file was gone from `images/` by the time it was copied.
@@ -651,6 +668,30 @@ export interface RulesRunReport {
   changed: number
   rules: RuleRunCount[]
   invalid: RuleRunCount[]
+}
+
+/**
+ * A saved edit, written once in the tag language and applied by a click
+ * (`stamps` design D1, D3): `text` is stored exactly as typed, never the
+ * parsed {@link TagEditSpec} — the grammar is the webview's, and storing the
+ * parsed lists would freeze a stamp the user meant to keep editing. Shaped
+ * like {@link Rule}: library-level, listed by creation order rather than by
+ * name, since there is no reordering.
+ */
+export interface Stamp {
+  id: string
+  name: string
+  text: string
+  /** Epoch milliseconds. */
+  createdAt: number
+  updatedAt: number
+}
+
+/** What `stampsUpsert` takes: `id` absent creates, present edits (design D3). */
+export interface StampInput {
+  id?: string
+  name: string
+  text: string
 }
 
 /**

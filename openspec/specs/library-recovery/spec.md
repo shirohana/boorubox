@@ -46,8 +46,8 @@ changed produces the same bytes.
 ### Requirement: The library's own settings are described by one file
 The app SHALL keep one file in the library folder describing the library-level state a
 rebuild would otherwise lose: the auto-tag rules, the configured booru sites, the library
-note, the collections with their ids and names, and the tag vocabulary — every tag that is
-not general or is pinned, with its category and its pin. It SHALL be rewritten whenever any
+note, the collections with their ids and names, the tag vocabulary — every tag that is
+not general or is pinned, with its category and its pin — and the stamps. It SHALL be rewritten whenever any
 of those change. It SHALL NOT contain any API key or other credential; those live in the
 operating system's credential store (`booru-sites`) and SHALL NOT be written into the
 library folder.
@@ -67,6 +67,10 @@ library folder.
 #### Scenario: A collection is renamed
 - **WHEN** the user creates, renames or deletes a collection
 - **THEN** the library's own file lists the collections as they now stand, by id and name
+
+#### Scenario: A stamp is saved
+- **WHEN** the user creates, edits or deletes a stamp
+- **THEN** the library's own file lists the stamps as they now stand
 
 #### Scenario: A tag is categorised or pinned
 - **WHEN** the user creates a tag under a category, changes a tag's category, or pins or unpins a tag
@@ -135,8 +139,8 @@ read it.
 The app SHALL be able to build a working library database from the files in the folder alone:
 every image whose describing file can be read SHALL come back with its tags, rating, trash
 state, times, source, posts and collections, and searchable exactly as before; the auto-tag
-rules, the booru sites, the note, the collections and the tag vocabulary SHALL come back from
-the library-level file, a vocabulary tag with no carrier included.
+rules, the booru sites, the note, the collections, the tag vocabulary and the stamps SHALL come
+back from the library-level file, a vocabulary tag with no carrier included.
 
 Rebuilding SHALL NOT read, decode or rewrite any image or thumbnail — an image's dimensions
 come from its describing file — and SHALL NOT remove any file under the folder. A describing
@@ -181,6 +185,10 @@ if it is interrupted.
 #### Scenario: A file from before the vocabulary
 - **WHEN** a library is rebuilt whose file has no vocabulary key
 - **THEN** every tag comes back general and unpinned
+
+#### Scenario: Stamps come back
+- **WHEN** a library is rebuilt whose file lists two stamps
+- **THEN** both are back with their names and texts, in their order
 
 ### Requirement: A rebuild is offered where the damage is met, and only on request
 The app SHALL offer to rebuild a library from the start screen when that library will not

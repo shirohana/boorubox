@@ -27,6 +27,13 @@ export interface ClickModifiers {
   multi?: boolean
   /** Shift: take everything between the anchor and this card. */
   range?: boolean
+  /**
+   * The tile menu opening on an unselected tile (`collections` design D8):
+   * current-ness only, never a stamp. `click` below reads only `multi` and
+   * `range`, so a menu-open click still falls through to a plain focus here —
+   * a stamp-mode router is what has to check this field before routing.
+   */
+  menu?: boolean
 }
 
 /**

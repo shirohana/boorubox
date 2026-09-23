@@ -219,10 +219,26 @@ ALTER TABLE tags ADD COLUMN category TEXT NOT NULL DEFAULT 'general'
 ALTER TABLE tags ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0;
 ";
 
+/// Schema v8 (`stamps` design D3): a saved edit, written once in the tag
+/// language (`stamps.rs`) and applied to an image by a click in edit mode.
+/// Shaped like `rules` — a `TEXT PRIMARY KEY` id from `uuid::Uuid::new_v4()`,
+/// no index because the table holds tens of rows and every read is "all of
+/// them" — but ordered by `created_at` rather than by name: there is no
+/// reordering, so creation order is the only order a stamp ever has.
+const SCHEMA_V8: &str = r"
+CREATE TABLE stamps (
+    id         TEXT PRIMARY KEY,
+    name       TEXT NOT NULL,
+    text       TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+);
+";
+
 /// One entry per schema version, applied in order. Appending is the only way to
 /// change the schema: `user_version` counts how many of these have run.
 const MIGRATIONS: &[&str] = &[
-    SCHEMA_V1, SCHEMA_V2, SCHEMA_V3, SCHEMA_V4, SCHEMA_V5, SCHEMA_V6, SCHEMA_V7,
+    SCHEMA_V1, SCHEMA_V2, SCHEMA_V3, SCHEMA_V4, SCHEMA_V5, SCHEMA_V6, SCHEMA_V7, SCHEMA_V8,
 ];
 
 /// Open (creating if needed) the library database with the pragmas D2 fixes,
@@ -369,6 +385,10 @@ mod tests {
                 "missing table {expected}: {names:?}"
             );
         }
+        assert!(
+            names.contains(&"stamps".to_string()),
+            "missing table stamps: {names:?}"
+        );
         assert_eq!(
             favorites_row(&conn),
             Some(("Favorites".to_string(), "favorites".to_string()))
@@ -597,6 +617,42 @@ mod tests {
             .unwrap();
         assert_eq!(category, "general");
         assert!(!pinned);
+        assert_eq!(fts_matches(&conn, "kyoto"), vec!["a".to_string()]);
+    }
+
+    /// A library written after `tag-vocabulary` shipped (v7, no `stamps`
+    /// table) has to reach v8 with its rows intact — `stamps` adds nothing to
+    /// any existing table, only this one.
+    #[test]
+    fn a_v7_library_migrates_to_v8_keeping_its_rows() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("library.sqlite");
+
+        let conn = Connection::open(&path).unwrap();
+        conn.execute_batch(SCHEMA_V1).unwrap();
+        conn.execute_batch(SCHEMA_V2).unwrap();
+        conn.execute_batch(SCHEMA_V3).unwrap();
+        conn.execute_batch(SCHEMA_V4).unwrap();
+        conn.execute_batch(SCHEMA_V5).unwrap();
+        conn.execute_batch(SCHEMA_V6).unwrap();
+        conn.execute_batch(SCHEMA_V7).unwrap();
+        conn.pragma_update(None, "user_version", 7i64).unwrap();
+        insert_bare_image(&conn, "a", "sunset over kyoto");
+        drop(conn);
+
+        let conn = open(&path).unwrap();
+
+        let version: i64 = conn
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, MIGRATIONS.len() as i64);
+        assert!(table_names(&conn).contains(&"stamps".to_string()));
+        for column in ["id", "name", "text", "created_at", "updated_at"] {
+            assert!(
+                column_names(&conn, "stamps").contains(&column.to_string()),
+                "missing column {column} on stamps"
+            );
+        }
         assert_eq!(fts_matches(&conn, "kyoto"), vec!["a".to_string()]);
     }
 

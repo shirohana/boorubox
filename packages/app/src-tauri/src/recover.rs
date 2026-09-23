@@ -13,7 +13,9 @@ use crate::collections;
 use crate::db;
 use crate::error::{AppError, Result};
 use crate::library::LibraryPaths;
-use crate::model::{BooruSite, Collection, Note, RebuildFailure, RebuildReport, Rule, TagEntry};
+use crate::model::{
+    BooruSite, Collection, Note, RebuildFailure, RebuildReport, Rule, Stamp, TagEntry,
+};
 use crate::sidecar;
 use crate::tags;
 
@@ -38,16 +40,16 @@ const CHUNK: usize = 500;
 /// database about to be renamed into place is exactly what SQLite would try to
 /// roll back into it, which is how this library died in the first place.
 pub fn move_aside(paths: &LibraryPaths) -> Result<Option<PathBuf>> {
-    let stamp = db::now_ms();
+    let now = db::now_ms();
     let db_path = paths.db_path();
-    let kept = db_path.is_file().then(|| corrupt_name(&db_path, stamp));
+    let kept = db_path.is_file().then(|| corrupt_name(&db_path, now));
     if let Some(kept) = &kept {
         fs::rename(&db_path, kept)?;
     }
 
     let journal = journal_path(&db_path);
     if journal.is_file() {
-        fs::rename(&journal, corrupt_name(&journal, stamp))?;
+        fs::rename(&journal, corrupt_name(&journal, now))?;
     }
     Ok(kept)
 }
@@ -58,9 +60,9 @@ fn journal_path(db_path: &Path) -> PathBuf {
     PathBuf::from(name)
 }
 
-fn corrupt_name(path: &Path, stamp: i64) -> PathBuf {
+fn corrupt_name(path: &Path, now: i64) -> PathBuf {
     let mut name = path.as_os_str().to_os_string();
-    name.push(format!(".corrupt-{stamp}"));
+    name.push(format!(".corrupt-{now}"));
     PathBuf::from(name)
 }
 
@@ -128,6 +130,14 @@ pub fn rebuild(
             // them.
             if let Some(vocabulary) = &file.tags {
                 insert_vocabulary(&tx, vocabulary)?;
+            }
+            // The stamps, restored the same way and for the same reason
+            // (`stamps` design D3): a stamp names no tag or image row, so it
+            // has no dependency on the sidecar pass or on the vocabulary
+            // above it — restored here only because this is where every
+            // other library-level exceptions list already is.
+            if let Some(stamps) = &file.stamps {
+                insert_stamps(&tx, stamps)?;
             }
             tx.commit()?;
             (rules, sites)
@@ -223,6 +233,27 @@ fn insert_vocabulary(conn: &Connection, entries: &[TagEntry]) -> Result<()> {
              ON CONFLICT (name) DO UPDATE SET category = excluded.category,
                                                pinned = excluded.pinned",
             params![entry.name, entry.category, entry.pinned],
+        )?;
+    }
+    Ok(())
+}
+
+/// Stamps restored with their own id and timestamps verbatim (design D3), the
+/// same rule [`insert_rules`] and [`insert_sites`] already follow for their
+/// own ids — never through `stamps::upsert`, which mints a fresh id on every
+/// create.
+fn insert_stamps(conn: &Connection, stamps: &[Stamp]) -> Result<()> {
+    for stamp in stamps {
+        conn.execute(
+            "INSERT INTO stamps (id, name, text, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![
+                stamp.id,
+                stamp.name,
+                stamp.text,
+                stamp.created_at,
+                stamp.updated_at
+            ],
         )?;
     }
     Ok(())
@@ -777,6 +808,44 @@ mod tests {
         assert_eq!(suggested, vec!["azur_lane".to_string()]);
     }
 
+    /// `stamps` task 1.2, spec "Stamps come back": two stamps survive a
+    /// rebuild with their names and texts, in the order they were created —
+    /// restored from `library.json` verbatim, the same rule the rules and the
+    /// sites already follow for their own ids.
+    #[test]
+    fn rebuild_restores_the_stamps_in_creation_order() {
+        let (_dir, library) = library();
+        let cat = crate::stamps::upsert(
+            &library,
+            &crate::model::StampInput {
+                id: None,
+                name: "Cat".to_string(),
+                text: "cat animal".to_string(),
+            },
+        )
+        .unwrap();
+        let reviewed = crate::stamps::upsert(
+            &library,
+            &crate::model::StampInput {
+                id: None,
+                name: "Reviewed".to_string(),
+                text: "rating:g -tagme".to_string(),
+            },
+        )
+        .unwrap();
+        let paths = library.paths.clone();
+        drop(library);
+
+        let report = rebuild(&paths, &mut |_, _| {}).unwrap();
+
+        assert!(report.failures.is_empty(), "{:?}", report.failures);
+        let rebuilt = Library::open_existing(paths.root.as_path()).unwrap();
+        assert_eq!(
+            crate::stamps::list(&rebuilt.conn).unwrap(),
+            vec![cat, reviewed],
+        );
+    }
+
     fn tag_row(conn: &Connection, name: &str) -> (String, bool) {
         conn.query_row(
             "SELECT category, pinned FROM tags WHERE name = ?1",
@@ -1201,8 +1270,8 @@ mod tests {
 
     /// Every entry directly under `dir` whose filename starts with `prefix` —
     /// used below to find a moved journal without hand-reconstructing its
-    /// name, since `.corrupt-<stamp>` lands after `-journal`, not after it
-    /// (`library.sqlite-journal.corrupt-<stamp>`, not the other order).
+    /// name, since `.corrupt-<now>` lands after `-journal`, not after it
+    /// (`library.sqlite-journal.corrupt-<now>`, not the other order).
     fn siblings_starting_with(dir: &Path, prefix: &str) -> Vec<PathBuf> {
         fs::read_dir(dir)
             .unwrap()
