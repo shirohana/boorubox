@@ -286,7 +286,14 @@
     {#snippet child({ props })}
       <!-- A class written here is replaced: {...props} carries the trigger's merged class. -->
       <div bind:this={tile} onfocusin={onfocus} {...props}>
-        <div class="relative aspect-square">
+        <!--
+          `min-h-0`: the square is a column flex item, and Chromium (WebView2
+          on Windows) gives a flex item an automatic minimum height taken from
+          its content — here the image's natural height, so a portrait tile
+          grew past square and over the row below. WebKit keeps the square, so
+          a Mac never shows it. Take it out and Windows breaks alone.
+        -->
+        <div class="relative min-h-0 aspect-square">
           {#if !image}
             <div class="h-full rounded-lg border border-border bg-muted/40 {ring}">
               <span class="sr-only">Loading</span>
