@@ -78,6 +78,24 @@ function singleTagEdit(spec: TagEditSpec): { adding: boolean, tag: string } | nu
 }
 
 /**
+ * The collection chip's own shape of edit — exactly one collection, added or
+ * removed, nothing else touched (`pinned-collections` design D10), the
+ * collection-keyed twin of {@link singleTagEdit}. `adding` alone is enough:
+ * the collection's name is `pending.label`, not a field on the spec itself.
+ */
+function singleCollectionEdit(spec: TagEditSpec): { adding: boolean } | null {
+  const nothingElse = spec.add.length === 0 && spec.remove.length === 0 && spec.rating === undefined
+  if (!nothingElse) return null
+  if (spec.addCollections.length === 1 && spec.removeCollections.length === 0) {
+    return { adding: true }
+  }
+  if (spec.removeCollections.length === 1 && spec.addCollections.length === 0) {
+    return { adding: false }
+  }
+  return null
+}
+
+/**
  * The question the one `ConfirmDialog` asks, per pending write. Here rather
  * than in the markup because the reversible act and the irreversible ones have
  * to read differently — "cannot be undone" belongs only to the ones that cannot.
@@ -115,6 +133,17 @@ export function confirmPrompt(pending: PendingWrite, trashCount: number): Confir
           : `Remove “${single.tag}” from ${images(count)}?`,
         description: 'Every other tag each image carries is left as it is.',
         confirmLabel: single.adding ? 'Add tag' : 'Remove tag',
+        destructive: false,
+      }
+    }
+    const singleCollection = singleCollectionEdit(pending.spec)
+    if (singleCollection) {
+      return {
+        title: singleCollection.adding
+          ? `Add ${images(count)} to “${pending.label}”?`
+          : `Remove ${images(count)} from “${pending.label}”?`,
+        description: 'Nothing else about them changes.',
+        confirmLabel: singleCollection.adding ? 'Add' : 'Remove',
         destructive: false,
       }
     }

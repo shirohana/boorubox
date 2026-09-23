@@ -3,12 +3,20 @@
   // and the lightbox's inspect mode. Both edit — the tag editor and the rating
   // control are the same instances in both, which is the point of there being
   // one component (slots Inspector · tags and Inspector · rating, design D17).
-  import type { ImageRecord, Rating, TagCount } from '@boorubox/shared'
+  import type { Collection, CollectionCount, ImageRecord, Rating, TagCount, TagEditSpec } from '@boorubox/shared'
   import type { SearchResults, Selection } from '$lib/api'
   import { tick } from 'svelte'
-  import { collectionRemove, collections, errorText, selectionTagCounts, vocabulary } from '$lib/api'
+  import {
+    collectionRemove,
+    collections,
+    errorText,
+    selectionCollectionCounts,
+    selectionTagCounts,
+    vocabulary,
+  } from '$lib/api'
   import PostedLabel from '$lib/components/booru/PostedLabel.svelte'
   import UploadAction from '$lib/components/booru/UploadAction.svelte'
+  import BookmarkIcon from '@lucide/svelte/icons/bookmark'
   import PencilIcon from '@lucide/svelte/icons/pencil'
   import PinIcon from '@lucide/svelte/icons/pin'
   import CollectionNameDialog from '$lib/components/common/CollectionNameDialog.svelte'
@@ -16,6 +24,7 @@
   import RatingControl from '$lib/components/tags/RatingControl.svelte'
   import { CATEGORY_TEXT_CLASS, searchMark, searchMarkClass, SEARCH_MARK_CLASS } from '$lib/components/tags/categories'
   import TagInput from '$lib/components/tags/TagInput.svelte'
+  import CollectionPinMenuItem from '$lib/components/tags/CollectionPinMenuItem.svelte'
   import TagVocabularyMenuItems from '$lib/components/tags/TagVocabularyMenuItems.svelte'
   import { Badge } from '$lib/components/ui/badge'
   import { Button } from '$lib/components/ui/button'
@@ -37,9 +46,9 @@
   import { KEY_ENTER, KEY_ESCAPE } from '$lib/keyboard'
   import { portalTarget } from '$lib/portal'
   import type { CollectionTarget } from './collection-actions'
-  import { addToCreated } from './collection-actions'
+  import { addToCreated, toggleCollection } from './collection-actions'
   import CollectionMenuItems from './CollectionMenuItems.svelte'
-  import { fillState, type FillState, toggledSelection, toggledTag } from './pinned-state'
+  import { fillOf, fillState, type FillState, toggledSelection, toggledTag } from './pinned-state'
   import SelectionThumbs from './SelectionThumbs.svelte'
   import type { TrashActions } from './trash-actions'
 
@@ -48,6 +57,14 @@
    * `selection-and-bulk` design D7 leaves the number to be judged against a real selection.
    */
   const PREVIEW_LIMIT = 12
+
+  /**
+   * What {@link pinnedChip} draws (`pinned-collections` design D7): a tag by
+   * name, or a collection by its row. Named here rather than written inline
+   * at the snippet's parameter, which `eslint`'s template-expression parser
+   * does not accept for an inline object-literal union type.
+   */
+  type PinnedChipItem = { kind: 'tag', tag: string } | { kind: 'collection', collection: Collection }
 
   interface Props {
     /** The focused card. The selected image wins over it when exactly one is selected. */
@@ -97,12 +114,16 @@
      */
     onactivate?: (index: number) => void
     /**
-     * A pinned chip activated over a selection (`tag-vocabulary` design D8):
-     * the screen's `editSelectionTags`, which asks first past one image. The
-     * one-image chip never calls this — it writes through `results.saveTags`
-     * directly, the same path the tag editor's own save uses.
+     * A pinned chip activated over a selection (`pinned-collections` design
+     * D10, widened from `tag-vocabulary` design D8's `(ids, add, remove)`):
+     * the screen's `editSelection`, which asks first past one image. `label`
+     * is the chip's own name — the tag, or the collection's name, which the
+     * confirmation names since the spec only carries its slug. The one-image
+     * chip never calls this — it writes through `results.saveTags` or
+     * `collection-actions.ts`'s `toggleCollection` directly, the same paths
+     * the tag editor's own save and the "Add to…" menu use.
      */
-    onedit?: (ids: string[], add: string[], remove: string[]) => void
+    onedit?: (ids: string[], spec: TagEditSpec, label: string) => void
   }
 
   let {
@@ -444,9 +465,13 @@
   const togglePinned = (tag: string) => write(toggledTag(tags, tag))
 
   /**
-   * The chip's tri-state over a selection (`tag-vocabulary` design D8), read from
-   * `selectionTagCounts` asked for exactly the pinned names — the bulk
-   * dialog's own command, narrowed by the `names` filter it gained for this.
+   * The chips' tri-state over a selection, both kinds (`pinned-collections`
+   * design D9, widened from `tag-vocabulary` design D8): one effect fetches
+   * `selectionTagCounts` for the pinned names and `selectionCollectionCounts`
+   * for the pinned collection ids together, over one `selection.peekIds()` —
+   * not two effects, each with its own copy of the generation guard and the
+   * {@link pinnedFetch} ticket, where a click could land with one set of
+   * counts fresh and the other stale.
    *
    * Reads `selection.peekIds()`, never `selection.ids()`: `ids()` promotes a
    * range to id mode as a side effect, which reassigns the state this effect
@@ -457,42 +482,57 @@
    *
    * FIXME: the fetch itself is still the cost D3 warns against — resolving a
    * range through `search_ids` just to draw a chip. The honest fix is a Rust
-   * `selection_tag_counts` that takes the search request plus a row range and
-   * counts over the plan's rows directly, so no ids cross the wire for
-   * something that is only ever drawn, not acted on, until it is clicked. Not
-   * built in this pass: a Rust unit was in flight on the same files
-   * (`tags.rs`, `commands.rs`).
+   * count that takes the search request plus a row range and counts over the
+   * plan's rows directly, for both the tag and the collection call, so no ids
+   * cross the wire for something that is only ever drawn, not acted on, until
+   * it is clicked. Not built in this pass: a Rust unit was in flight on the
+   * same files (`tags.rs`, `collections.rs`, `commands.rs`).
    *
-   * `pinnedCounts` is cleared, and `pinnedCountsKnown` set false, the moment
-   * the effect decides to refetch — not left holding the outgoing
-   * selection's answer. While unknown every chip draws `none`
-   * (`fillState`'s own empty-counts fallback) and `toggleSelectionPinned`
-   * ignores a click, rather than sending `add`/`remove` over images the
-   * counts never described.
+   * The counts are cleared, and `pinnedCountsKnown` set false, the moment the
+   * effect decides to refetch — not left holding the outgoing selection's
+   * answer. While unknown every chip draws `none` (`fillState`'s and
+   * `fillOf`'s own empty-counts fallback) and a chip's activation ignores a
+   * click, rather than sending an edit over images the counts never
+   * described.
    *
-   * `vocabulary.pinned` is a fresh array identity on every vocabulary
-   * refresh even when the names themselves are unchanged, so depending on it
-   * directly would refetch on every refresh; `pinnedKey` is the names'
-   * stable text, and `selection.generation` — bumped by every selection
-   * write — is the cheap synchronous stand-in for "the selection changed"
-   * that does not require resolving anything to answer. The effect bails
-   * without a round trip when none of the key, the selection's generation or
-   * `results.generation` moved since the last run.
+   * `vocabulary.pinned` and `collections.pinned` are fresh array identities on
+   * every refresh even when the names or ids themselves are unchanged, so
+   * depending on them directly would refetch on every refresh; `pinnedKey` is
+   * their stable text together, and `selection.generation` — bumped by every
+   * selection write — is the cheap synchronous stand-in for "the selection
+   * changed" that does not require resolving anything to answer. The effect
+   * bails without a round trip when none of the key, the selection's
+   * generation or `results.generation` moved since the last run, and bails
+   * out entirely while nothing of either kind is pinned.
    */
-  let pinnedCounts = $state<TagCount[]>([])
+  let pinnedTagCounts = $state<TagCount[]>([])
+  let pinnedCollectionCounts = $state<CollectionCount[]>([])
   let pinnedCountsError = $state<string | null>(null)
   let pinnedCountsKnown = $state(false)
 
+  /**
+   * Which fetch may still answer: bumped by every fetch the effect starts and
+   * by every run that clears the counts, never by a run that bails out
+   * unchanged. Not the effect's own teardown — that runs before every re-run,
+   * the unchanged ones included, so a vocabulary refresh landing mid-fetch (a
+   * new `vocabulary.pinned` identity over the same names) would drop the one
+   * answer still owed and leave `pinnedCountsKnown` false, every chip `none`
+   * and every click ignored, until the selection next changed.
+   */
+  let pinnedFetch = 0
   let lastPinnedKey: string | undefined
   let lastSelectionGeneration: number | undefined
   let lastResultsGeneration: number | undefined
 
   $effect(() => {
     const names = vocabulary.pinned
-    const pinnedKey = names.join('\n')
+    const collectionIds = collections.pinned.map((collection) => collection.id)
+    const pinnedKey = `${names.join('\n')}\u0000${collectionIds.join('\n')}`
 
-    if (!selection || !multi || names.length === 0) {
-      pinnedCounts = []
+    if (!selection || !multi || (names.length === 0 && collectionIds.length === 0)) {
+      pinnedFetch++
+      pinnedTagCounts = []
+      pinnedCollectionCounts = []
       pinnedCountsKnown = false
       return
     }
@@ -510,42 +550,83 @@
     lastSelectionGeneration = selectionGeneration
     lastResultsGeneration = resultsGeneration
 
-    pinnedCounts = []
+    pinnedTagCounts = []
+    pinnedCollectionCounts = []
     pinnedCountsKnown = false
 
-    let current = true
-    selection.peekIds()
-      .then((ids) => selectionTagCounts(ids, 0, names))
-      .then((counts) => {
-        if (!current) return
-        pinnedCounts = counts
+    const ticket = ++pinnedFetch
+    void (async () => {
+      try {
+        const ids = await selection.peekIds()
+        const tagCountsFetch: Promise<TagCount[]> = names.length > 0
+          ? selectionTagCounts(ids, 0, names)
+          : Promise.resolve([])
+        const collectionCountsFetch: Promise<CollectionCount[]> = collectionIds.length > 0
+          ? selectionCollectionCounts(ids, collectionIds)
+          : Promise.resolve([])
+        const [tagCounts, collectionCounts] = await Promise.all([
+          tagCountsFetch,
+          collectionCountsFetch,
+        ])
+        if (ticket !== pinnedFetch) return
+        pinnedTagCounts = tagCounts
+        pinnedCollectionCounts = collectionCounts
         pinnedCountsKnown = true
         pinnedCountsError = null
-      })
-      .catch((cause) => {
-        if (current) pinnedCountsError = errorText(cause)
-      })
-    return () => {
-      current = false
-    }
+      } catch (cause) {
+        if (ticket === pinnedFetch) pinnedCountsError = errorText(cause)
+      }
+    })()
   })
 
   /**
-   * A pinned chip's activation over a selection (`tag-vocabulary` design D8): add unless every
-   * selected image already carries the tag, else remove it from all of them —
-   * `onedit` is the screen's `editSelectionTags`, which asks first past one
-   * image (`pending-write.ts`'s `edit` kind). Ignored while `pinnedCounts` is
-   * unknown (the fetch above is mid-flight or has not started): a click that
-   * lands then would otherwise act on counts left over from a different
-   * selection.
+   * A tag chip's activation over a selection (`tag-vocabulary` design D8):
+   * add unless every selected image already carries the tag, else remove it
+   * from all of them — `onedit` is the screen's `editSelection`, which asks
+   * first past one image (`pending-write.ts`'s `edit` kind). Ignored while
+   * `pinnedCountsKnown` is false (the fetch above is mid-flight or has not
+   * started): a click that lands then would otherwise act on counts left
+   * over from a different selection.
    */
-  async function toggleSelectionPinned(tag: string) {
+  async function toggleSelectionTag(tag: string) {
     if (!selection || !pinnedCountsKnown) return
     const { add, remove: removeTag } = toggledSelection(
-      fillState(tag, pinnedCounts, selection.count),
+      fillState(tag, pinnedTagCounts, selection.count),
       tag,
     )
-    onedit?.(await selection.ids(), add, removeTag)
+    const spec: TagEditSpec = { add, remove: removeTag, addCollections: [], removeCollections: [] }
+    onedit?.(await selection.ids(), spec, tag)
+  }
+
+  /**
+   * How many of the selection are in `id`, from `pinnedCollectionCounts` —
+   * a collection absent from the answer is 0 of them, `selectionCollectionCounts`'s
+   * own doc comment. Read by the template too, so the chip's fill and its
+   * own activation never disagree about the count a click acted on.
+   */
+  function collectionCountOf(id: string): number {
+    return pinnedCollectionCounts.find((entry) => entry.id === id)?.count ?? 0
+  }
+
+  /**
+   * A collection chip's activation over a selection (`pinned-collections`
+   * design D10), the collection-keyed twin of {@link toggleSelectionTag}: the
+   * slug, not the id, since `addCollections`/`removeCollections` are slugs
+   * resolved to ids in Rust (`TagEditSpec`'s own doc comment).
+   */
+  async function toggleSelectionCollection(collection: Collection) {
+    if (!selection || !pinnedCountsKnown) return
+    const { add, remove: removeSlug } = toggledSelection(
+      fillOf(collectionCountOf(collection.id), selection.count),
+      collection.slug,
+    )
+    const spec: TagEditSpec = {
+      add: [],
+      remove: [],
+      addCollections: add,
+      removeCollections: removeSlug,
+    }
+    onedit?.(await selection.ids(), spec, collection.name)
   }
 
   /**
@@ -561,28 +642,38 @@
 </script>
 
 <!--
-  A pinned tag's chip (`tag-vocabulary` design D8), one image's membership or a selection's
-  tri-state alike — `state` is `'all' | 'some' | 'none'` either way, `'some'`
+  A pinned chip, tag or collection alike (`pinned-collections` design D7,
+  `tag-vocabulary` design D8): one image's membership or a selection's
+  tri-state — `state` is `'all' | 'some' | 'none'` either way, `'some'`
   only ever reached from a selection. Always drawn `secondary`: `default`'s
-  `bg-primary` is near-white in dark mode, and `CATEGORY_TEXT_CLASS`'s
-  amber/violet/red/green/blue text loses its contrast against it. The fill
-  state is the pin itself: solid (`fill-current`) while the image carries
-  the tag, an outline while it does not, half-solid over a selection that
-  is split — a ring alone was unreadable at 1× (smoke run, 2026-09-23). A
-  faint foreground tint and a ring (`all`) or a dashed outline (`some`,
-  Tailwind's `ring-*` utilities have no dashed style, so `some` uses
-  `outline-*` instead) back the pin up without competing with the category
-  colour, which stays the text's alone on the muted background either way.
-  `aria-pressed` carries the same tri-state for assistive tech, since a
-  plain boolean cannot say "some". The pin glyph (`tag-vocabulary` design
-  D6, `tag-panel-polish` design D6) is what marks this a control rather than
-  one of the image's tags, now that the image's own tags are plain text
-  (design D3) and this chip is the only pill-shaped thing left in the
-  section. Its menu is `TagVocabularyMenuItems` unchanged: a pinned chip's
-  tag reads `vocabulary.isPinned` true by construction, so only Unpin
-  renders, never a second Pin item to suppress.
+  `bg-primary` is near-white in dark mode, and the text classes below lose
+  their contrast against it. The fill state is the glyph itself: solid
+  (`fill-current`) while the image carries the tag or is in the collection,
+  an outline while it does not, half-solid over a selection that is split —
+  a ring alone was unreadable at 1× (smoke run, 2026-09-23). A faint
+  foreground tint and a ring (`all`) or a dashed outline (`some`, Tailwind's
+  `ring-*` utilities have no dashed style, so `some` uses `outline-*`
+  instead) back the glyph up without competing with the text colour. A tag's
+  text is `CATEGORY_TEXT_CLASS[vocabulary.categoryOf(tag)]` with `PinIcon`,
+  the glyph that marks this a control rather than one of the image's tags,
+  now that the image's own tags are plain text (design D3) and this chip is
+  the only pill-shaped thing left in the section. A collection's text is
+  plain `text-foreground` with `BookmarkIcon` — the icon `ImageCard` already
+  draws for "in a collection" — since every category hue is already a tag's
+  (design D7's "why neutral text and not a sixth hue"). `aria-pressed`
+  carries the same tri-state for assistive tech, since a plain boolean
+  cannot say "some". The menu is `TagVocabularyMenuItems` for a tag —
+  unchanged: a pinned chip's tag reads `vocabulary.isPinned` true by
+  construction, so only Unpin renders, never a second Pin item to suppress —
+  or `CollectionPinMenuItem` for a collection, true by construction the same
+  way.
 -->
-{#snippet pinnedChip(tag: string, state: FillState, onactivate: () => void)}
+{#snippet pinnedChip(chip: PinnedChipItem, state: FillState, onactivate: () => void)}
+  {@const Glyph = chip.kind === 'tag' ? PinIcon : BookmarkIcon}
+  {@const label = chip.kind === 'tag' ? chip.tag : chip.collection.name}
+  {@const textClass = chip.kind === 'tag'
+    ? CATEGORY_TEXT_CLASS[vocabulary.categoryOf(chip.tag)]
+    : 'text-foreground'}
   <li>
     <ContextMenu.Root>
       <ContextMenu.Trigger>
@@ -599,23 +690,27 @@
                 flex items-center gap-1
                 {state === 'all' ? 'bg-foreground/10 ring-1 ring-foreground/60' : ''}
                 {state === 'some' ? 'outline-1 outline-foreground/40 outline-dashed' : ''}
-                {CATEGORY_TEXT_CLASS[vocabulary.categoryOf(tag)]}
+                {textClass}
               "
             >
-              <PinIcon
+              <Glyph
                 class="
                   size-3 shrink-0
                   {state === 'all' ? 'fill-current' : ''}
                   {state === 'some' ? 'fill-current [fill-opacity:0.4]' : ''}
                 "
               />
-              {tag}
+              {label}
             </Badge>
           </button>
         {/snippet}
       </ContextMenu.Trigger>
       <ContextMenu.Content portalProps={{ to: portalTo }}>
-        <TagVocabularyMenuItems name={tag} />
+        {#if chip.kind === 'tag'}
+          <TagVocabularyMenuItems name={chip.tag} />
+        {:else}
+          <CollectionPinMenuItem collection={chip.collection} />
+        {/if}
       </ContextMenu.Content>
     </ContextMenu.Root>
   </li>
@@ -637,19 +732,28 @@
     </section>
 
     <!--
-      Design D8: the same chip row the single-image panel draws, tri-state
-      over the selection instead of one image's membership. Absent along with
-      its heading while nothing is pinned, same as the single-image panel.
+      Design D7/D9: the same chip row the single-image panel draws, tri-state
+      over the selection instead of one image's membership — the heading
+      reads Pinned rather than Tags, since it can now hold both kinds. Absent
+      along with its heading while nothing is pinned, same as the
+      single-image panel.
     -->
-    {#if vocabulary.pinned.length > 0}
+    {#if vocabulary.pinned.length > 0 || collections.pinned.length > 0}
       <section class="border-t border-border px-4 py-3">
-        <h3 class="mb-2 text-xs font-medium text-muted-foreground">Tags</h3>
+        <h3 class="mb-2 text-xs font-medium text-muted-foreground">Pinned</h3>
         <ul class="flex flex-wrap gap-1">
           {#each vocabulary.pinned as tag (tag)}
             {@render pinnedChip(
-              tag,
-              fillState(tag, pinnedCounts, selection?.count ?? 0),
-              () => void toggleSelectionPinned(tag),
+              { kind: 'tag', tag },
+              fillState(tag, pinnedTagCounts, selection?.count ?? 0),
+              () => void toggleSelectionTag(tag),
+            )}
+          {/each}
+          {#each collections.pinned as collection (collection.id)}
+            {@render pinnedChip(
+              { kind: 'collection', collection },
+              fillOf(collectionCountOf(collection.id), selection?.count ?? 0),
+              () => void toggleSelectionCollection(collection),
             )}
           {/each}
         </ul>
@@ -866,17 +970,31 @@
             <Button size="xs" disabled={saving} onclick={save}>Save</Button>
           </div>
         </div>
-      {:else if vocabulary.pinned.length > 0}
+      {:else if vocabulary.pinned.length > 0 || collections.pinned.length > 0}
         <!--
-          Design D8: one activation writes the whole toggled set through
-          `write`, the same path the editor's own save makes — so the tag
-          list, the sidebar and `updatedAt` follow exactly as they do for a
-          save. Only in read mode: a chip write mid-edit would fight the
-          open draft, replacing tags the field has not saved yet.
+          Design D7/D8: a tag chip's activation writes the whole toggled set
+          through `write`, the same path the editor's own save makes, so the
+          tag list, the sidebar and `updatedAt` follow exactly as they do for
+          a save; a collection chip's goes through `toggleCollection` on the
+          panel's own `collectionTarget`, the "Add to…" menu's door. Tags
+          first, collections after (design D7), so pinning a collection never
+          moves a tag chip. Only in read mode: a chip write mid-edit would
+          fight the open draft, replacing tags the field has not saved yet.
         -->
         <ul class="mt-2 flex flex-wrap gap-1">
           {#each vocabulary.pinned as tag (tag)}
-            {@render pinnedChip(tag, tags.includes(tag) ? 'all' : 'none', () => togglePinned(tag))}
+            {@render pinnedChip(
+              { kind: 'tag', tag },
+              tags.includes(tag) ? 'all' : 'none',
+              () => togglePinned(tag),
+            )}
+          {/each}
+          {#each collections.pinned as collection (collection.id)}
+            {@render pinnedChip(
+              { kind: 'collection', collection },
+              ownCollections?.has(collection.id) ? 'all' : 'none',
+              () => void toggleCollection(collectionTarget, collection.id),
+            )}
           {/each}
         </ul>
       {/if}
@@ -1006,6 +1124,8 @@
                       <ContextMenu.Item onSelect={() => void removeFromCollection(collection.id)}>
                         Remove from this collection
                       </ContextMenu.Item>
+                      <ContextMenu.Separator />
+                      <CollectionPinMenuItem {collection} />
                     </ContextMenu.Content>
                   </ContextMenu.Root>
                 </li>

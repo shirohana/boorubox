@@ -14,7 +14,7 @@ use crate::error::{AppError, Result};
 use crate::ingest;
 use crate::library::Library;
 use crate::model::{ImageRecord, TagCategory, TagCount, TagEditSpec, TagEntry};
-use crate::query::{ID_CHUNK, placeholders};
+use crate::query::{ID_CHUNK, placeholders, text_values};
 
 /// A tag's one true spelling (`lowercase-tags` design D1): every door onto the
 /// vocabulary — the editor, a stamp, a rule, a capture, a sidecar on rebuild,
@@ -255,7 +255,7 @@ pub fn remove_tags(conn: &Connection, id: &str, tags: &[String]) -> Result<Vec<i
     }
     let tags: Vec<String> = tags.iter().map(|tag| canonical(tag)).collect();
     let mut values: Vec<Value> = vec![Value::Text(id.to_string())];
-    values.extend(tags.iter().cloned().map(Value::Text));
+    values.extend(text_values(&tags));
     let names = placeholders(tags.len());
 
     let mut stmt = conn.prepare(&format!(
@@ -305,7 +305,7 @@ pub fn bulk_set_rating(library: &Library, ids: &[String], rating: Option<&str>) 
             rating.map_or(Value::Null, |value| Value::Text(value.to_string())),
             Value::Integer(now),
         ];
-        values.extend(chunk.iter().cloned().map(Value::Text));
+        values.extend(text_values(chunk));
         tx.execute(
             &format!(
                 "UPDATE images SET rating = ?1, updated_at = ?2 WHERE id IN ({})",
@@ -397,10 +397,6 @@ pub fn selection_tag_counts(
         counts.truncate(limit as usize);
     }
     Ok(counts)
-}
-
-fn text_values(items: &[String]) -> Vec<Value> {
-    items.iter().cloned().map(Value::Text).collect()
 }
 
 /// Tags beginning with `prefix`, most used first and then by name, at most
@@ -832,7 +828,7 @@ fn unlink_tags_other_than(conn: &Connection, id: &str, keep: &[String]) -> Resul
         )
     };
     let mut values: Vec<Value> = vec![Value::Text(id.to_string())];
-    values.extend(keep.iter().cloned().map(Value::Text));
+    values.extend(text_values(keep));
 
     let mut stmt = conn.prepare(&format!(
         "SELECT tag_id FROM image_tags WHERE image_id = ?1{kept}"

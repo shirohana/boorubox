@@ -1,5 +1,23 @@
 import { describe, expect, it } from 'vitest'
-import { fillState, toggledSelection, toggledTag } from './pinned-state'
+import { fillOf, fillState, toggledSelection, toggledTag } from './pinned-state'
+
+describe('fillOf', () => {
+  it('reads none for 0 of 12', () => {
+    expect(fillOf(0, 12)).toBe('none')
+  })
+
+  it('reads some for 4 of 12', () => {
+    expect(fillOf(4, 12)).toBe('some')
+  })
+
+  it('reads all for 12 of 12', () => {
+    expect(fillOf(12, 12)).toBe('all')
+  })
+
+  it('reads none for 0 of 0', () => {
+    expect(fillOf(0, 0)).toBe('none')
+  })
+})
 
 describe('fillState', () => {
   it('reads none for a tag absent from the counts', () => {

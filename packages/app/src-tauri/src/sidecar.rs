@@ -748,6 +748,35 @@ mod tests {
         assert_eq!(read_back.tags, None);
     }
 
+    /// `pinned-collections` design D2: `Collection.pinned`'s `#[serde(default)]`
+    /// means a `library.json` written before this change — whose collection
+    /// entries carry no `pinned` key at all — still parses, every entry
+    /// reading back unpinned, the same answer the migration's own default
+    /// gives a database upgraded without ever having seen this key.
+    #[test]
+    fn a_library_file_without_collection_pins_reads_every_collection_unpinned() {
+        let (_dir, library) = library();
+        collections::create(&library, "Queue").unwrap();
+
+        write_library(&library.paths, &library.conn).unwrap();
+        let file = library_path(&library.paths);
+        let mut json: serde_json::Value =
+            serde_json::from_slice(&fs::read(&file).unwrap()).unwrap();
+        for entry in json["collections"].as_array_mut().unwrap() {
+            entry.as_object_mut().unwrap().remove("pinned");
+        }
+        fs::write(&file, serde_json::to_vec_pretty(&json).unwrap()).unwrap();
+
+        let read_back = read_library(&file).unwrap();
+
+        let collections = read_back.collections.expect("the key is always written");
+        assert_eq!(collections.len(), 2, "Favorites plus the created Queue");
+        assert!(
+            collections.iter().all(|collection| !collection.pinned),
+            "{collections:?}",
+        );
+    }
+
     /// `stamps` design D3: the same additive rule as `tags` and `collections`
     /// above — a `library.json` written before this change has no `stamps`
     /// key at all and reads as `None` rather than failing to parse.

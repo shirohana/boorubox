@@ -5,16 +5,17 @@
 //! collection's own row (`create`, `rename`, `delete`), never by a membership
 //! change (`add`, `remove`), which only ever touches the members' sidecars.
 
-use rusqlite::{Connection, Row, params};
+use rusqlite::{Connection, Row, params, params_from_iter};
 
 use crate::db;
 use crate::error::{AppError, Result};
 use crate::ingest;
 use crate::library::Library;
-use crate::model::{Collection, ImageRecord};
+use crate::model::{Collection, CollectionCount, ImageRecord};
+use crate::query::{ID_CHUNK, placeholders, text_values};
 use crate::tags;
 
-const COLLECTION_COLUMNS: &str = "id, name, slug, created_at, updated_at";
+const COLLECTION_COLUMNS: &str = "id, name, slug, created_at, updated_at, pinned";
 
 fn row_to_collection(row: &Row) -> rusqlite::Result<Collection> {
     Ok(Collection {
@@ -23,6 +24,7 @@ fn row_to_collection(row: &Row) -> rusqlite::Result<Collection> {
         slug: row.get(2)?,
         created_at: row.get(3)?,
         updated_at: row.get(4)?,
+        pinned: row.get(5)?,
     })
 }
 
@@ -182,6 +184,22 @@ pub fn delete(library: &Library, id: &str) -> Result<()> {
     Ok(())
 }
 
+/// Pin or unpin `id` (`pinned-collections` design D3): `NotFound` naming the
+/// id for one that does not exist, the twin of `tags::set_pinned`'s refusal —
+/// keyed by id here because the collection's id is its identity and its name
+/// is not. Rewrites `library.json`; never a sidecar (no image changed) and
+/// never `updated_at` (a pin is a display preference, the same reason a
+/// rename moves that time and a pin does not).
+pub fn set_pinned(library: &Library, id: &str, pinned: bool) -> Result<Vec<Collection>> {
+    require_collection(&library.conn, id)?;
+    library.conn.execute(
+        "UPDATE collections SET pinned = ?1 WHERE id = ?2",
+        params![pinned, id],
+    )?;
+    crate::sidecar::write_library(&library.paths, &library.conn)?;
+    list(&library.conn)
+}
+
 /// The transaction body of [`add`] (`stamps` design D2): idempotent per id
 /// (`INSERT OR IGNORE`), no `images.updated_at` mark, since favouriting is
 /// not an edit of the picture and must not reorder "Changed last" (design
@@ -256,6 +274,69 @@ pub fn remove(library: &Library, ids: &[String], collection_id: &str) -> Result<
 
     crate::sidecar::write_for(&library.paths, &library.conn, ids)?;
     ingest::load_records(&library.conn, ids)
+}
+
+/// For exactly `collection_ids`, how many of `ids` are in each
+/// (`pinned-collections` design D4): the pinned collection chip's tri-state
+/// over a selection, the same shape `tags::selection_tag_counts` answers for
+/// a pinned tag and for the same reason — a whole-library selection is past
+/// SQLite's variable limit, so the query is chunked to [`ID_CHUNK`] ids with
+/// the per-chunk counts summed in memory. Empty `ids` or empty
+/// `collection_ids` answers empty without touching the database: neither
+/// names anything to count. A collection none of `ids` is in is absent from
+/// the answer, as a tag is from `selection_tag_counts`.
+pub fn selection_counts(
+    conn: &Connection,
+    ids: &[String],
+    collection_ids: &[String],
+) -> Result<Vec<CollectionCount>> {
+    if ids.is_empty() || collection_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let mut totals: std::collections::HashMap<String, (String, String, i64)> =
+        std::collections::HashMap::new();
+    for chunk in ids.chunks(ID_CHUNK) {
+        let sql = format!(
+            "SELECT collections.id, collections.name, collections.slug, COUNT(*)
+             FROM image_collections
+             JOIN collections ON collections.id = image_collections.collection_id
+             WHERE image_collections.image_id IN ({})
+               AND image_collections.collection_id IN ({})
+             GROUP BY collections.id",
+            placeholders(chunk.len()),
+            placeholders(collection_ids.len())
+        );
+        let mut values = text_values(chunk);
+        values.extend(text_values(collection_ids));
+
+        let mut stmt = conn.prepare(&sql)?;
+        let rows = stmt.query_map(params_from_iter(values), |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, i64>(3)?,
+            ))
+        })?;
+        for row in rows {
+            let (id, name, slug, count) = row?;
+            let entry = totals.entry(id).or_insert((name, slug, 0));
+            entry.2 += count;
+        }
+    }
+
+    let mut counts: Vec<CollectionCount> = totals
+        .into_iter()
+        .map(|(id, (name, slug, count))| CollectionCount {
+            id,
+            name,
+            slug,
+            count,
+        })
+        .collect();
+    counts.sort_by_key(|count| count.name.to_lowercase());
+    Ok(counts)
 }
 
 #[cfg(test)]
@@ -657,5 +738,188 @@ mod tests {
         let error = remove(&library, &["a".to_string()], "no-such-id").unwrap_err();
 
         assert!(matches!(error, AppError::NotFound(_)), "got {error}");
+    }
+
+    // -- set_pinned (`pinned-collections` design D3) --------------------------
+
+    #[test]
+    fn set_pinned_toggles_and_answers_the_list() {
+        let (_dir, library) = library();
+        let created = create(&library, "Cute").unwrap();
+
+        let answer = set_pinned(&library, &created.id, true).unwrap();
+        assert!(
+            answer
+                .iter()
+                .find(|collection| collection.id == created.id)
+                .unwrap()
+                .pinned
+        );
+
+        let answer = set_pinned(&library, &created.id, false).unwrap();
+        assert!(
+            !answer
+                .iter()
+                .find(|collection| collection.id == created.id)
+                .unwrap()
+                .pinned
+        );
+    }
+
+    #[test]
+    fn set_pinned_for_an_unknown_collection_is_refused() {
+        let (_dir, library) = library();
+
+        let error = set_pinned(&library, "no-such-id", true).unwrap_err();
+
+        assert!(matches!(error, AppError::NotFound(_)), "got {error}");
+    }
+
+    #[test]
+    fn set_pinned_rewrites_library_json_and_no_sidecar() {
+        let (_dir, library) = library();
+        store(&library, "a");
+        let favorites = favorites(&library);
+        add(&library, &["a".to_string()], &favorites.id).unwrap();
+        let before = std::fs::read(crate::sidecar::path(&library.paths, "a")).unwrap();
+
+        set_pinned(&library, &favorites.id, true).unwrap();
+
+        let after = std::fs::read(crate::sidecar::path(&library.paths, "a")).unwrap();
+        assert_eq!(before, after, "pinning must not touch a member's sidecar");
+        let file =
+            crate::sidecar::read_library(&crate::sidecar::library_path(&library.paths)).unwrap();
+        let entry = file
+            .collections
+            .expect("the key is always written")
+            .into_iter()
+            .find(|collection| collection.id == favorites.id)
+            .unwrap();
+        assert!(entry.pinned);
+    }
+
+    #[test]
+    fn set_pinned_leaves_updated_at_alone() {
+        let (_dir, library) = library();
+        let created = create(&library, "Cute").unwrap();
+        library
+            .conn
+            .execute(
+                "UPDATE collections SET updated_at = 0 WHERE id = ?1",
+                params![created.id],
+            )
+            .unwrap();
+
+        set_pinned(&library, &created.id, true).unwrap();
+
+        let after = require_collection(&library.conn, &created.id).unwrap();
+        assert_eq!(
+            after.updated_at, 0,
+            "a pin is not an edit of the collection"
+        );
+    }
+
+    // -- selection_counts (`pinned-collections` design D4) --------------------
+
+    #[test]
+    fn selection_counts_counts_only_the_named_collections_over_the_ids() {
+        let (_dir, library) = library();
+        store(&library, "a");
+        store(&library, "b");
+        store(&library, "c");
+        let cute = create(&library, "Cute").unwrap();
+        let queue = create(&library, "Queue").unwrap();
+        add(&library, &["a".to_string(), "b".to_string()], &cute.id).unwrap();
+        add(&library, &["a".to_string()], &queue.id).unwrap();
+
+        let counts = selection_counts(
+            &library.conn,
+            &["a".to_string(), "b".to_string(), "c".to_string()],
+            &[cute.id.clone(), queue.id.clone()],
+        )
+        .unwrap();
+
+        assert_eq!(
+            counts,
+            vec![
+                CollectionCount {
+                    id: cute.id.clone(),
+                    name: "Cute".to_string(),
+                    slug: "cute".to_string(),
+                    count: 2,
+                },
+                CollectionCount {
+                    id: queue.id.clone(),
+                    name: "Queue".to_string(),
+                    slug: "queue".to_string(),
+                    count: 1,
+                },
+            ],
+        );
+    }
+
+    #[test]
+    fn selection_counts_leaves_out_a_collection_none_of_the_ids_is_in() {
+        let (_dir, library) = library();
+        store(&library, "a");
+        let cute = create(&library, "Cute").unwrap();
+        let empty = create(&library, "Empty").unwrap();
+
+        let counts = selection_counts(
+            &library.conn,
+            &["a".to_string()],
+            &[cute.id.clone(), empty.id.clone()],
+        )
+        .unwrap();
+
+        assert!(
+            counts.iter().all(|count| count.id != empty.id),
+            "{counts:?}"
+        );
+    }
+
+    #[test]
+    fn selection_counts_with_no_ids_or_no_collections_is_empty() {
+        let (_dir, library) = library();
+        store(&library, "a");
+        let cute = create(&library, "Cute").unwrap();
+        add(&library, &["a".to_string()], &cute.id).unwrap();
+
+        assert!(
+            selection_counts(&library.conn, &[], std::slice::from_ref(&cute.id))
+                .unwrap()
+                .is_empty()
+        );
+        assert!(
+            selection_counts(&library.conn, &["a".to_string()], &[])
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    /// A selection this large crosses more than one chunk of the `IN (…)`
+    /// query, so the totals have to be summed across chunks to be right — the
+    /// shape of `tags::selection_tag_counts_sums_across_chunks_past_the_sqlite_variable_chunk_size`.
+    #[test]
+    fn selection_counts_reaches_every_id_past_the_sqlite_variable_chunk_size() {
+        let (_dir, library) = library();
+        let cute = create(&library, "Cute").unwrap();
+        let ids: Vec<String> = (0..2500).map(|index| format!("img-{index}")).collect();
+        for id in &ids {
+            store(&library, id);
+        }
+        add(&library, &ids, &cute.id).unwrap();
+
+        let counts = selection_counts(&library.conn, &ids, std::slice::from_ref(&cute.id)).unwrap();
+
+        assert_eq!(
+            counts,
+            vec![CollectionCount {
+                id: cute.id,
+                name: "Cute".to_string(),
+                slug: "cute".to_string(),
+                count: 2500,
+            }],
+        );
     }
 }

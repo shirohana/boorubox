@@ -854,7 +854,7 @@ fn fts_string(text: &str) -> String {
     format!("\"{}\"", text.replace('"', "\"\""))
 }
 
-fn text_values(items: &[String]) -> Vec<Value> {
+pub(crate) fn text_values(items: &[String]) -> Vec<Value> {
     items.iter().cloned().map(Value::Text).collect()
 }
 

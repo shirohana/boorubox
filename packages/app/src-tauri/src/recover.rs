@@ -197,9 +197,11 @@ pub fn rebuild(
     })
 }
 
-/// The file's own collections, restored verbatim (design D5) — id and times as
-/// `library.json` names them, the same rule [`insert_rules`] and
-/// [`insert_sites`] already follow for their own ids. `slug` is recomputed
+/// The file's own collections, restored verbatim (design D5) — id, times and
+/// pin as `library.json` names them (`pinned-collections` design D2: a file
+/// from before that change carries no `pinned` key on any entry, and
+/// `Collection.pinned`'s `#[serde(default)]` has already read every such
+/// entry back as `false` by the time this runs). `slug` is recomputed
 /// through [`collections::slug`] rather than trusted from the file: it is
 /// derived from `name`, and design D2 keeps that derivation in the one place
 /// that owns it, not duplicated into every writer that ever produces a
@@ -207,14 +209,15 @@ pub fn rebuild(
 fn insert_collections(conn: &Connection, collections: &[Collection]) -> Result<()> {
     for collection in collections {
         conn.execute(
-            "INSERT INTO collections (id, name, slug, created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5)",
+            "INSERT INTO collections (id, name, slug, created_at, updated_at, pinned)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
             params![
                 collection.id,
                 collection.name,
                 collections::slug(&collection.name),
                 collection.created_at,
                 collection.updated_at,
+                collection.pinned,
             ],
         )?;
     }
@@ -1195,6 +1198,67 @@ mod tests {
             vec!["Starred".to_string()],
             "the seed's own name must not reappear beside the rename"
         );
+    }
+
+    /// Spec `library-recovery`, "Pinned collections come back": a rebuild
+    /// restores each collection's pin from the library-level file, not only
+    /// its name (`pinned-collections` design D1–D2).
+    #[test]
+    fn a_rebuild_restores_pinned_collections() {
+        let (_dir, library) = library();
+        store(&library, "a", &[], None);
+        let cute = collections::create(&library, "Cute").unwrap();
+        let queue = collections::create(&library, "Queue").unwrap();
+        collections::set_pinned(&library, &cute.id, true).unwrap();
+        let paths = library.paths.clone();
+        drop(library);
+
+        let report = rebuild(&paths, &mut |_, _| {}).unwrap();
+
+        assert!(report.failures.is_empty(), "{:?}", report.failures);
+        let rebuilt = Library::open_existing(paths.root.as_path()).unwrap();
+        let restored = collections::list(&rebuilt.conn).unwrap();
+        assert!(
+            restored
+                .iter()
+                .find(|collection| collection.id == cute.id)
+                .unwrap()
+                .pinned,
+            "Cute comes back pinned"
+        );
+        assert!(
+            !restored
+                .iter()
+                .find(|collection| collection.id == queue.id)
+                .unwrap()
+                .pinned,
+            "Queue comes back unpinned"
+        );
+    }
+
+    /// Spec `collections`, "A membership naming a collection the library-level
+    /// file does not list comes back... unpinned": the placeholder row
+    /// [`insert_placeholder_collections`] writes leaves `pinned` at the
+    /// column's own default, never guessed pinned.
+    #[test]
+    fn a_placeholder_collection_comes_back_unpinned() {
+        let (_dir, library) = library();
+        store(&library, "a", &[], None);
+        let queue = collections::create(&library, "Queue").unwrap();
+        collections::add(&library, &["a".to_string()], &queue.id).unwrap();
+        let paths = library.paths.clone();
+        std::fs::remove_file(sidecar::library_path(&paths)).unwrap();
+        drop(library);
+
+        rebuild(&paths, &mut |_, _| {}).unwrap();
+
+        let rebuilt = Library::open_existing(paths.root.as_path()).unwrap();
+        let placeholder = collections::list(&rebuilt.conn)
+            .unwrap()
+            .into_iter()
+            .find(|collection| collection.id == queue.id)
+            .expect("the membership's collection id comes back as a placeholder");
+        assert!(!placeholder.pinned);
     }
 
     /// Design D5, the third case: a `library.json` written before this change

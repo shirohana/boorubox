@@ -330,6 +330,18 @@ fn merge_case_duplicates(conn: &Connection) -> rusqlite::Result<()> {
     Ok(())
 }
 
+/// Schema v10 (`pinned-collections` design D1): whether a collection is
+/// pinned, a property of the collection itself rather than of any one
+/// membership, so it sits on the row exactly as a tag's `pinned` (`SCHEMA_V7`)
+/// does. The default is the unpinned collection every existing row already
+/// was, so an upgraded library's collections all read back unpinned (task
+/// 1.1). `Favorites` is seeded unpinned by v6 and is not pinned by this
+/// migration either: pinning is the user's own choice, and the seed was never
+/// a claim about which collection the user drops images into.
+const SCHEMA_V10: &str = r"
+ALTER TABLE collections ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0;
+";
+
 /// One schema version's step: plain SQL for every version but the one
 /// `merge_case_duplicates` is (its own doc comment says why that one has to be
 /// Rust).
@@ -350,6 +362,7 @@ const MIGRATIONS: &[Migration] = &[
     Migration::Sql(SCHEMA_V7),
     Migration::Sql(SCHEMA_V8),
     Migration::Rust(merge_case_duplicates),
+    Migration::Sql(SCHEMA_V10),
 ];
 
 /// Open (creating if needed) the library database with the pragmas D2 fixes,
@@ -767,6 +780,63 @@ mod tests {
                 "missing column {column} on stamps"
             );
         }
+        assert_eq!(fts_matches(&conn, "kyoto"), vec!["a".to_string()]);
+    }
+
+    /// A library written after `lowercase-tags` shipped (v9, no `pinned`
+    /// column on `collections`) has to reach v10 with its rows intact and
+    /// every existing collection — the seed included — reading back unpinned
+    /// (`pinned-collections` task 1.1), the same upgrade rule `SCHEMA_V7`
+    /// already gives a tag's own `pinned` column.
+    #[test]
+    fn a_v9_library_migrates_reading_every_collection_unpinned() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("library.sqlite");
+
+        let conn = Connection::open(&path).unwrap();
+        conn.execute_batch(SCHEMA_V1).unwrap();
+        conn.execute_batch(SCHEMA_V2).unwrap();
+        conn.execute_batch(SCHEMA_V3).unwrap();
+        conn.execute_batch(SCHEMA_V4).unwrap();
+        conn.execute_batch(SCHEMA_V5).unwrap();
+        conn.execute_batch(SCHEMA_V6).unwrap();
+        conn.execute_batch(SCHEMA_V7).unwrap();
+        conn.execute_batch(SCHEMA_V8).unwrap();
+        conn.pragma_update(None, "user_version", 9i64).unwrap();
+        insert_bare_image(&conn, "a", "sunset over kyoto");
+        conn.execute(
+            "INSERT INTO collections (id, name, slug, created_at, updated_at)
+             VALUES ('queue', 'Queue', 'queue', 0, 0)",
+            [],
+        )
+        .unwrap();
+        drop(conn);
+
+        let conn = open(&path).unwrap();
+
+        let version: i64 = conn
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, MIGRATIONS.len() as i64);
+        assert!(column_names(&conn, "collections").contains(&"pinned".to_string()));
+        let pinned: Vec<bool> = {
+            let mut stmt = conn
+                .prepare("SELECT pinned FROM collections ORDER BY id")
+                .unwrap();
+            stmt.query_map([], |row| row.get(0))
+                .unwrap()
+                .collect::<rusqlite::Result<_>>()
+                .unwrap()
+        };
+        assert_eq!(
+            pinned.len(),
+            2,
+            "the seed, plus the collection inserted before the migration ran"
+        );
+        assert!(
+            pinned.iter().all(|&is_pinned| !is_pinned),
+            "an upgraded database's existing collections all read back unpinned"
+        );
         assert_eq!(fts_matches(&conn, "kyoto"), vec!["a".to_string()]);
     }
 

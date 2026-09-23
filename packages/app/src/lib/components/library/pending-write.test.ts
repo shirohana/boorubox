@@ -93,13 +93,33 @@ describe('confirmPrompt', () => {
     expect(prompt.description).toContain('no undo')
   })
 
-  it('reads a collection-only or rated edit as a stamp apply, not a single tag', () => {
-    const collectionOnly: TagEditSpec = { add: [], remove: [], addCollections: ['cute'], removeCollections: [] }
-    expect(confirmPrompt({ kind: 'edit', ids: ['a'], spec: collectionOnly, label: 'Cute' }, 0).title)
-      .toBe('Apply “Cute” to 1 image?')
-
+  it('reads a rated edit as a stamp apply, not a single tag or a single collection', () => {
     const rated: TagEditSpec = { add: ['tagme'], remove: [], ...NO_COLLECTIONS, rating: 'g' }
     expect(confirmPrompt({ kind: 'edit', ids: ['a'], spec: rated, label: 'Reviewed' }, 0).title)
       .toBe('Apply “Reviewed” to 1 image?')
+  })
+
+  it('a single collection add names the collection and the count', () => {
+    const spec: TagEditSpec = { add: [], remove: [], addCollections: ['cute'], removeCollections: [] }
+    const prompt = confirmPrompt({ kind: 'edit', ids: ['a', 'b'], spec, label: 'Cute' }, 0)
+    expect(prompt.title).toBe('Add 2 images to “Cute”?')
+    expect(prompt.confirmLabel).toBe('Add')
+    expect(prompt.destructive).toBe(false)
+    expect(prompt.description).toBe('Nothing else about them changes.')
+  })
+
+  it('a single collection remove reads Remove … from', () => {
+    const spec: TagEditSpec = { add: [], remove: [], addCollections: [], removeCollections: ['cute'] }
+    const prompt = confirmPrompt({ kind: 'edit', ids: ['a'], spec, label: 'Cute' }, 0)
+    expect(prompt.title).toBe('Remove 1 image from “Cute”?')
+    expect(prompt.confirmLabel).toBe('Remove')
+    expect(prompt.destructive).toBe(false)
+  })
+
+  it('an edit with a collection and a tag falls back to the Apply prompt', () => {
+    const spec: TagEditSpec = { add: ['tagme'], remove: [], addCollections: ['cute'], removeCollections: [] }
+    const prompt = confirmPrompt({ kind: 'edit', ids: ['a', 'b'], spec, label: 'Mixed' }, 0)
+    expect(prompt.title).toBe('Apply “Mixed” to 2 images?')
+    expect(prompt.confirmLabel).toBe('Apply')
   })
 })

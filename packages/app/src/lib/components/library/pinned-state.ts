@@ -10,16 +10,25 @@ import type { TagCount } from '@boorubox/shared'
 export type FillState = 'all' | 'some' | 'none'
 
 /**
- * How many of `total` selected images carry `tag`, from the counts
- * `selectionTagCounts` answered — a name absent from `counts` is 0 of them
- * (`api/commands.ts`'s own doc comment on the `names` filter). `total` of 0
- * reads as `none`, the same fallback an empty selection's chip draws as.
+ * How `count` of `total` reads as a chip's fill (`pinned-collections` design
+ * D8) — the one rule both a tag's count and a collection's count are read
+ * through, so a sixth fill state cannot appear in one and not the other.
+ * `total` of 0 reads as `none`, the same fallback an empty selection's chip
+ * draws as.
  */
-export function fillState(tag: string, counts: TagCount[], total: number): FillState {
-  const count = counts.find((entry) => entry.name === tag)?.count ?? 0
+export function fillOf(count: number, total: number): FillState {
   if (count <= 0) return 'none'
   if (count >= total) return 'all'
   return 'some'
+}
+
+/**
+ * How many of `total` selected images carry `tag`, from the counts
+ * `selectionTagCounts` answered — a name absent from `counts` is 0 of them
+ * (`api/commands.ts`'s own doc comment on the `names` filter).
+ */
+export function fillState(tag: string, counts: TagCount[], total: number): FillState {
+  return fillOf(counts.find((entry) => entry.name === tag)?.count ?? 0, total)
 }
 
 /**

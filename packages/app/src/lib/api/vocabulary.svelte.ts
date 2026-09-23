@@ -17,7 +17,7 @@
 // keep the one list in step.
 
 import type { TagCategory, TagEntry } from '@boorubox/shared'
-import { sortTags } from '$lib/domain/tag-utils'
+import { groupByCategory } from '$lib/domain/tag-categories'
 import { setTagCategory, setTagPinned, tagVocabulary } from './commands'
 import { errorText } from './errors'
 
@@ -35,12 +35,34 @@ export class Vocabulary {
   #byName = $derived(new Map(this.entries.map((entry) => [entry.name, entry] as const)))
 
   /**
-   * Every pinned tag, by name — the inspector's chip row (design D8).
-   * `sortTags`, the one tag order every other list in the app uses, not a
-   * second `localeCompare`.
+   * A tag outside the exceptions list is general — design D2's own default.
+   * Arrow properties, not methods: both are handed around as values
+   * (`editorText(tags, vocabulary.categoryOf)`), and a method detached from
+   * the store reads `this.#byName` off `undefined` — which the tests never
+   * saw, because they pass their own arrow, and the app saw the moment an
+   * image with tags reached the editor. Declared before {@link pinned},
+   * which reads it: a class field's initializer runs in declaration order.
+   */
+  categoryOf = (name: string): TagCategory =>
+    this.#byName.get(name)?.category ?? 'general'
+
+  isPinned = (name: string): boolean => this.#byName.get(name)?.pinned ?? false
+
+  /**
+   * Every pinned tag, by name, in the sidebar's own order — `CATEGORY_ORDER`
+   * first, alphabetical within a category (`pinned-collections` design D7).
+   * Made here, once, because the inspector's two placements both draw the
+   * pinned strip from this list rather than sorting their own: a category
+   * changing cannot leave one placement's chip row out of step with the
+   * other's. `groupByCategory` is the sidebar's own grouping
+   * (`domain/tag-categories.ts`), not a second copy of it.
    */
   pinned = $derived(
-    sortTags(this.entries.filter((entry) => entry.pinned).map((entry) => entry.name)),
+    groupByCategory(
+      this.entries.filter((entry) => entry.pinned),
+      (entry) => entry.name,
+      this.categoryOf,
+    ).flatMap((group) => group.items.map((entry) => entry.name)),
   )
 
   /**
@@ -56,19 +78,6 @@ export class Vocabulary {
       this.error = errorText(cause)
     }
   }
-
-  /**
-   * A tag outside the exceptions list is general — design D2's own default.
-   * Arrow properties, not methods: both are handed around as values
-   * (`editorText(tags, vocabulary.categoryOf)`), and a method detached from
-   * the store reads `this.#byName` off `undefined` — which the tests never
-   * saw, because they pass their own arrow, and the app saw the moment an
-   * image with tags reached the editor.
-   */
-  categoryOf = (name: string): TagCategory =>
-    this.#byName.get(name)?.category ?? 'general'
-
-  isPinned = (name: string): boolean => this.#byName.get(name)?.pinned ?? false
 
   /** A refusal is reported the same way `refresh()` reports one: `entries` untouched. */
   async setCategory(name: string, category: TagCategory): Promise<void> {

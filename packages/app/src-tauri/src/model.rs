@@ -338,6 +338,14 @@ pub struct Collection {
     /// Epoch milliseconds.
     pub created_at: i64,
     pub updated_at: i64,
+    /// Whether the collection is pinned for one-click membership in the
+    /// inspector's chip strip (`pinned-collections` design D1) — a property
+    /// of the collection, the same for every image. `#[serde(default)]` so a
+    /// `library.json` entry written before this change (no `pinned` key)
+    /// reads back unpinned, the same answer the migration's own default gives
+    /// (design D2).
+    #[serde(default)]
+    pub pinned: bool,
 }
 
 /// One collection's row in the sidebar and the inspector's menus: the
@@ -1174,6 +1182,48 @@ mod tests {
                 category,
             );
         }
+    }
+
+    /// `pinned-collections` task 1.1: `Collection`'s wire shape — camelCase
+    /// keys, and `pinned` defaulting to `false` when a JSON value omits it
+    /// entirely (design D2's `library.json` round trip through this same
+    /// struct).
+    #[test]
+    fn a_collection_crosses_the_wire_in_camel_case_and_defaults_to_unpinned() {
+        let collection = Collection {
+            id: "cute".to_string(),
+            name: "Cute".to_string(),
+            slug: "cute".to_string(),
+            created_at: 1_700_000_000_000,
+            updated_at: 1_700_000_000_000,
+            pinned: true,
+        };
+        assert_eq!(
+            serde_json::to_value(&collection).unwrap(),
+            serde_json::json!({
+                "id": "cute",
+                "name": "Cute",
+                "slug": "cute",
+                "createdAt": 1_700_000_000_000i64,
+                "updatedAt": 1_700_000_000_000i64,
+                "pinned": true,
+            }),
+        );
+
+        let without_pinned = serde_json::json!({
+            "id": "cute",
+            "name": "Cute",
+            "slug": "cute",
+            "createdAt": 1_700_000_000_000i64,
+            "updatedAt": 1_700_000_000_000i64,
+        });
+        assert_eq!(
+            serde_json::from_value::<Collection>(without_pinned).unwrap(),
+            Collection {
+                pinned: false,
+                ..collection
+            },
+        );
     }
 
     /// `category-count-search` task 1.1: a term's wire shape — camelCase

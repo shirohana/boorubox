@@ -10,6 +10,7 @@ import type {
   AppSettings,
   BundlePlan,
   Collection,
+  CollectionCount,
   DeleteReport,
   ExportReport,
   FactsEdit,
@@ -505,6 +506,28 @@ export function collectionAdd(ids: string[], collectionId: string): Promise<Imag
  */
 export function collectionRemove(ids: string[], collectionId: string): Promise<ImageRecord[]> {
   return invoke('collection_remove', { ids, collectionId })
+}
+
+/**
+ * Pins or unpins collection `id`, without touching any image
+ * (`pinned-collections` design D3); same refusal, same answer shape as
+ * {@link collectionRename}.
+ */
+export function setCollectionPinned(id: string, pinned: boolean): Promise<Collection[]> {
+  return invoke('set_collection_pinned', { id, pinned })
+}
+
+/**
+ * For exactly `collectionIds`, how many of `ids` are in each
+ * (`pinned-collections` design D4): the pinned collection chip's tri-state
+ * over a selection, the collection-keyed twin of {@link selectionTagCounts}'s
+ * `names` filter.
+ */
+export function selectionCollectionCounts(
+  ids: string[],
+  collectionIds: string[],
+): Promise<CollectionCount[]> {
+  return invoke('selection_collection_counts', { ids, collectionIds })
 }
 
 /**

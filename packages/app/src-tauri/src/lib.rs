@@ -230,6 +230,8 @@ pub fn run() {
             commands::collection_delete,
             commands::collection_add,
             commands::collection_remove,
+            commands::set_collection_pinned,
+            commands::selection_collection_counts,
             commands::stamps_list,
             commands::stamps_upsert,
             commands::stamps_delete,

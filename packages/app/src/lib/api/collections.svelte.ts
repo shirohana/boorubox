@@ -15,7 +15,7 @@
 // guessing at what its own write changed.
 
 import type { Collection } from '@boorubox/shared'
-import { collectionList } from './commands'
+import { collectionList, setCollectionPinned } from './commands'
 import { errorText } from './errors'
 
 export class Collections {
@@ -23,6 +23,13 @@ export class Collections {
   list = $state<Collection[]>([])
   /** Why the list could not be read; `null` while it is in step. */
   error = $state<string | null>(null)
+
+  /**
+   * Every pinned collection, by name — the inspector's chip row, after the
+   * pinned tags (`pinned-collections` design D5, D7). `list` is already in
+   * name order from Rust, so this needs no sort of its own.
+   */
+  pinned = $derived(this.list.filter((collection) => collection.pinned))
 
   /**
    * Re-reads the list: on a library switch and after every create, rename or
@@ -39,6 +46,16 @@ export class Collections {
 
   byId(id: string): Collection | undefined {
     return this.list.find((collection) => collection.id === id)
+  }
+
+  /** A refusal is reported the same way `refresh()` reports one: `list` untouched. */
+  async setPinned(id: string, pinned: boolean): Promise<void> {
+    try {
+      this.list = await setCollectionPinned(id, pinned)
+      this.error = null
+    } catch (cause) {
+      this.error = errorText(cause)
+    }
   }
 }
 

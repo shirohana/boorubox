@@ -46,7 +46,7 @@ changed produces the same bytes.
 ### Requirement: The library's own settings are described by one file
 The app SHALL keep one file in the library folder describing the library-level state a
 rebuild would otherwise lose: the auto-tag rules, the configured booru sites, the library
-note, the collections with their ids and names, the tag vocabulary — every tag that is
+note, the collections with their ids, names and pins, the tag vocabulary — every tag that is
 not general or is pinned, with its category and its pin — and the stamps. It SHALL be rewritten whenever any
 of those change. It SHALL NOT contain any API key or other credential; those live in the
 operating system's credential store (`booru-sites`) and SHALL NOT be written into the
@@ -67,6 +67,10 @@ library folder.
 #### Scenario: A collection is renamed
 - **WHEN** the user creates, renames or deletes a collection
 - **THEN** the library's own file lists the collections as they now stand, by id and name
+
+#### Scenario: A collection is pinned
+- **WHEN** the user pins or unpins a collection
+- **THEN** the library's own file lists the collections as they now stand, each saying whether it is pinned
 
 #### Scenario: A stamp is saved
 - **WHEN** the user creates, edits or deletes a stamp
@@ -139,8 +143,8 @@ read it.
 The app SHALL be able to build a working library database from the files in the folder alone:
 every image whose describing file can be read SHALL come back with its tags, rating, trash
 state, times, source, posts and collections, and searchable exactly as before; the auto-tag
-rules, the booru sites, the note, the collections, the tag vocabulary and the stamps SHALL come
-back from the library-level file, a vocabulary tag with no carrier included.
+rules, the booru sites, the note, the collections with their pins, the tag vocabulary and the
+stamps SHALL come back from the library-level file, a vocabulary tag with no carrier included.
 
 Rebuilding SHALL NOT read, decode or rewrite any image or thumbnail — an image's dimensions
 come from its describing file — and SHALL NOT remove any file under the folder. A describing
@@ -177,6 +181,14 @@ if it is interrupted.
 #### Scenario: Collections come back
 - **WHEN** a library whose images are in collections is rebuilt
 - **THEN** every collection is back by its id and name, and every image is in the collections it was in
+
+#### Scenario: Pinned collections come back
+- **WHEN** a library is rebuilt whose file lists `Cute` as pinned and `Queue` as not
+- **THEN** `Cute` is pinned and `Queue` is not
+
+#### Scenario: A file from before collection pins
+- **WHEN** a library is rebuilt whose file lists collections with no word on whether they are pinned
+- **THEN** every collection comes back, unpinned
 
 #### Scenario: The vocabulary comes back
 - **WHEN** a library is rebuilt whose file lists `kantoku` as an artist, `tagme` as pinned, and `azur_lane` as a copyright carried by no image

@@ -4,6 +4,8 @@
 import type {
   AppSettings,
   BundlePlan,
+  Collection,
+  CollectionCount,
   DeleteReport,
   ExportReport,
   Note,
@@ -62,8 +64,10 @@ import {
   rulesUpsert,
   search,
   searchIds,
+  selectionCollectionCounts,
   selectionTagCounts,
   setClickZoomCeilingPercent,
+  setCollectionPinned,
   setCollectionsCollapsed,
   setGridTileSize,
   setListenerPort,
@@ -637,6 +641,30 @@ it('stamps_delete passes the id', async () => {
   const calls = spyIPC(null)
   await stampsDelete('s-1')
   expect(calls).toHaveBeenCalledWith('stamps_delete', { id: 's-1' })
+})
+
+it('set_collection_pinned passes the id and the flag and returns the collections', async () => {
+  const cute: Collection = {
+    id: 'c-1',
+    name: 'Cute',
+    slug: 'cute',
+    createdAt: 1_700_000_000_000,
+    updatedAt: 1_700_000_000_000,
+    pinned: true,
+  }
+  const calls = spyIPC([cute])
+  await expect(setCollectionPinned('c-1', true)).resolves.toEqual([cute])
+  expect(calls).toHaveBeenCalledWith('set_collection_pinned', { id: 'c-1', pinned: true })
+})
+
+it('selection_collection_counts passes the ids and the collection ids and returns the counts', async () => {
+  const counts: CollectionCount[] = [{ id: 'c-1', name: 'Cute', slug: 'cute', count: 4 }]
+  const calls = spyIPC(counts)
+  await expect(selectionCollectionCounts(['a', 'b'], ['c-1'])).resolves.toEqual(counts)
+  expect(calls).toHaveBeenCalledWith('selection_collection_counts', {
+    ids: ['a', 'b'],
+    collectionIds: ['c-1'],
+  })
 })
 
 it('note_get takes no arguments and returns the note', async () => {

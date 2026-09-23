@@ -30,6 +30,7 @@
     toggleCollectionInQuery,
   } from '$lib/domain/tag-utils'
   import { searchMark, searchMarkClass } from './categories'
+  import CollectionPinMenuItem from './CollectionPinMenuItem.svelte'
 
   interface Props {
     /** `null` while a search is running (design D8): the heading stays, the list is blank. */
@@ -219,6 +220,8 @@
                   {/snippet}
                 </ContextMenu.Trigger>
                 <ContextMenu.Content>
+                  <CollectionPinMenuItem {collection} />
+                  <ContextMenu.Separator />
                   <ContextMenu.Item onSelect={() => (renaming = collection)}>
                     Rename…
                   </ContextMenu.Item>

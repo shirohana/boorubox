@@ -178,6 +178,12 @@ export interface Collection {
   /** Epoch milliseconds. */
   createdAt: number
   updatedAt: number
+  /**
+   * Whether the collection is pinned for one-click membership in the
+   * inspector's chip strip (`pinned-collections` design D1) — a property of
+   * the collection, the same for every image.
+   */
+  pinned: boolean
 }
 
 /**

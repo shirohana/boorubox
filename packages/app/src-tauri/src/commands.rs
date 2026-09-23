@@ -18,12 +18,12 @@ use crate::error::{AppError, Result};
 use crate::library::{self, Library, SharedLibrary, with_library, with_library_if_open};
 use crate::model::{
     AppSettings, BooruConnectionTest, BooruSite, BooruUploadForm, BooruUploadOutcome, BundlePlan,
-    CLICK_ZOOM_CEILING_MAX, CLICK_ZOOM_CEILING_MIN, Collection, DeleteReport, ExportProgress,
-    ExportReport, FactsEdit, GRID_TILE_MAX, GRID_TILE_MIN, ImageCounts, ImageRecord, ImportReport,
-    LibraryStatus, ListenerStatus, Note, PostRef, RebuildProgress, RebuildReport, RecentLibrary,
-    Rule, RuleInput, RuleListEntry, RulesImportReport, RulesRunReport, SearchRequest, SearchResult,
-    SidecarsProgress, Stamp, StampInput, TagCategory, TagCount, TagCounts, TagEditSpec, TagEntry,
-    Theme,
+    CLICK_ZOOM_CEILING_MAX, CLICK_ZOOM_CEILING_MIN, Collection, CollectionCount, DeleteReport,
+    ExportProgress, ExportReport, FactsEdit, GRID_TILE_MAX, GRID_TILE_MIN, ImageCounts,
+    ImageRecord, ImportReport, LibraryStatus, ListenerStatus, Note, PostRef, RebuildProgress,
+    RebuildReport, RecentLibrary, Rule, RuleInput, RuleListEntry, RulesImportReport,
+    RulesRunReport, SearchRequest, SearchResult, SidecarsProgress, Stamp, StampInput, TagCategory,
+    TagCount, TagCounts, TagEditSpec, TagEntry, Theme,
 };
 use crate::settings::Settings;
 use crate::{
@@ -861,6 +861,36 @@ pub async fn collection_remove(
 ) -> Result<Vec<ImageRecord>> {
     with_library_off_main_thread(&state.library, move |library| {
         collections::remove(library, &ids, &collection_id)
+    })
+    .await
+}
+
+/// Pin or unpin collection `id`, without touching any image
+/// (`pinned-collections` design D3); answers with the collections as they now
+/// stand, the same shape [`set_tag_pinned`] answers for a tag.
+#[tauri::command]
+pub async fn set_collection_pinned(
+    id: String,
+    pinned: bool,
+    state: State<'_, AppState>,
+) -> Result<Vec<Collection>> {
+    with_library_off_main_thread(&state.library, move |library| {
+        collections::set_pinned(library, &id, pinned)
+    })
+    .await
+}
+
+/// For exactly `collection_ids`, how many of `ids` are in each
+/// (`pinned-collections` design D4): the pinned collection chip's tri-state
+/// over a selection.
+#[tauri::command]
+pub async fn selection_collection_counts(
+    ids: Vec<String>,
+    collection_ids: Vec<String>,
+    state: State<'_, AppState>,
+) -> Result<Vec<CollectionCount>> {
+    with_library_off_main_thread(&state.library, move |library| {
+        collections::selection_counts(&library.conn, &ids, &collection_ids)
     })
     .await
 }
@@ -3012,6 +3042,60 @@ mod tests {
     }
 
     #[test]
+    fn set_collection_pinned_reaches_the_open_library_through_the_command() {
+        let (_library, app) = app_with_library();
+        let created = now(collection_create("Cute".to_string(), app.state())).unwrap();
+
+        let answer = now(set_collection_pinned(created.id.clone(), true, app.state())).unwrap();
+        assert!(
+            answer
+                .iter()
+                .find(|collection| collection.id == created.id)
+                .unwrap()
+                .pinned
+        );
+
+        let answer = now(set_collection_pinned(
+            created.id.clone(),
+            false,
+            app.state(),
+        ))
+        .unwrap();
+        assert!(
+            !answer
+                .iter()
+                .find(|collection| collection.id == created.id)
+                .unwrap()
+                .pinned
+        );
+    }
+
+    #[test]
+    fn selection_collection_counts_reaches_the_open_library_through_the_command() {
+        let (_library, app) = app_with_library();
+        import(&app, &folder_of_images(2));
+        let ids = ids_in_library(&app);
+        let created = now(collection_create("Cute".to_string(), app.state())).unwrap();
+        now(collection_add(
+            vec![ids[0].clone()],
+            created.id.clone(),
+            app.state(),
+        ))
+        .unwrap();
+
+        let counts = now(selection_collection_counts(
+            ids,
+            vec![created.id.clone()],
+            app.state(),
+        ))
+        .unwrap();
+
+        assert_eq!(counts.len(), 1);
+        assert_eq!(counts[0].id, created.id);
+        assert_eq!(counts[0].count, 1);
+    }
+
+    #[test]
     fn the_collections_commands_need_a_library_before_they_answer() {
         let app = mock_app();
 
@@ -3027,6 +3111,8 @@ mod tests {
             now(collection_delete("id".to_string(), app.state())).unwrap_err(),
             now(collection_add(vec![], "id".to_string(), app.state())).unwrap_err(),
             now(collection_remove(vec![], "id".to_string(), app.state())).unwrap_err(),
+            now(set_collection_pinned("id".to_string(), true, app.state())).unwrap_err(),
+            now(selection_collection_counts(vec![], vec![], app.state())).unwrap_err(),
         ] {
             assert!(matches!(error, AppError::NoLibrary), "{error:?}");
         }

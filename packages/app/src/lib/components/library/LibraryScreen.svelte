@@ -420,23 +420,15 @@
   }
 
   /**
-   * The pinned chip's write over a selection (`tag-vocabulary` design D8):
-   * the same "one or many" rule as {@link rateSelection}. Called through the
-   * inspector's `onedit` prop, whose signature stays `(ids, add, remove)`
-   * (`stamps` design D5): the chip only ever fills one of the two, so it has
-   * nothing to gain from building a `TagEditSpec` itself, and this is the one
-   * place that does — the bulk dialog builds its own, for the same reason it
-   * always has (design D8). `label` is the tag itself: `confirmPrompt` never
-   * reads it for a single-tag edit, which this always is.
+   * A pinned chip's write over a selection (`pinned-collections` design D10,
+   * widened from `tag-vocabulary` design D8's `(ids, add, remove)`): the
+   * same "one or many" rule as {@link rateSelection}. Called through the
+   * inspector's `onedit` prop with the whole `TagEditSpec` and a label —
+   * a tag chip's own tag, or a collection chip's collection name, which
+   * `confirmPrompt` names in place of the spec's slug.
    */
-  function editSelectionTags(ids: string[], add: string[], remove: string[]): void {
-    const spec: TagEditSpec = { add, remove, addCollections: [], removeCollections: [] }
-    const pending: Extract<PendingWrite, { kind: 'edit' }> = {
-      kind: 'edit',
-      ids,
-      spec,
-      label: add[0] ?? remove[0] ?? '',
-    }
+  function editSelection(ids: string[], spec: TagEditSpec, label: string): void {
+    const pending: Extract<PendingWrite, { kind: 'edit' }> = { kind: 'edit', ids, spec, label }
     if (needsConfirmation(ids.length)) pendingWrite = pending
     else void writeEdit(pending)
   }
@@ -460,10 +452,11 @@
 
   /**
    * Slot StampBar · Apply to N selected (design D5): the same confirm/write
-   * split as {@link editSelectionTags}, over the active stamp's whole spec
-   * instead of one tag — `label` is the stamp's name, or its text while it is
-   * still a one-off with none. A live range has to become ids before the
-   * pending write can name them, same as every other selection-wide writer.
+   * split as {@link editSelection}, over the active stamp's whole spec
+   * instead of one tag or one collection — `label` is the stamp's name, or
+   * its text while it is still a one-off with none. A live range has to
+   * become ids before the pending write can name them, same as every other
+   * selection-wide writer.
    */
   async function applyStampToSelection(): Promise<void> {
     if (!activeStamp) return
@@ -998,7 +991,7 @@
           grid?.refocus()
         }}
         onactivate={openViewer}
-        onedit={editSelectionTags}
+        onedit={editSelection}
       />
     </aside>
   {/if}

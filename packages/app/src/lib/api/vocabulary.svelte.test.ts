@@ -64,6 +64,19 @@ it('pinned lists only the pinned tags, sorted by name', async () => {
   expect(store.pinned).toEqual(['tagme', 'zebra'])
 })
 
+it('pinned lists category order first, then alphabetical', async () => {
+  const tagmeMeta: TagEntry = { name: 'tagme', category: 'meta', pinned: true }
+  const kantokuArtist: TagEntry = { name: 'kantoku', category: 'artist', pinned: true }
+  const girl: TagEntry = { name: '1girl', category: 'general', pinned: true }
+  const azurLane: TagEntry = { name: 'azur_lane', category: 'copyright', pinned: true }
+  mockIPC(() => [tagmeMeta, kantokuArtist, girl, azurLane])
+
+  const store = new Vocabulary()
+  await store.refresh()
+
+  expect(store.pinned).toEqual(['kantoku', 'azur_lane', '1girl', 'tagme'])
+})
+
 it('reports a list that could not be read, and clears the reason on the next one', async () => {
   mockIPC(() => {
     throw new Error('no library is open')
