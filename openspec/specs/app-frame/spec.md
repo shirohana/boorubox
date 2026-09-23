@@ -174,7 +174,6 @@ a text field, nor while the focus is in a control that acts on that key itself:
 | Viewer | `i` | enter or leave inspect mode |
 | Viewer | `Esc` `Space` | close the viewer, focusing the image it showed last |
 | Anywhere | `F11` | enter or leave full screen |
-| Library | `E` | enter or leave edit mode (`stamps`) |
 
 The map SHALL be listed, read-only, on the settings screen.
 
@@ -232,10 +231,6 @@ dialog) SHALL leave the focus there.
 #### Scenario: Clicking into the editor
 - **WHEN** the user clicks into the panel's tag editor and presses the right arrow
 - **THEN** the caret moves and the grid's focus does not
-
-#### Scenario: E toggles edit mode
-- **WHEN** the library is on screen, no text field has the focus, and the user presses `E` twice
-- **THEN** the stamp bar appears and then disappears
 
 ### Requirement: Theme follows the system unless chosen
 The app SHALL offer three appearance settings — follow the system, light, dark — SHALL persist

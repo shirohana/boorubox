@@ -135,6 +135,13 @@ the screen, which owns the mode, owns the exception. *Why the plain click and no
 the tile:* Danbooru's edit mode is "click the post", the owner's model; a per-tile button
 would put a target the size of the checkbox where the whole tile could be the target.
 
+*Amended (owner, 2026-09-24):* `E` is unbound and `KEY_EDIT_MODE` is gone; the toolbar
+`Toggle` is the only way in and out. The owner's rule for the keyboard map: a key goes to the
+most frequent day-to-day action (toggling a rating, jumping to the tag editor), and a mode in
+which a plain click writes to the image is powerful enough that a stray letter must not enter
+it. `e` is reserved for editing one image's tags, to be bound after a discussion; nothing had
+shipped with the key, so nothing is kept for compatibility.
+
 ### D5. The stamp bar
 
 `library/StampBar.svelte`, mounted by the screen between the toolbar and the grid while

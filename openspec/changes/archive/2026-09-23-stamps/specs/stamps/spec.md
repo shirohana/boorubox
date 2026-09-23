@@ -76,8 +76,9 @@ them.
 - **THEN** the save is refused naming `or`, and the form keeps the text
 
 ### Requirement: Edit mode applies the active stamp by a click
-The library screen SHALL offer an edit mode, entered and left by a toolbar control and by
-`E` wherever the grid's keys work, and shown plainly while it is on. Entering it SHALL show
+The library screen SHALL offer an edit mode, entered and left by a toolbar control — no key
+for now: a key belongs to the most frequent day-to-day action, and a mode where a click writes
+is not one (owner, 2026-09-24) — and shown plainly while it is on. Entering it SHALL show
 a stamp bar above the grid holding a field first — for typing a stamp, or showing the active
 one's text — and the saved stamps under it. The active stamp SHALL be whatever the field
 currently parses to: a blank field or text that does not parse SHALL leave none active, the
@@ -95,7 +96,7 @@ does outside the mode. The bar SHALL say that there is no undo. Leaving the mode
 the bar, clear the field and restore the ordinary click.
 
 #### Scenario: Enter and stamp
-- **WHEN** the user presses `E`, activates the stamp Cat, and clicks three thumbnails
+- **WHEN** the user enters edit mode from the toolbar, activates the stamp Cat, and clicks three thumbnails
 - **THEN** each of the three is tagged `cat` and `animal` the moment it is clicked, none opened in the viewer, and the grid still shows all three
 
 #### Scenario: A second click does not open
@@ -131,9 +132,6 @@ the bar, clear the field and restore the ordinary click.
 - **THEN** Reviewed is a saved stamp with that text, listed in the bar and on the settings screen
 
 #### Scenario: Leaving
-- **WHEN** the user presses `E` again
+- **WHEN** the user leaves edit mode from the toolbar
 - **THEN** the bar is gone and a plain click on a thumbnail focuses it as before
 
-#### Scenario: Typing is not the shortcut
-- **WHEN** the focus is in a text field and the user types `e`
-- **THEN** the character is typed and the mode does not change

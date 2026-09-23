@@ -15,8 +15,6 @@ export const KEY_SPACE = ' '
 export const KEY_ESCAPE = 'Escape'
 /** Toggles the inspector column in the grid, inspect mode in the lightbox. */
 export const KEY_INSPECT = 'i'
-/** Enters or leaves edit mode, where a click applies the active stamp (`stamps` design D4). */
-export const KEY_EDIT_MODE = 'e'
 /** Focuses the tag search field from anywhere in the frame. */
 export const KEY_SEARCH = '/'
 /**
@@ -79,7 +77,6 @@ export const KEYBOARD_MAP: KeyBinding[] = [
   { where: 'Grid', keys: ['⇧ Home', '⇧ End'], action: 'Select to the first or last image' },
   { where: 'Library', keys: ['⌘ A'], action: 'Select every image in the result' },
   { where: 'Library', keys: ['Esc'], action: 'Clear the selection' },
-  { where: 'Library', keys: ['E'], action: 'Enter or leave edit mode' },
   { where: 'Grid', keys: ['Enter', 'Space'], action: 'Open the focused image' },
   {
     where: 'Grid',

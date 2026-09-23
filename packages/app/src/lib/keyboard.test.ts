@@ -8,7 +8,6 @@ import {
   isTypingTarget,
   KEY_BACKSPACE,
   KEY_DELETE,
-  KEY_EDIT_MODE,
   KEY_ESCAPE,
 } from './keyboard'
 
@@ -70,21 +69,6 @@ it('does not guard a contenteditable="false" island inside an editable region', 
 
 it('does not guard a plain div', () => {
   expect(isTypingTarget(keydownOn(mounted(document.createElement('div'))))).toBe(false)
-})
-
-/**
- * `isTypingTarget`/`isInDialog` read the target, never the key, so `E`
- * (`KEY_EDIT_MODE`) is guarded the same way `i` already is above by every
- * other test's default `key` — this is the one that says so for the letter
- * the screen's own binding reads.
- */
-it('guards the edit-mode key exactly as it guards any other letter', () => {
-  expect(isTypingTarget(keydownOn(mounted(document.createElement('input')), KEY_EDIT_MODE)))
-    .toBe(true)
-
-  const dialog = mounted(document.createElement('dialog'))
-  const inner = dialog.appendChild(document.createElement('div'))
-  expect(isInDialog(keydownOn(inner, KEY_EDIT_MODE))).toBe(true)
 })
 
 it('does not guard an event with no element target', () => {

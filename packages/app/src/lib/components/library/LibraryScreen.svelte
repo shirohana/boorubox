@@ -73,7 +73,6 @@
     blurOnEscape,
     isInDialog,
     isTypingTarget,
-    KEY_EDIT_MODE,
     KEY_ENTER,
     KEY_ESCAPE,
     KEY_SEARCH,
@@ -164,7 +163,9 @@
 
   /**
    * Edit mode (`stamps` design D4): one boolean, toggled by the toolbar's
-   * `Toggle` and by `E`. `stampText` is the bar's field, cleared the moment
+   * `Toggle` alone — no key, by the owner's call (D4): a key is for the most
+   * frequent day-to-day action, and a mode where a click writes is not one.
+   * `stampText` is the bar's field, cleared the moment
    * the mode is left below, since a one-off stamp is meant to be lost that
    * way (design D5 risk: "Save as stamp…" is the way to keep it).
    */
@@ -664,15 +665,6 @@
       return
     }
 
-    if (event.key === KEY_EDIT_MODE) {
-      // Unmodified, like `i` in the grid: the guard above already excludes a
-      // text field, a dialog and the viewer, which is every place `E` should
-      // still type or do nothing (spec `stamps`, "Typing is not the shortcut").
-      event.preventDefault()
-      editMode = !editMode
-      return
-    }
-
     // Beside select-all for the same reason: a selection made with the focus
     // outside the grid needs a way out that does not go through the grid.
     // Never the focus: there would be no way back to it but the pointer.
@@ -762,7 +754,7 @@
     variant="outline"
     bind:pressed={editMode}
     aria-label="Edit mode"
-    title="Edit mode (E): click an image to apply the active stamp"
+    title="Edit mode: click an image to apply the active stamp"
   >
     <StampIcon />
   </Toggle>
