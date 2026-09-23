@@ -16,16 +16,33 @@ use crate::library::Library;
 use crate::model::{ImageRecord, TagCategory, TagCount, TagEditSpec, TagEntry};
 use crate::query::{ID_CHUNK, placeholders};
 
+/// A tag's one true spelling (`lowercase-tags` design D1): every door onto the
+/// vocabulary — the editor, a stamp, a rule, a capture, a sidecar on rebuild,
+/// `library.json`'s exceptions list — calls this before the name is looked up
+/// or created, so `Tagme`, `TAGME` and `tagme` name one tag (Danbooru's own
+/// rule; the owner hit the two-row bug on 2026-09-23). Unicode-aware
+/// `to_lowercase`, not an ASCII one: the webview's `toLowerCase()` is already
+/// Unicode-aware, and an ASCII rule here would let the two runtimes disagree
+/// on the first non-ASCII capital.
+pub fn canonical(name: &str) -> String {
+    name.trim().to_lowercase()
+}
+
 /// Ensure the tag row exists — general, unless [`link_one_tag`] already gave
 /// it a category before calling this — and link the image to it. The plain
 /// half of tag creation: `link_one_tag` is where a category is ever named at
 /// creation (`tag-vocabulary` design D4), and the rebuild's own sidecar pass
 /// (`recover::insert_sidecar`) calls straight here, since a sidecar carries
 /// tag names only and the vocabulary is restored onto these rows afterwards.
+///
+/// This is the one row birth (`lowercase-tags` design D1), so canonicalising
+/// `tag` here is what covers a caller that bypasses `read_metatags` entirely
+/// — `recover::insert_sidecar` chief among them.
 pub fn link_tag(conn: &Connection, image_id: &str, tag: &str) -> Result<()> {
+    let tag = canonical(tag);
     conn.execute(
         "INSERT INTO tags (name) VALUES (?1) ON CONFLICT (name) DO NOTHING",
-        [tag],
+        [&tag],
     )?;
     conn.execute(
         "INSERT INTO image_tags (image_id, tag_id)
@@ -216,11 +233,13 @@ pub fn add_tags(conn: &Connection, id: &str, tags: &[String]) -> Result<()> {
 /// Unlink `id` from each of `tags`, and answer with the tag ids that lost this
 /// use — the only ones `collect_orphans` need look at. Unlinking a tag `id`
 /// does not carry is a no-op, exactly as removing one from the single-image
-/// editor is.
+/// editor is. `tags` is canonicalised here (`lowercase-tags` design D1): a
+/// remove list can arrive spelled however the caller typed it.
 pub fn remove_tags(conn: &Connection, id: &str, tags: &[String]) -> Result<Vec<i64>> {
     if tags.is_empty() {
         return Ok(Vec::new());
     }
+    let tags: Vec<String> = tags.iter().map(|tag| canonical(tag)).collect();
     let mut values: Vec<Value> = vec![Value::Text(id.to_string())];
     values.extend(tags.iter().cloned().map(Value::Text));
     let names = placeholders(tags.len());
@@ -311,6 +330,13 @@ pub fn selection_tag_counts(
     limit: i64,
     names: Option<&[String]>,
 ) -> Result<Vec<TagCount>> {
+    // Canonicalised once here (`lowercase-tags` design D1) rather than at each
+    // call site: the pinned chips pass tag names straight from the vocabulary,
+    // which are already canonical, but this filter has no other way to know
+    // that of a caller it has not seen yet.
+    let names: Option<Vec<String>> =
+        names.map(|names| names.iter().map(|name| canonical(name)).collect());
+    let names = names.as_deref();
     if ids.is_empty() || names.is_some_and(<[String]>::is_empty) {
         return Ok(Vec::new());
     }
@@ -378,10 +404,15 @@ fn text_values(items: &[String]) -> Vec<Value> {
 /// `image_tags` column `NULL`, and `COUNT(*)` would count that row as one use
 /// rather than zero.
 pub fn suggestions(conn: &Connection, prefix: &str, limit: i64) -> Result<Vec<TagCount>> {
-    // LIKE is ASCII case-insensitive in SQLite, which is the case-insensitive
-    // match the editor wants; with an ESCAPE clause and BINARY collation the
-    // UNIQUE index on `tags.name` cannot serve it, so this is a scan of
-    // `tags`, bounded by the vocabulary size rather than sped up by an index.
+    // `prefix` is canonicalised (`lowercase-tags` design D1): every stored
+    // name is canonical now, so a prefix match against anything else would
+    // silently offer nothing for a capital the editor typed. The prefix and
+    // every stored name are both canonical by the time this runs, so LIKE's
+    // own ASCII case-folding contributes nothing here; with an ESCAPE clause
+    // and BINARY collation the UNIQUE index on `tags.name` cannot serve a
+    // prefix match either way, so this is a scan of `tags`, bounded by the
+    // vocabulary size rather than sped up by an index.
+    let prefix = canonical(prefix);
     let mut stmt = conn.prepare(
         r"SELECT tags.name, COUNT(image_tags.tag_id) AS uses
           FROM tags
@@ -391,7 +422,7 @@ pub fn suggestions(conn: &Connection, prefix: &str, limit: i64) -> Result<Vec<Ta
           ORDER BY uses DESC, tags.name
           LIMIT ?2",
     )?;
-    let rows = stmt.query_map(params![like_prefix(prefix), limit], |row| {
+    let rows = stmt.query_map(params![like_prefix(&prefix), limit], |row| {
         Ok(TagCount {
             name: row.get(0)?,
             count: row.get(1)?,
@@ -463,35 +494,43 @@ pub struct TagText {
 /// an image's own tags with a rule's, and the set this names is what was
 /// meant however many times a tag occurs in it. A token with an empty name
 /// after its category prefix is dropped the same way (design D4).
+///
+/// Every token is canonicalised (`lowercase-tags` design D1) before anything
+/// else reads it, so `TagText.tags` and the names in `TagText.categories` are
+/// always canonical — this is the one place free-typed editor text becomes a
+/// tag name, so it is the one place that has to apply the rule for every
+/// caller below it. The prefix and rating checks that follow compare against
+/// an already-lowercase token, so they need no case-insensitive comparison of
+/// their own.
 pub fn read_metatags(tags: &[String]) -> TagText {
     let mut kept: Vec<String> = Vec::new();
     let mut rating = None;
     let mut categories: Vec<(String, TagCategory)> = Vec::new();
     for raw in tags {
-        let tag = raw.trim();
+        let tag = canonical(raw);
         if tag.is_empty() {
             continue;
         }
-        if let Some(value) = rating_metatag(tag) {
+        if let Some(value) = rating_metatag(&tag) {
             rating = Some(value);
             continue;
         }
-        let (name, category) = match category_metatag(tag) {
-            Some((category, name)) if !name.is_empty() => (name, Some(category)),
+        let (name, category) = match category_metatag(&tag) {
+            Some((category, name)) if !name.is_empty() => (name.to_string(), Some(category)),
             Some(_) => continue,
             None => (tag, None),
         };
-        if !kept.iter().any(|seen| seen == name) {
-            kept.push(name.to_string());
+        if !kept.iter().any(|seen| seen == &name) {
+            kept.push(name.clone());
         }
         // First-wins, independent of the `kept` dedup above: a plain `cat`
         // ahead of a rule's `artist:cat` must still name the category, or a
         // capture whose source tags already carry a name a rule also tags
         // under a prefix would silently keep that name general forever.
         if let Some(category) = category
-            && !categories.iter().any(|(seen, _)| seen == name)
+            && !categories.iter().any(|(seen, _)| seen == &name)
         {
-            categories.push((name.to_string(), category));
+            categories.push((name, category));
         }
     }
     TagText {
@@ -506,13 +545,12 @@ pub fn read_metatags(tags: &[String]) -> TagText {
 /// metatag alphabet is `g|s|q|e`, and silently dropping `rating:unknown` would
 /// lose a tag the user typed.
 ///
-/// Case-insensitive because `parseTagSearch` reads the same metatag with an `i`
-/// flag: a `Rating:S` stored as a tag would be a tag no search for it can find.
+/// `tag` reaches here already canonical (`read_metatags`'s own call to
+/// `tags::canonical`), so a plain prefix strip is the whole match — a
+/// `Rating:S` typed in the editor is `rating:s` by the time this runs, the
+/// same as `parseTagSearch` reads it on the webview's side.
 fn rating_metatag(tag: &str) -> Option<String> {
-    let value = tag
-        .get(..RATING_PREFIX.len())
-        .filter(|prefix| prefix.eq_ignore_ascii_case(RATING_PREFIX))
-        .map(|prefix| tag[prefix.len()..].to_ascii_lowercase())?;
+    let value = tag.strip_prefix(RATING_PREFIX)?.to_string();
     RATINGS.contains(&value.as_str()).then_some(value)
 }
 
@@ -537,10 +575,12 @@ const CATEGORY_PREFIXES: [(&str, TagCategory); 9] = [
 ];
 
 fn category_metatag(tag: &str) -> Option<(TagCategory, &str)> {
+    // `tag` is already canonical (`read_metatags`'s call to `tags::canonical`),
+    // and every prefix above is lowercase ASCII, so `strip_prefix` is exact
+    // match rather than a second case-insensitive comparison beside it.
     CATEGORY_PREFIXES.iter().find_map(|(prefix, category)| {
-        tag.get(..prefix.len())
-            .filter(|candidate| candidate.eq_ignore_ascii_case(prefix))
-            .map(|_| (*category, tag[prefix.len()..].trim()))
+        tag.strip_prefix(prefix)
+            .map(|name| (*category, name.trim()))
     })
 }
 
@@ -694,8 +734,11 @@ pub fn vocabulary(conn: &Connection) -> Result<Vec<TagEntry>> {
 /// image's tag set (spec `tag-vocabulary`, "A category is changed where the
 /// tag is shown"), and answer with the vocabulary as it now stands. Refused
 /// when `name` is not a tag at all: there is no row to recategorise, and a
-/// menu naming no image has no tag set to have created one from.
+/// menu naming no image has no tag set to have created one from. `name` is
+/// canonicalised (`lowercase-tags` design D1) so a menu built from typed text
+/// still names the stored row.
 pub fn set_category(library: &Library, name: &str, category: TagCategory) -> Result<Vec<TagEntry>> {
+    let name = canonical(name);
     let changed = library.conn.execute(
         "UPDATE tags SET category = ?1 WHERE name = ?2",
         params![category, name],
@@ -708,8 +751,10 @@ pub fn set_category(library: &Library, name: &str, category: TagCategory) -> Res
 }
 
 /// Pin or unpin `name`, and answer with the vocabulary as it now stands. Same
-/// refusal as [`set_category`] for a name that is not a tag.
+/// refusal, and the same canonicalisation, as [`set_category`] for a name that
+/// is not a tag.
 pub fn set_pinned(library: &Library, name: &str, pinned: bool) -> Result<Vec<TagEntry>> {
+    let name = canonical(name);
     let changed = library.conn.execute(
         "UPDATE tags SET pinned = ?1 WHERE name = ?2",
         params![pinned, name],
@@ -977,6 +1022,7 @@ mod tests {
     /// `tag-vocabulary` task 1.3: the design's own worked example — a rating
     /// token, a long-form and a short-form category prefix, an empty-name
     /// prefix dropped like a blank, and a plain tag, all in one pass.
+    /// `lowercase-tags` design D1: the name after the prefix is canonical too.
     #[test]
     fn read_metatags_reads_categories_from_their_prefixes_alongside_the_rating() {
         let text = read_metatags(&strs(&[
@@ -989,16 +1035,83 @@ mod tests {
 
         assert_eq!(
             text.tags,
-            vec!["Cat".to_string(), "foo".to_string(), "bar".to_string()]
+            vec!["cat".to_string(), "foo".to_string(), "bar".to_string()]
         );
         assert_eq!(text.rating.as_deref(), Some("s"));
         assert_eq!(
             text.categories,
             vec![
-                ("Cat".to_string(), TagCategory::Artist),
+                ("cat".to_string(), TagCategory::Artist),
                 ("foo".to_string(), TagCategory::Artist),
             ]
         );
+    }
+
+    /// `lowercase-tags` design D1's argument for `to_lowercase` over an ASCII
+    /// rule: a non-ASCII capital folds too, the same way the webview's
+    /// `toLowerCase()` folds it.
+    #[test]
+    fn read_metatags_lowercases_a_non_ascii_capital() {
+        let text = read_metatags(&strs(&["ÉTÉ"]));
+        assert_eq!(text.tags, vec!["été".to_string()]);
+    }
+
+    /// `lowercase-tags` design D1, spec `tag-vocabulary` "Typed in capitals":
+    /// an editor save of `Cat Tagme` stores `cat` and `tagme`, whatever case
+    /// either was typed in.
+    #[test]
+    fn an_editor_save_lowercases_every_tag() {
+        let (_dir, library) = library();
+        store(&library, "a", None, &[]);
+
+        let record = edit(&library, "a", &["Cat", "Tagme"]);
+
+        assert_eq!(record.tags, vec!["cat".to_string(), "tagme".to_string()]);
+    }
+
+    /// `lowercase-tags` design D1, spec `tag-vocabulary` "Typed in capitals":
+    /// `tagme` already meta, `artist:Tagme` is refused exactly as
+    /// `artist:tagme` is, naming the canonical spelling.
+    #[test]
+    fn a_capitalised_prefix_is_refused_against_the_canonical_category_conflict() {
+        let (_dir, library) = library();
+        store(&library, "a", None, &[]);
+        edit(&library, "a", &["meta:tagme"]);
+        store(&library, "b", None, &[]);
+
+        let error = update_tags(&library, "b", &strs(&["artist:Tagme"])).unwrap_err();
+
+        let AppError::BadRequest(reason) = error else {
+            panic!("got {error}")
+        };
+        assert!(reason.contains("tagme"), "{reason}");
+        assert_eq!(category_of(&library, "tagme"), TagCategory::Meta);
+    }
+
+    /// `lowercase-tags` design D1, spec `tag-vocabulary` "Created in
+    /// capitals": no `tagme` yet, `artist:Tagme` creates the canonical
+    /// `tagme` under artist.
+    #[test]
+    fn a_capitalised_prefix_creates_the_canonical_tag_under_its_category() {
+        let (_dir, library) = library();
+        store(&library, "a", None, &[]);
+
+        let record = update_tags(&library, "a", &strs(&["artist:Tagme"])).unwrap();
+
+        assert_eq!(record.tags, vec!["tagme".to_string()]);
+        assert_eq!(category_of(&library, "tagme"), TagCategory::Artist);
+    }
+
+    /// `lowercase-tags` design D1: `set_category` reaches the canonical row
+    /// whatever case the caller names it by.
+    #[test]
+    fn set_category_reaches_the_canonical_row_by_a_capitalised_name() {
+        let (_dir, library) = library();
+        store(&library, "a", None, &["tagme"]);
+
+        set_category(&library, "Tagme", TagCategory::Meta).unwrap();
+
+        assert_eq!(category_of(&library, "tagme"), TagCategory::Meta);
     }
 
     /// Review finding 1: a source tag's plain name ahead of a rule's prefixed
@@ -2214,14 +2327,21 @@ mod tests {
         assert_eq!(names, vec!["cat".to_string(), "cathedral".to_string()]);
     }
 
+    /// `lowercase-tags` design D1: a tag typed in capitals is stored canonical,
+    /// so a lowercase prefix finds it under its stored spelling; the prefix
+    /// itself is canonicalised too, so a capitalised prefix still matches.
     #[test]
-    fn a_prefix_matches_whatever_case_the_tag_was_stored_in() {
+    fn a_prefix_matches_whatever_case_the_tag_or_the_prefix_was_typed_in() {
         let (_dir, library) = library();
         store(&library, "a", None, &["Cathedral"]);
 
         assert_eq!(
             suggested(&library, "cat", 8),
-            vec![("Cathedral".to_string(), 1)]
+            vec![("cathedral".to_string(), 1)]
+        );
+        assert_eq!(
+            suggested(&library, "Cat", 8),
+            vec![("cathedral".to_string(), 1)]
         );
     }
 

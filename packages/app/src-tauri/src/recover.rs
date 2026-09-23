@@ -225,14 +225,39 @@ fn insert_collections(conn: &Connection, collections: &[Collection]) -> Result<(
 /// already created (`tag-vocabulary` design D2): `ON CONFLICT` upserts a
 /// carrying tag's category and pin onto its existing row, and creates a
 /// carrier-less one fresh, under its own category with no image tagging it —
-/// the spec's "The vocabulary comes back" scenario.
+/// the spec's "The vocabulary comes back" scenario. `entry.name` is
+/// canonicalised (`tags::canonical`, `lowercase-tags` design D1): a
+/// `library.json` written before that change may still name a tag `Tagme`,
+/// and the row it has to upsert onto is the lowercase one the sidecar pass
+/// already created through `tags::link_tag`.
+///
+/// A pre-v9 `library.json` can list two entries that canonicalise to the same
+/// name — `Tagme` (artist) and `tagme` (meta, pinned) both restoring onto one
+/// row — and a plain `ON CONFLICT DO UPDATE` would leave whichever entry the
+/// loop reaches last, silently dropping the other's category or pin.
+///
+/// Each upsert alone follows `merge_case_duplicates`'s (`db.rs`) rule for a
+/// single row: a general `excluded.category` never overwrites a non-general
+/// one, and `pinned` only ever turns on, never off. That rule alone still
+/// lets list order decide *which* non-general category wins when two
+/// entries disagree — `db.rs`'s migration breaks that tie by id order because
+/// a DB row has an id; a `library.json` list has none, so entries are
+/// stable-sorted here so that an entry already spelled canonically (`tagme`,
+/// not `Tagme`) — the migration's own first tie-break, "the row already
+/// spelled canonically, if one exists" — is applied last among the entries
+/// that canonicalise to its name, and so its category (if non-general) always
+/// wins regardless of the order `library.json` lists the two spellings in.
 fn insert_vocabulary(conn: &Connection, entries: &[TagEntry]) -> Result<()> {
-    for entry in entries {
+    let mut ordered: Vec<&TagEntry> = entries.iter().collect();
+    ordered.sort_by_key(|entry| entry.name == tags::canonical(&entry.name));
+    for entry in ordered {
         conn.execute(
             "INSERT INTO tags (name, category, pinned) VALUES (?1, ?2, ?3)
-             ON CONFLICT (name) DO UPDATE SET category = excluded.category,
-                                               pinned = excluded.pinned",
-            params![entry.name, entry.category, entry.pinned],
+             ON CONFLICT (name) DO UPDATE SET
+                 category = CASE WHEN excluded.category = 'general' THEN tags.category
+                                  ELSE excluded.category END,
+                 pinned = MAX(tags.pinned, excluded.pinned)",
+            params![tags::canonical(&entry.name), entry.category, entry.pinned],
         )?;
     }
     Ok(())
@@ -560,7 +585,7 @@ mod tests {
     use crate::ingest::{IngestInput, store_image};
     use crate::library::Library;
     use crate::model::{
-        ImageSource, ParsedTagSearch, PostRef, RuleInput, SearchRequest, SearchView,
+        ImageSource, ParsedTagSearch, PostRef, RuleInput, SearchRequest, SearchView, TagCategory,
     };
     use crate::query;
 
@@ -844,6 +869,121 @@ mod tests {
             crate::stamps::list(&rebuilt.conn).unwrap(),
             vec![cat, reviewed],
         );
+    }
+
+    /// `lowercase-tags` design D1, non-goal "Rewriting every sidecar": a
+    /// sidecar hand-edited (or written by an older build) to name `Tagme`
+    /// still restores under the canonical `tagme` — the sidecar link goes
+    /// through `tags::link_tag`, which canonicalises on every call.
+    #[test]
+    fn a_sidecar_naming_a_capitalised_tag_restores_it_canonical() {
+        let (_dir, library) = library();
+        store(&library, "a", &["cat"], None);
+        let file = sidecar::path(&library.paths, "a");
+        let mut json: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&file).unwrap()).unwrap();
+        json.as_object_mut()
+            .unwrap()
+            .insert("tags".to_string(), serde_json::json!(["Tagme"]));
+        std::fs::write(&file, serde_json::to_vec_pretty(&json).unwrap()).unwrap();
+        let paths = library.paths.clone();
+        drop(library);
+
+        let report = rebuild(&paths, &mut |_, _| {}).unwrap();
+
+        assert!(report.failures.is_empty(), "{:?}", report.failures);
+        let rebuilt = Library::open_existing(paths.root.as_path()).unwrap();
+        assert_eq!(
+            crate::ingest::require_record(&rebuilt.conn, "a")
+                .unwrap()
+                .tags,
+            vec!["tagme".to_string()],
+        );
+    }
+
+    /// `lowercase-tags` design D1: a `library.json` vocabulary entry naming
+    /// `Tagme` (from a build before this change, or a hand edit) categorises
+    /// the canonical `tagme` row rather than creating a second one.
+    #[test]
+    fn a_library_json_vocabulary_entry_naming_a_capitalised_tag_categorises_it_canonical() {
+        let (_dir, library) = library();
+        store(&library, "a", &["tagme"], None);
+        // `library.json` exists only from a build's first categorised write
+        // (`tag-vocabulary` design D2); a plain, general tag alone leaves
+        // nothing to hand-edit yet, so this seeds the file the way
+        // `a_general_prefixed_save_does_not_rewrite_library_json_but_a_
+        // categorised_one_does` (`tags.rs`) does for the same reason.
+        crate::tags::set_pinned(&library, "tagme", true).unwrap();
+        let file = sidecar::library_path(&library.paths);
+        let mut json: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&file).unwrap()).unwrap();
+        json.as_object_mut().unwrap().insert(
+            "tags".to_string(),
+            serde_json::json!([{ "name": "Tagme", "category": "artist", "pinned": false }]),
+        );
+        std::fs::write(&file, serde_json::to_vec_pretty(&json).unwrap()).unwrap();
+        let paths = library.paths.clone();
+        drop(library);
+
+        let report = rebuild(&paths, &mut |_, _| {}).unwrap();
+
+        assert!(report.failures.is_empty(), "{:?}", report.failures);
+        let rebuilt = Library::open_existing(paths.root.as_path()).unwrap();
+        assert_eq!(
+            tag_row(&rebuilt.conn, "tagme"),
+            ("artist".to_string(), false)
+        );
+    }
+
+    /// Review finding on `dbcb7e3`: a pre-v9 `library.json` can list `Tagme`
+    /// (artist) and `tagme` (meta, pinned) as two separate entries, both
+    /// canonicalising onto one row. `insert_vocabulary` follows
+    /// `merge_case_duplicates`'s rule one entry at a time — a general
+    /// category never overwrites a non-general one, and pinned only turns
+    /// on — so the row ends up meta and pinned whichever entry lands last.
+    #[test]
+    fn two_vocabulary_entries_that_canonicalise_together_keep_the_non_general_category_and_the_pin()
+    {
+        let (_dir, library) = library();
+        let entries = vec![
+            TagEntry {
+                name: "Tagme".to_string(),
+                category: TagCategory::Artist,
+                pinned: false,
+            },
+            TagEntry {
+                name: "tagme".to_string(),
+                category: TagCategory::Meta,
+                pinned: true,
+            },
+        ];
+
+        insert_vocabulary(&library.conn, &entries).unwrap();
+
+        assert_eq!(tag_row(&library.conn, "tagme"), ("meta".to_string(), true));
+    }
+
+    /// Same as above, entries in the other order: the result must not depend
+    /// on which spelling `library.json` lists first.
+    #[test]
+    fn the_same_two_entries_in_the_other_order_give_the_same_result() {
+        let (_dir, library) = library();
+        let entries = vec![
+            TagEntry {
+                name: "tagme".to_string(),
+                category: TagCategory::Meta,
+                pinned: true,
+            },
+            TagEntry {
+                name: "Tagme".to_string(),
+                category: TagCategory::Artist,
+                pinned: false,
+            },
+        ];
+
+        insert_vocabulary(&library.conn, &entries).unwrap();
+
+        assert_eq!(tag_row(&library.conn, "tagme"), ("meta".to_string(), true));
     }
 
     fn tag_row(conn: &Connection, name: &str) -> (String, bool) {

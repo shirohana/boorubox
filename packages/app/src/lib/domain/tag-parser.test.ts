@@ -385,6 +385,43 @@ describe('parseTagSearch', () => {
     })
   })
 
+  // `lowercase-tags` design D1, D3: Rust stores every tag canonical (lower
+  // case), so the parsed view of a query has to fold the same way or a typed
+  // capital would ask for a tag that cannot exist. The metatags below are
+  // unaffected — they were already parsed case-insensitively and read into a
+  // fixed alphabet, never into free tag text.
+  describe('tag case', () => {
+    it('lower-cases include, exclude and or-group tags', () => {
+      const result = parseTagSearch('Cat -Dog {A ~ b}')
+      expect(result.includeTags).toEqual(['cat', '{a', '~', 'b}'])
+      expect(result.excludeTags).toEqual(['dog'])
+      expect(result.orGroups).toEqual([])
+    })
+
+    it('lower-cases both sides of an or group', () => {
+      const result = parseTagSearch('Girl or Cat')
+      expect(result.orGroups).toEqual([['girl', 'cat']])
+    })
+
+    it('leaves rating, is: and account: behaviour unchanged by capitals', () => {
+      const result = parseTagSearch('Cat RATING:S IS:PNG ACCOUNT:Alice')
+      expect(result.includeTags).toEqual(['cat'])
+      expect(result.ratings).toEqual(['s'])
+      expect(result.fileTypes).toEqual(['image/png'])
+      // `account:` keeps the handle's own case (design D4, D6): only the tag
+      // terms below it are folded.
+      expect(result.accounts).toEqual(['Alice'])
+    })
+
+    // Design D1's argument for `to_lowercase` over an ASCII rule in Rust:
+    // `toLowerCase()` here is already Unicode-aware, so a non-ASCII capital
+    // folds the same way Rust folds it.
+    it('lower-cases a non-ASCII capital', () => {
+      const result = parseTagSearch('ÉTÉ')
+      expect(result.includeTags).toEqual(['été'])
+    })
+  })
+
   describe('edge cases', () => {
     it('should handle only metatags (no regular tags)', () => {
       const result = parseTagSearch('rating:g is:png tagcount:5')

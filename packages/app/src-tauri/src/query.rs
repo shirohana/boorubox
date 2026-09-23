@@ -22,6 +22,7 @@ use crate::model::{
     SearchResult, SearchView, Sort, SortDirection, SortField, TagCount, TagCountOperator,
     TagCounts,
 };
+use crate::tags;
 
 /// Register the SQL functions the compiled queries call. `db::open` calls this
 /// for every connection, so a query may assume they are there.
@@ -688,26 +689,38 @@ fn push_tags(filter: &mut Filter, query: &ParsedTagSearch) {
     // AND: one `EXISTS` per tag, so a repeated tag costs a repeated test rather
     // than throwing the count of distinct names off.
     for tag in &query.include_tags {
-        filter.add_bound(has_any_tag(1), [Value::Text(tag.clone())]);
+        filter.add_bound(has_any_tag(1), [Value::Text(tags::canonical(tag))]);
     }
     for group in &query.or_groups {
         if group.is_empty() {
             filter.add(MATCHES_NOTHING);
             continue;
         }
-        filter.add_bound(has_any_tag(group.len()), text_values(group));
+        filter.add_bound(has_any_tag(group.len()), canonical_tag_values(group));
     }
     if !query.exclude_tags.is_empty() {
         filter.add_bound(
             format!("NOT {}", has_any_tag(query.exclude_tags.len())),
-            text_values(&query.exclude_tags),
+            canonical_tag_values(&query.exclude_tags),
         );
     }
 }
 
+/// The search side of `tags::canonical` (`lowercase-tags` design D1): the
+/// webview already lowercases its own copy of a parsed query (design D3), but
+/// this canonicalises again rather than trust it, the same "two runtimes, one
+/// rule each" split D1 states for the metatag alphabet.
+fn canonical_tag_values(values: &[String]) -> Vec<Value> {
+    values
+        .iter()
+        .map(|tag| Value::Text(tags::canonical(tag)))
+        .collect()
+}
+
 /// "this image carries at least one of these tag names" — the shape every tag
-/// clause is built from. Tag names compare with SQLite's BINARY collation,
-/// which is the case-sensitive `Array.includes` the rule was lifted from.
+/// clause is built from. Both sides are canonical (`tags::canonical`,
+/// `lowercase-tags` design D1) by the time this runs, so BINARY collation's
+/// exact match is the right one — no `COLLATE NOCASE`, and none is needed.
 fn has_any_tag(count: usize) -> String {
     format!(
         "EXISTS (SELECT 1 FROM image_tags
@@ -1137,6 +1150,38 @@ mod tests {
         let first = &result.images[0];
         assert_eq!(first.id, "cat-s");
         assert_eq!(first.tags, vec!["cat".to_string(), "cute".to_string()]);
+    }
+
+    /// `lowercase-tags` design D1, spec `library-browse` "Case": a search
+    /// term typed in capitals matches the canonical (lowercase) stored tag,
+    /// whether it is an include, an exclude or inside an or-group.
+    #[test]
+    fn a_capitalised_search_term_matches_the_canonical_tag() {
+        let fixture = fixture();
+
+        assert_eq!(
+            found(
+                &fixture,
+                &request(ParsedTagSearch {
+                    include_tags: vec!["Cat".into()],
+                    exclude_tags: vec!["Dog".into()],
+                    ..Default::default()
+                }),
+            ),
+            vec!["cat-s", "no-account"],
+            "the same result as `cat -dog`",
+        );
+        assert_eq!(
+            found(
+                &fixture,
+                &request(ParsedTagSearch {
+                    or_groups: vec![vec!["Cute".into(), "Dog".into()]],
+                    ..Default::default()
+                }),
+            ),
+            vec!["cat-s", "cat-dog-q", "dog-e"],
+            "the same result as `cute or dog`",
+        );
     }
 
     #[test]

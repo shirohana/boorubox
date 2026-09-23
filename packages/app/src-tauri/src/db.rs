@@ -235,10 +235,121 @@ CREATE TABLE stamps (
 );
 ";
 
+/// Schema v9 (`lowercase-tags` design D2): fold every tag row that differs
+/// from another only by case into the one canonical (`tags::canonical`)
+/// spelling, so a library written before Danbooru's lowercase rule reads back
+/// with one row per name. A Rust step, not SQL: SQLite's `lower()` is
+/// ASCII-only, and the merge — moving links between rows, choosing a winning
+/// category — is a loop over groups, which SQL expresses badly and Rust in a
+/// page that shares `tags::canonical` with every other door onto the
+/// vocabulary.
+///
+/// The winner is the row already spelled canonically, if one exists in the
+/// group, else the lowest id. Its category is the winner's own, if the
+/// winner's own is non-general; otherwise the first non-general category
+/// among the losers in id order, or general if none of the group has one. It
+/// ends up pinned if any row in the group is. Every
+/// loser's `image_tags` rows move to the winner (`UPDATE OR IGNORE`, so an
+/// image that already carried both spellings hits the primary key and is left
+/// linked once rather than failing the migration), then the loser's own rows
+/// and its `tags` row are deleted.
+fn merge_case_duplicates(conn: &Connection) -> rusqlite::Result<()> {
+    struct Row {
+        id: i64,
+        name: String,
+        category: String,
+        pinned: bool,
+    }
+
+    let mut stmt = conn.prepare("SELECT id, name, category, pinned FROM tags")?;
+    let rows: Vec<Row> = stmt
+        .query_map([], |row| {
+            Ok(Row {
+                id: row.get(0)?,
+                name: row.get(1)?,
+                category: row.get(2)?,
+                pinned: row.get(3)?,
+            })
+        })?
+        .collect::<rusqlite::Result<_>>()?;
+    drop(stmt);
+
+    let mut groups: std::collections::BTreeMap<String, Vec<Row>> =
+        std::collections::BTreeMap::new();
+    for row in rows {
+        groups
+            .entry(crate::tags::canonical(&row.name))
+            .or_default()
+            .push(row);
+    }
+
+    for (canonical, mut group) in groups {
+        if group.len() == 1 && group[0].name == canonical {
+            continue;
+        }
+        group.sort_by_key(|row| row.id);
+
+        let winner = group
+            .iter()
+            .find(|row| row.name == canonical)
+            .unwrap_or(&group[0]);
+        let winner_id = winner.id;
+        let category = if winner.category != "general" {
+            winner.category.clone()
+        } else {
+            group
+                .iter()
+                .filter(|row| row.id != winner_id)
+                .find(|row| row.category != "general")
+                .map_or("general", |row| row.category.as_str())
+                .to_string()
+        };
+        let pinned = group.iter().any(|row| row.pinned);
+
+        for row in &group {
+            if row.id == winner_id {
+                continue;
+            }
+            conn.execute(
+                "UPDATE OR IGNORE image_tags SET tag_id = ?1 WHERE tag_id = ?2",
+                rusqlite::params![winner_id, row.id],
+            )?;
+            conn.execute(
+                "DELETE FROM image_tags WHERE tag_id = ?1",
+                rusqlite::params![row.id],
+            )?;
+            conn.execute("DELETE FROM tags WHERE id = ?1", rusqlite::params![row.id])?;
+        }
+
+        conn.execute(
+            "UPDATE tags SET name = ?1, category = ?2, pinned = ?3 WHERE id = ?4",
+            rusqlite::params![canonical, category, pinned, winner_id],
+        )?;
+    }
+
+    Ok(())
+}
+
+/// One schema version's step: plain SQL for every version but the one
+/// `merge_case_duplicates` is (its own doc comment says why that one has to be
+/// Rust).
+enum Migration {
+    Sql(&'static str),
+    Rust(fn(&Connection) -> rusqlite::Result<()>),
+}
+
 /// One entry per schema version, applied in order. Appending is the only way to
 /// change the schema: `user_version` counts how many of these have run.
-const MIGRATIONS: &[&str] = &[
-    SCHEMA_V1, SCHEMA_V2, SCHEMA_V3, SCHEMA_V4, SCHEMA_V5, SCHEMA_V6, SCHEMA_V7, SCHEMA_V8,
+const MIGRATIONS: &[Migration] = &[
+    Migration::Sql(SCHEMA_V1),
+    Migration::Sql(SCHEMA_V2),
+    Migration::Sql(SCHEMA_V3),
+    Migration::Sql(SCHEMA_V4),
+    Migration::Sql(SCHEMA_V5),
+    Migration::Sql(SCHEMA_V6),
+    Migration::Sql(SCHEMA_V7),
+    Migration::Sql(SCHEMA_V8),
+    Migration::Rust(merge_case_duplicates),
 ];
 
 /// Open (creating if needed) the library database with the pragmas D2 fixes,
@@ -296,9 +407,12 @@ fn migrate(conn: &mut Connection) -> Result<()> {
             known,
         });
     }
-    for (index, sql) in MIGRATIONS.iter().enumerate().skip(applied as usize) {
+    for (index, migration) in MIGRATIONS.iter().enumerate().skip(applied as usize) {
         let tx = conn.transaction()?;
-        tx.execute_batch(sql)?;
+        match migration {
+            Migration::Sql(sql) => tx.execute_batch(sql)?,
+            Migration::Rust(step) => step(&tx)?,
+        }
         tx.pragma_update(None, "user_version", index as i64 + 1)?;
         tx.commit()?;
     }
@@ -809,6 +923,282 @@ mod tests {
             error,
             AppError::SchemaTooNew { found: 99, known } if known == MIGRATIONS.len() as i64
         ));
+    }
+
+    fn tag_id(conn: &Connection, name: &str) -> i64 {
+        conn.query_row("SELECT id FROM tags WHERE name = ?1", [name], |row| {
+            row.get(0)
+        })
+        .unwrap()
+    }
+
+    fn link(conn: &Connection, image_id: &str, tag_id: i64) {
+        conn.execute(
+            "INSERT INTO image_tags (image_id, tag_id) VALUES (?1, ?2)",
+            rusqlite::params![image_id, tag_id],
+        )
+        .unwrap();
+    }
+
+    /// `lowercase-tags` design D2's own worked example: `tagme` (meta,
+    /// pinned) has the lowest id, `Tagme` (artist) next, `TAGME` (general)
+    /// last — the id order the migration walks the group in, and the order
+    /// that makes "first non-general by id" unambiguous, since `tagme` is
+    /// both the already-canonical spelling and the first non-general row.
+    /// `d` already carries two of the three spellings, which is what makes
+    /// the `UPDATE OR IGNORE` collision path run rather than only the plain
+    /// move.
+    #[test]
+    fn a_v8_library_merges_case_duplicate_tags_into_one_canonical_row() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("library.sqlite");
+
+        let conn = Connection::open(&path).unwrap();
+        conn.execute_batch(SCHEMA_V1).unwrap();
+        conn.execute_batch(SCHEMA_V2).unwrap();
+        conn.execute_batch(SCHEMA_V3).unwrap();
+        conn.execute_batch(SCHEMA_V4).unwrap();
+        conn.execute_batch(SCHEMA_V5).unwrap();
+        conn.execute_batch(SCHEMA_V6).unwrap();
+        conn.execute_batch(SCHEMA_V7).unwrap();
+        conn.execute_batch(SCHEMA_V8).unwrap();
+        conn.pragma_update(None, "user_version", 8i64).unwrap();
+        for id in ["a", "b", "c", "d"] {
+            insert_bare_image(&conn, id, id);
+        }
+        conn.execute(
+            "INSERT INTO tags (name, category, pinned) VALUES ('tagme', 'meta', 1)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO tags (name, category, pinned) VALUES ('Tagme', 'artist', 0)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO tags (name, category, pinned) VALUES ('TAGME', 'general', 0)",
+            [],
+        )
+        .unwrap();
+        let (tagme, capital_tagme, upper_tagme) = (
+            tag_id(&conn, "tagme"),
+            tag_id(&conn, "Tagme"),
+            tag_id(&conn, "TAGME"),
+        );
+        link(&conn, "a", tagme);
+        link(&conn, "b", capital_tagme);
+        link(&conn, "c", upper_tagme);
+        link(&conn, "d", tagme);
+        link(&conn, "d", capital_tagme);
+        drop(conn);
+
+        let conn = open(&path).unwrap();
+
+        let version: i64 = conn
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, MIGRATIONS.len() as i64);
+
+        let rows: Vec<(String, String, bool)> = {
+            let mut stmt = conn
+                .prepare("SELECT name, category, pinned FROM tags")
+                .unwrap();
+            stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+                .unwrap()
+                .collect::<rusqlite::Result<_>>()
+                .unwrap()
+        };
+        assert_eq!(
+            rows,
+            vec![("tagme".to_string(), "meta".to_string(), true)],
+            "the three rows merge into one canonical, meta, pinned row"
+        );
+
+        for id in ["a", "b", "c", "d"] {
+            let count: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM image_tags
+                     JOIN tags ON tags.id = image_tags.tag_id
+                     WHERE image_tags.image_id = ?1 AND tags.name = 'tagme'",
+                    [id],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(count, 1, "{id} carries the surviving row exactly once");
+        }
+
+        let dangling: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM image_tags
+                 WHERE tag_id NOT IN (SELECT id FROM tags)",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(dangling, 0, "no image_tags row points at a deleted tag");
+    }
+
+    /// Review finding on `dbcb7e3`: the winner is not always the lowest id
+    /// (`tag_id(&conn, "Tagme")` below is the lowest, but the canonical
+    /// `tagme` row is not), and a lower-id loser (`Tagme`, id order first) is
+    /// non-general while the winner's own category (`artist`) also is. The
+    /// merged row must keep the *winner's* category, not the first non-general
+    /// category found in id order across the whole group.
+    #[test]
+    fn the_winning_category_is_the_canonical_rows_own_not_the_lowest_id_non_general_loser() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("library.sqlite");
+
+        let conn = Connection::open(&path).unwrap();
+        conn.execute_batch(SCHEMA_V1).unwrap();
+        conn.execute_batch(SCHEMA_V2).unwrap();
+        conn.execute_batch(SCHEMA_V3).unwrap();
+        conn.execute_batch(SCHEMA_V4).unwrap();
+        conn.execute_batch(SCHEMA_V5).unwrap();
+        conn.execute_batch(SCHEMA_V6).unwrap();
+        conn.execute_batch(SCHEMA_V7).unwrap();
+        conn.execute_batch(SCHEMA_V8).unwrap();
+        conn.pragma_update(None, "user_version", 8i64).unwrap();
+        insert_bare_image(&conn, "a", "a");
+
+        // Inserted in this order so `Tagme` (character) gets the lowest id
+        // and the canonical `tagme` (artist, the winner) gets the highest.
+        conn.execute(
+            "INSERT INTO tags (name, category, pinned) VALUES ('Tagme', 'character', 0)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO tags (name, category, pinned) VALUES ('TAGME', 'general', 0)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO tags (name, category, pinned) VALUES ('tagme', 'artist', 0)",
+            [],
+        )
+        .unwrap();
+        link(&conn, "a", tag_id(&conn, "tagme"));
+        drop(conn);
+
+        let conn = open(&path).unwrap();
+
+        let (name, category): (String, String) = conn
+            .query_row("SELECT name, category FROM tags", [], |row| {
+                Ok((row.get(0)?, row.get(1)?))
+            })
+            .unwrap();
+        assert_eq!(name, "tagme");
+        assert_eq!(
+            category, "artist",
+            "the canonical row's own category wins over a lower-id loser's"
+        );
+    }
+
+    /// `lowercase-tags` design D1's argument for `to_lowercase` over an ASCII
+    /// rule: a non-ASCII capital folds too. `Ä` and `ä` merge the same way
+    /// `Tagme`/`tagme` do.
+    #[test]
+    fn a_non_ascii_capital_merges_with_its_lowercase_pair() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("library.sqlite");
+
+        let conn = Connection::open(&path).unwrap();
+        conn.execute_batch(SCHEMA_V1).unwrap();
+        conn.execute_batch(SCHEMA_V2).unwrap();
+        conn.execute_batch(SCHEMA_V3).unwrap();
+        conn.execute_batch(SCHEMA_V4).unwrap();
+        conn.execute_batch(SCHEMA_V5).unwrap();
+        conn.execute_batch(SCHEMA_V6).unwrap();
+        conn.execute_batch(SCHEMA_V7).unwrap();
+        conn.execute_batch(SCHEMA_V8).unwrap();
+        conn.pragma_update(None, "user_version", 8i64).unwrap();
+        insert_bare_image(&conn, "a", "a");
+        insert_bare_image(&conn, "b", "b");
+        conn.execute(
+            "INSERT INTO tags (name, category, pinned) VALUES ('Ä', 'general', 0)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO tags (name, category, pinned) VALUES ('ä', 'general', 0)",
+            [],
+        )
+        .unwrap();
+        link(&conn, "a", tag_id(&conn, "Ä"));
+        link(&conn, "b", tag_id(&conn, "ä"));
+        drop(conn);
+
+        let conn = open(&path).unwrap();
+
+        let names: Vec<String> = {
+            let mut stmt = conn.prepare("SELECT name FROM tags").unwrap();
+            stmt.query_map([], |row| row.get(0))
+                .unwrap()
+                .collect::<rusqlite::Result<_>>()
+                .unwrap()
+        };
+        assert_eq!(names, vec!["ä".to_string()], "Ä and ä merge into one row");
+        for id in ["a", "b"] {
+            let count: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM image_tags
+                     JOIN tags ON tags.id = image_tags.tag_id
+                     WHERE image_tags.image_id = ?1 AND tags.name = 'ä'",
+                    [id],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(count, 1, "{id} carries the surviving row");
+        }
+    }
+
+    #[test]
+    fn a_v8_library_with_no_case_duplicates_is_unchanged_but_for_the_version() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("library.sqlite");
+
+        let conn = Connection::open(&path).unwrap();
+        conn.execute_batch(SCHEMA_V1).unwrap();
+        conn.execute_batch(SCHEMA_V2).unwrap();
+        conn.execute_batch(SCHEMA_V3).unwrap();
+        conn.execute_batch(SCHEMA_V4).unwrap();
+        conn.execute_batch(SCHEMA_V5).unwrap();
+        conn.execute_batch(SCHEMA_V6).unwrap();
+        conn.execute_batch(SCHEMA_V7).unwrap();
+        conn.execute_batch(SCHEMA_V8).unwrap();
+        conn.pragma_update(None, "user_version", 8i64).unwrap();
+        insert_bare_image(&conn, "a", "sunset over kyoto");
+        conn.execute(
+            "INSERT INTO tags (name, category, pinned) VALUES ('cat', 'artist', 1)",
+            [],
+        )
+        .unwrap();
+        let cat_id = tag_id(&conn, "cat");
+        link(&conn, "a", cat_id);
+        drop(conn);
+
+        let conn = open(&path).unwrap();
+
+        let version: i64 = conn
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, MIGRATIONS.len() as i64);
+        let (name, category, pinned): (String, String, bool) = conn
+            .query_row(
+                "SELECT name, category, pinned FROM tags WHERE id = ?1",
+                [cat_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(name, "cat");
+        assert_eq!(category, "artist");
+        assert!(pinned);
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM tags", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(count, 1, "no row was added or dropped");
     }
 
     fn insert_bare_image(conn: &Connection, id: &str, title: &str) {

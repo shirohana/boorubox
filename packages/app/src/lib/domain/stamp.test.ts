@@ -46,8 +46,22 @@ describe('parseStamp', () => {
     expect(parseStamp('cat or dog')).toEqual({ error: '“or” is not an edit.' })
   })
 
-  it('keeps a category prefix in add, verbatim', () => {
+  it('keeps a category prefix in add', () => {
     expect(parseStamp('artist:kantoku')).toEqual({
+      edit: { add: ['artist:kantoku'], remove: [], addCollections: [], removeCollections: [] },
+    })
+  })
+
+  // `lowercase-tags` design D3: the parsed edit is lower-case, so a stamp
+  // chip shows what Rust will actually write (design D1).
+  it('lower-cases the tags of add and remove', () => {
+    expect(parseStamp('Cat -Dog')).toEqual({
+      edit: { add: ['cat'], remove: ['dog'], addCollections: [], removeCollections: [] },
+    })
+  })
+
+  it('lower-cases a category prefix along with the rest of add', () => {
+    expect(parseStamp('Artist:Kantoku')).toEqual({
       edit: { add: ['artist:kantoku'], remove: [], addCollections: [], removeCollections: [] },
     })
   })

@@ -200,7 +200,10 @@ export function parseTagSearch(query: string): ParsedTagSearch {
   }
 
   // 6. Parse tag terms (handle OR, exclusion, regular tags)
-  // Split by spaces but respect "or" as operator
+  // Split by spaces but respect "or" as operator. Every tag term is
+  // lower-cased here (`lowercase-tags` design D3): Rust stores every tag
+  // canonical (design D1), so a query term has to fold the same way or `Cat`
+  // would ask for a tag that cannot exist.
   const tokens = remainingQuery.split(/\s+/).filter((t) => t.length > 0)
 
   let i = 0
@@ -210,8 +213,8 @@ export function parseTagSearch(query: string): ParsedTagSearch {
     if (token.toLowerCase() === 'or') {
       // Handle OR: take previous tag and next tag as OR group
       if (i > 0 && i < tokens.length - 1) {
-        const prevTag = tokens[i - 1]
-        const nextTag = tokens[i + 1]
+        const prevTag = tokens[i - 1].toLowerCase()
+        const nextTag = tokens[i + 1].toLowerCase()
 
         // Remove previous tag from includeTags if it was just added
         const prevIndex = result.includeTags.indexOf(prevTag)
@@ -238,13 +241,13 @@ export function parseTagSearch(query: string): ParsedTagSearch {
       }
     } else if (token.startsWith('-')) {
       // Exclusion
-      const tag = token.substring(1)
+      const tag = token.substring(1).toLowerCase()
       if (tag) {
         result.excludeTags.push(tag)
       }
     } else {
       // Regular tag (include, AND)
-      result.includeTags.push(token)
+      result.includeTags.push(token.toLowerCase())
     }
 
     i++
@@ -258,13 +261,19 @@ export function parseTagSearch(query: string): ParsedTagSearch {
  * Handles: "girl or cat" → remove "cat" → "girl"
  *          "cat or girl" → remove "cat" → "girl"
  *          "dog cat girl" → remove "cat" → "dog girl"
+ *
+ * `tagToRemove` is what `parseTagSearch` already lower-cased (a chip's own
+ * name, `lowercase-tags` design D1); the query string itself is not rewritten
+ * to match (design D3), so the token this walks may still read `Cat` — the
+ * comparison folds case rather than the text.
  */
 export function removeTagFromQuery(query: string, tagToRemove: string): string {
   const tokens = query.split(/\s+/)
   const newTokens: string[] = []
+  const target = fold(tagToRemove)
 
   for (let i = 0; i < tokens.length; i++) {
-    if (tokens[i] === tagToRemove) {
+    if (tokens[i].toLowerCase() === target) {
       // Skip this tag
       // Also skip "or" if it's before or after this tag
       if (i > 0 && tokens[i - 1].toLowerCase() === 'or') {
@@ -294,13 +303,32 @@ function append(query: string, term: string): string {
   return base ? `${base} ${term}` : term
 }
 
-function isIncluded(parsed: ParsedTagSearch, tag: string): boolean {
-  return parsed.includeTags.includes(tag) || parsed.orGroups.some((group) => group.includes(tag))
+/**
+ * `parsed`'s tag arrays are already lower-cased (`parseTagSearch`,
+ * `lowercase-tags` design D3); `tag` is whatever a caller passes, which may
+ * not be. Every comparison against a parsed array folds through this so a
+ * capitalised argument matches the canonical entry — the same rule
+ * `removeTagFromQuery` already applies to the token it walks.
+ */
+function fold(tag: string): string {
+  return tag.toLowerCase()
 }
 
-/** `removeTagFromQuery` reads a bare token; an exclusion is a token of its own. */
+function isIncluded(parsed: ParsedTagSearch, tag: string): boolean {
+  const target = fold(tag)
+  return parsed.includeTags.includes(target)
+    || parsed.orGroups.some((group) => group.includes(target))
+}
+
+/**
+ * `removeTagFromQuery` reads a bare token; an exclusion is a token of its own.
+ * Folds case the same way `removeTagFromQuery` does, for the same reason
+ * (`lowercase-tags` design D3): `tag` is already lower-cased, the typed
+ * `-Cat` in the query string is not.
+ */
 function removeExclusionFromQuery(query: string, tag: string): string {
-  return tidy(query.split(/\s+/).filter((token) => token !== `-${tag}`).join(' '))
+  const target = `-${fold(tag)}`
+  return tidy(query.split(/\s+/).filter((token) => token.toLowerCase() !== target).join(' '))
 }
 
 /**
@@ -310,14 +338,14 @@ function removeExclusionFromQuery(query: string, tag: string): string {
 export function addTagToQuery(query: string, tag: string): string {
   const parsed = parseTagSearch(query)
   if (isIncluded(parsed, tag)) return query
-  const base = parsed.excludeTags.includes(tag) ? removeExclusionFromQuery(query, tag) : query
+  const base = parsed.excludeTags.includes(fold(tag)) ? removeExclusionFromQuery(query, tag) : query
   return append(base, tag)
 }
 
 /** Adds `tag` as an exclusion, dropping the inclusion it would contradict. */
 export function excludeTagFromQuery(query: string, tag: string): string {
   const parsed = parseTagSearch(query)
-  if (parsed.excludeTags.includes(tag)) return query
+  if (parsed.excludeTags.includes(fold(tag))) return query
   const base = isIncluded(parsed, tag) ? removeTagFromQuery(query, tag) : query
   return append(base, `-${tag}`)
 }
@@ -325,7 +353,7 @@ export function excludeTagFromQuery(query: string, tag: string): string {
 /** Clicking a tag: included or excluded, it leaves; otherwise it is asked for. */
 export function toggleTagInQuery(query: string, tag: string): string {
   const parsed = parseTagSearch(query)
-  if (parsed.excludeTags.includes(tag)) return removeExclusionFromQuery(query, tag)
+  if (parsed.excludeTags.includes(fold(tag))) return removeExclusionFromQuery(query, tag)
   if (isIncluded(parsed, tag)) return removeTagFromQuery(query, tag)
   return append(query, tag)
 }

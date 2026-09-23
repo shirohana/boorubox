@@ -1352,6 +1352,29 @@ mod tests {
         assert_eq!(second.rules[0].matched, 0);
     }
 
+    /// `lowercase-tags` design D1: a rule's tags reach the library through
+    /// `tags::read_metatags` (`apply_rules_to_image`'s own call), the one
+    /// canonicalising reader, so a rule text `Tagme` writes `tagme` exactly as
+    /// an editor save of `Tagme` would.
+    #[test]
+    fn a_rule_text_in_capitals_writes_the_canonical_tag() {
+        let (_dir, library) = library();
+        store_captured(&library, "a", Some("a pixiv piece"), &[]);
+        upsert(&library, &new_rule("pixiv", "pixiv", false, &["Tagme"])).unwrap();
+        let shared = shared(library);
+
+        run_now(&shared);
+
+        with_library(&shared, |library| {
+            assert_eq!(
+                ingest::require_record(&library.conn, "a").unwrap().tags,
+                vec!["tagme".to_string()],
+            );
+            Ok(())
+        })
+        .unwrap();
+    }
+
     #[test]
     fn no_existing_tag_is_removed() {
         let (_dir, library) = library();

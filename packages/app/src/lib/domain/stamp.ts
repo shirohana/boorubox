@@ -46,9 +46,11 @@ function isRating(value: string): value is Rating {
  * to `_` — cannot arise inside one token),
  * `rating:g|s|q|e` sets the rating and the last one wins, and everything
  * else — a category prefix like `artist:name` included — is a tag to add,
- * verbatim: Rust's own `read_metatags` is what reads the prefix, once the
- * token reaches `add`. A search-only metatag, `-rating:`, the `or` operator,
- * a token in both `add` and `remove`, or an empty text each make the whole
+ * lower-cased (`lowercase-tags` design D3, so a stamp's chip shows what Rust
+ * will actually write): Rust's own `read_metatags` is still what reads the
+ * prefix, once the token reaches `add`, and canonicalises it again on its own
+ * side (design D1). A search-only metatag, `-rating:`, the `or` operator, a
+ * token in both `add` and `remove`, or an empty text each make the whole
  * text invalid, named in the reason.
  */
 export function parseStamp(text: string): ParsedStamp {
@@ -95,7 +97,7 @@ export function parseStamp(text: string): ParsedStamp {
     }
 
     if (token.startsWith('-')) {
-      const tag = token.slice(1)
+      const tag = withoutSign
       // A prefix with nothing after it means nothing, and a token that means
       // nothing is named, not dropped: dropped, `collection:` alone would save
       // as a valid stamp that applies as a no-op.
@@ -104,7 +106,7 @@ export function parseStamp(text: string): ParsedStamp {
       continue
     }
 
-    addUnique(add, token)
+    addUnique(add, lower)
   }
 
   const conflict = add.find((tag) => remove.includes(tag))

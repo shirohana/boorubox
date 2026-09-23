@@ -100,6 +100,14 @@ describe('addTagToQuery', () => {
     expect(parsed.ratings).toEqual(['s'])
     expect(parsed.fileTypes).toEqual(['image/png'])
   })
+
+  // Review finding on `dbcb7e3`: the argument was compared against the
+  // parser's already-lowercase arrays without folding its own case, so a
+  // capitalised argument for a tag already in the query added a second,
+  // differently-cased token instead of recognising it as present.
+  it('does not add a second tag when the argument is capitalised', () => {
+    expect(addTagToQuery('cat', 'Cat')).toBe('cat')
+  })
 })
 
 describe('excludeTagFromQuery', () => {
@@ -116,6 +124,10 @@ describe('excludeTagFromQuery', () => {
     const parsed = parseTagSearch(query)
     expect(parsed.includeTags).toEqual(['dog'])
     expect(parsed.excludeTags).toEqual(['cat'])
+  })
+
+  it('leaves an already-excluded tag alone when the argument is capitalised', () => {
+    expect(excludeTagFromQuery('cat -dog', 'Dog')).toBe('cat -dog')
   })
 })
 
@@ -174,6 +186,13 @@ describe('toggleTagInQuery', () => {
 
   it('removes a tag the query includes', () => {
     expect(toggleTagInQuery('cat dog', 'cat')).toBe('dog')
+  })
+
+  // `lowercase-tags` design D3: the query string is not rewritten (`Cat`
+  // stays typed as `Cat`), but the parsed view folds case, so a click that
+  // names the canonical `cat` still finds and removes the capitalised token.
+  it('removes a tag typed in capitals when asked for its canonical spelling', () => {
+    expect(toggleTagInQuery('Cat dog', 'cat')).toBe('dog')
   })
 
   it('removes a tag the query includes through an or group', () => {
@@ -328,6 +347,13 @@ describe('activeTerms', () => {
     expect(terms.excludedAccounts).toEqual(new Set(['eve']))
     expect(terms.collections).toEqual(new Set(['favorites']))
     expect(terms.excludedCollections).toEqual(new Set(['queue']))
+  })
+
+  // `lowercase-tags` design D1, D3: a term typed in capitals marks the
+  // canonical (lower-case) tag the sidebar and the inspector both show.
+  it('marks the canonical tag for a term typed in capitals', () => {
+    const terms = activeTerms('Cat')
+    expect(terms.included).toEqual(new Set(['cat']))
   })
 
   it('answers empty sets for an empty query', () => {

@@ -9,11 +9,12 @@ uses, keeps the set clean and sorted, and turns any tag on screen into a search 
 ### Requirement: The tags of one image can be edited
 The app SHALL let the user change the tags of the image currently shown in the inspector,
 from both of the inspector's placements, and SHALL store the result as the image's whole tag
-set. Saving SHALL drop duplicates and blank entries, SHALL leave the set unordered but
-present it in one order everywhere it is displayed, and SHALL record the image as changed at
-that moment. An empty editor SHALL be a valid save that leaves the image with no tags. The
-new tags SHALL be visible in the grid, the inspector and the tag list of the current results
-without reopening the library.
+set. Saving SHALL drop duplicates and blank entries, SHALL lowercase every name (so `Cat` and
+`cat` in one editor are one tag), SHALL leave the set unordered but present it in one order
+everywhere it is displayed, and SHALL record the image as changed at that moment. An empty
+editor SHALL be a valid save that leaves the image with no tags. The new tags SHALL be visible
+in the grid, the inspector and the tag list of the current results without reopening the
+library.
 
 The tag area SHALL be read-only until the user opens the editor with an edit action; saving
 or cancelling SHALL close it again, and a refused save SHALL keep it open with the typed
@@ -28,40 +29,44 @@ SHALL NOT be changed by the line it is typed or moved to, and a line break SHALL
 space. The space is not a change: a save trims.
 
 #### Scenario: Opening the editor to add a tag
-- **WHEN** the user opens the editor of an image that already has tags and clicks at its end
-- **THEN** the caret sits after a space and the next keystroke begins a new tag, and nothing is marked as changed until one is typed
+- **WHEN** the user opens the editor of an image tagged `cat` and `dog`
+- **THEN** the field reads `cat dog ` with the caret free to type a third tag at once
 
 #### Scenario: Read-only until opened
-- **WHEN** the panel describes an image
-- **THEN** its tags are shown as badges and no text field is drawn until the edit action is used
+- **WHEN** the panel describes an image and the user has not used the edit action
+- **THEN** the tags are shown as text and no field is on screen
 
 #### Scenario: One line per category
-- **WHEN** the user opens the editor of an image tagged `1girl`, `kantoku` (artist), `azur_lane` (copyright), `highres` (meta) and `solo`
-- **THEN** the editor reads `kantoku`, then `azur_lane`, then `highres`, then `1girl solo`, each on its own line
+- **WHEN** the user opens the editor of an image tagged `kantoku` (artist), `1girl`, `highres` (meta) and `azur_lane` (copyright)
+- **THEN** the field reads `kantoku`, `azur_lane`, `highres`, `1girl ` on four lines, in that order
 
 #### Scenario: A line does not categorise
-- **WHEN** the user moves `solo` onto the artist line and saves
-- **THEN** `solo` is still a general tag and the image's tag set is unchanged
+- **WHEN** the user moves `1girl` onto the artist line and saves
+- **THEN** `1girl` is still a general tag
 
 #### Scenario: Adding tags
-- **WHEN** the user types two tags into the editor of an image that has none and saves
-- **THEN** the image carries both tags, they are shown in the same order in the inspector and everywhere else the image's tags appear, and its last-changed time is now
+- **WHEN** the user opens the editor of an image tagged `cat`, types `dog`, and saves
+- **THEN** the image carries `cat` and `dog`, the grid tile and the inspector show both, and the tag list of the results counts `dog` one higher
 
 #### Scenario: The same tag twice
-- **WHEN** the user saves an editor whose text names one tag twice
-- **THEN** the image carries that tag once
+- **WHEN** the user saves `cat cat dog`
+- **THEN** the image carries `cat` and `dog`
+
+#### Scenario: Typed in capitals
+- **WHEN** the user saves `Cat DOG`
+- **THEN** the image carries `cat` and `dog`, and the editor reopens reading `cat dog `
 
 #### Scenario: Clearing every tag
 - **WHEN** the user empties the editor and saves
 - **THEN** the image carries no tags and is still in the library
 
 #### Scenario: Editing from the full-size viewer
-- **WHEN** the inspector is shown beside the full-size image and its tags are edited there
-- **THEN** the image is changed exactly as it would be from the grid, and the same editor is used
+- **WHEN** the user opens the inspector inside the full-size view, edits the tags and saves
+- **THEN** the same result as from the grid's inspector
 
 #### Scenario: An edit that names no image
-- **WHEN** an edit is submitted for an image that is no longer in the library
-- **THEN** the edit is refused with a reason and nothing else in the library changes
+- **WHEN** the panel describes no image
+- **THEN** no tag editor is on screen
 
 ### Requirement: A rating written as a tag sets the rating
 A tag of the form `rating:g`, `rating:s`, `rating:q` or `rating:e` SHALL set the image's
