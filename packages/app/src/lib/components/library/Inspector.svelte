@@ -535,7 +535,10 @@
   $effect(() => {
     const names = vocabulary.pinned
     const collectionIds = collections.pinned.map((collection) => collection.id)
-    const pinnedKey = `${names.join('\n')}\u0000${collectionIds.join('\n')}`
+    // Sorted: the counts depend on which names are pinned, not on their
+    // order, and a move between groups reorders `pinned` without changing
+    // the set — keyed on the order, every move refetched and blanked the chips.
+    const pinnedKey = `${[...names].sort().join('\n')}\u0000${collectionIds.join('\n')}`
 
     if (!selection || !multi || (names.length === 0 && collectionIds.length === 0)) {
       pinnedFetch++
@@ -687,10 +690,27 @@
   carries the same tri-state for assistive tech, since a plain boolean
   cannot say "some". The menu is `TagVocabularyMenuItems` for a tag —
   unchanged: a pinned chip's tag reads `vocabulary.isPinned` true by
-  construction, so only Unpin renders, never a second Pin item to suppress —
+  construction, so Unpin and the group moves render, never a Pin item to suppress —
   or `CollectionPinMenuItem` for a collection, true by construction the same
   way.
 -->
+{#snippet pinnedTagRows(fill: (tag: string) => FillState, onactivate: (tag: string) => void)}
+  <!--
+    One `<ul>` per group, a hairline between rows from the second on
+    (`pinned-tag-groups` design D5): no label, no number — the owner wants
+    bands, not names, and the number exists only in the menu. Shared by both
+    strips so a category or group change cannot leave one placement's rows
+    out of step with the other's.
+  -->
+  {#each vocabulary.pinnedGroups as group, index (index)}
+    <ul class="flex flex-wrap gap-1 {index > 0 ? 'mt-1.5 border-t border-border pt-1.5' : ''}">
+      {#each group as tag (tag)}
+        {@render pinnedChip({ kind: 'tag', tag }, fill(tag), () => onactivate(tag))}
+      {/each}
+    </ul>
+  {/each}
+{/snippet}
+
 {#snippet pinnedChip(chip: PinnedChipItem, state: FillState, onactivate: () => void)}
   {@const Glyph = chip.kind === 'tag' ? PinIcon : BookmarkIcon}
   {@const label = chip.kind === 'tag' ? chip.tag : chip.collection.name}
@@ -764,15 +784,10 @@
     {#if vocabulary.pinned.length > 0}
       <section class="border-t border-border px-4 py-3">
         <h3 class="mb-2 text-xs font-medium text-muted-foreground">Tags</h3>
-        <ul class="flex flex-wrap gap-1">
-          {#each vocabulary.pinned as tag (tag)}
-            {@render pinnedChip(
-              { kind: 'tag', tag },
-              fillState(tag, pinnedTagCounts, selection?.count ?? 0),
-              () => void toggleSelectionTag(tag),
-            )}
-          {/each}
-        </ul>
+        {@render pinnedTagRows(
+          (tag) => fillState(tag, pinnedTagCounts, selection?.count ?? 0),
+          (tag) => void toggleSelectionTag(tag),
+        )}
         {#if pinnedCountsError}
           <p class="mt-1 text-xs text-destructive">{pinnedCountsError}</p>
         {/if}
@@ -888,15 +903,12 @@
           would fight the open draft, replacing tags the field has not saved
           yet.
         -->
-        <ul class="mt-2 flex flex-wrap gap-1">
-          {#each vocabulary.pinned as tag (tag)}
-            {@render pinnedChip(
-              { kind: 'tag', tag },
-              tags.includes(tag) ? 'all' : 'none',
-              () => togglePinned(tag),
-            )}
-          {/each}
-        </ul>
+        <div class="mt-2">
+          {@render pinnedTagRows(
+            (tag) => (tags.includes(tag) ? 'all' : 'none'),
+            (tag) => togglePinned(tag),
+          )}
+        </div>
       {/if}
 
       {#if error}

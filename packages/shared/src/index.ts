@@ -342,15 +342,33 @@ export type TagCategory = 'artist' | 'copyright' | 'character' | 'meta' | 'gener
 
 /**
  * One tag outside the `(general, unpinned)` default: its name, its category
- * and whether it is pinned — the vocabulary's own row (design D2). What
+ * and the group it is pinned into, `null` for a tag that is not pinned — the
+ * vocabulary's own row (`tag-vocabulary`/`pinned-tag-groups` design D2). What
  * `tagVocabulary` answers with, what `library.json`'s `tags` key lists, and
- * what a rebuild restores onto the row verbatim.
+ * what a rebuild restores onto the row verbatim. Groups are numbered from 1
+ * and have no names; the store derives display order from `pinnedGroup`
+ * (`vocabulary.svelte.ts`'s `pinnedGroups`), never this array's own order.
  */
 export interface TagEntry {
   name: string
   category: TagCategory
-  pinned: boolean
+  pinnedGroup: number | null
 }
+
+/**
+ * Where a pin operation places a tag (`pinned-tag-groups` design D3): unpin
+ * it, move it into an existing group (a number past the last existing group
+ * becomes a new last group), or insert a new, empty group at a position —
+ * every tag in a group at or after it shifts up by one — and place the tag
+ * there. What `setTagPinnedGroup`'s `target` argument sends: `'unpin'` for
+ * `PinTarget::Unpin`, `{ group }` for `PinTarget::Group`, `{ newGroupAt }`
+ * for `PinTarget::NewGroupAt` — Rust's default (externally tagged) enum
+ * representation, so no wrapper key.
+ */
+export type PinTarget
+  = | 'unpin'
+    | { group: number }
+    | { newGroupAt: number }
 
 /**
  * One edit's every part (`stamps` design D1, D2): parsed from a stamp's text

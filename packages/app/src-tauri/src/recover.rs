@@ -130,6 +130,13 @@ pub fn rebuild(
             // them.
             if let Some(vocabulary) = &file.tags {
                 insert_vocabulary(&tx, vocabulary)?;
+                // `library.json` restores groups exactly as written, and the
+                // merge rule above can empty one — `Tagme` group 2, `tagme`
+                // group 1 and `x` group 3 canonicalise and merge onto groups
+                // {1, 3}, skipping 2. Densifying here, inside the same
+                // transaction, is what keeps a rebuild from ever handing the
+                // menu an empty group (`pinned-tag-groups` design D3).
+                tags::compact_groups(&tx)?;
             }
             // The stamps, restored the same way and for the same reason
             // (`stamps` design D3): a stamp names no tag or image row, so it
@@ -225,42 +232,58 @@ fn insert_collections(conn: &Connection, collections: &[Collection]) -> Result<(
 }
 
 /// The vocabulary's exceptions, restored onto the rows the sidecar pass
-/// already created (`tag-vocabulary` design D2): `ON CONFLICT` upserts a
-/// carrying tag's category and pin onto its existing row, and creates a
-/// carrier-less one fresh, under its own category with no image tagging it —
-/// the spec's "The vocabulary comes back" scenario. `entry.name` is
-/// canonicalised (`tags::canonical`, `lowercase-tags` design D1): a
-/// `library.json` written before that change may still name a tag `Tagme`,
-/// and the row it has to upsert onto is the lowercase one the sidecar pass
-/// already created through `tags::link_tag`.
+/// already created (`tag-vocabulary`/`pinned-tag-groups` design D2):
+/// `ON CONFLICT` upserts a carrying tag's category and pinned group onto its
+/// existing row, and creates a carrier-less one fresh, under its own
+/// category with no image tagging it — the spec's "The vocabulary comes
+/// back" scenario. `entry.name` is canonicalised (`tags::canonical`,
+/// `lowercase-tags` design D1): a `library.json` written before that change
+/// may still name a tag `Tagme`, and the row it has to upsert onto is the
+/// lowercase one the sidecar pass already created through `tags::link_tag`.
 ///
 /// A pre-v9 `library.json` can list two entries that canonicalise to the same
 /// name — `Tagme` (artist) and `tagme` (meta, pinned) both restoring onto one
 /// row — and a plain `ON CONFLICT DO UPDATE` would leave whichever entry the
-/// loop reaches last, silently dropping the other's category or pin.
+/// loop reaches last, silently dropping the other's category or group.
 ///
 /// Each upsert alone follows `merge_case_duplicates`'s (`db.rs`) rule for a
 /// single row: a general `excluded.category` never overwrites a non-general
-/// one, and `pinned` only ever turns on, never off. That rule alone still
-/// lets list order decide *which* non-general category wins when two
-/// entries disagree — `db.rs`'s migration breaks that tie by id order because
-/// a DB row has an id; a `library.json` list has none, so entries are
-/// stable-sorted here so that an entry already spelled canonically (`tagme`,
-/// not `Tagme`) — the migration's own first tie-break, "the row already
-/// spelled canonically, if one exists" — is applied last among the entries
-/// that canonicalise to its name, and so its category (if non-general) always
-/// wins regardless of the order `library.json` lists the two spellings in.
+/// one, and the group is the lower non-zero of the two — `0` (unpinned)
+/// never wins over an actual group, and between two actual groups the lower
+/// number does. Picking the lower rather than the later-seen entry is what
+/// keeps the result independent of list order — the two tests below restore
+/// the same pair of entries in both orders and require the same group —
+/// which a "last write wins" rule could not promise. `compact_groups`, run
+/// once the whole vocabulary is in, is what turns "some non-zero group" back
+/// into the dense numbering the menu expects. That
+/// rule alone still lets list order decide *which* non-general category wins
+/// when two entries disagree — `db.rs`'s migration breaks that tie by id
+/// order because a DB row has an id; a `library.json` list has none, so
+/// entries are stable-sorted here so that an entry already spelled
+/// canonically (`tagme`, not `Tagme`) — the migration's own first tie-break,
+/// "the row already spelled canonically, if one exists" — is applied last
+/// among the entries that canonicalise to its name, and so its category (if
+/// non-general) always wins regardless of the order `library.json` lists the
+/// two spellings in.
 fn insert_vocabulary(conn: &Connection, entries: &[TagEntry]) -> Result<()> {
     let mut ordered: Vec<&TagEntry> = entries.iter().collect();
     ordered.sort_by_key(|entry| entry.name == tags::canonical(&entry.name));
     for entry in ordered {
         conn.execute(
-            "INSERT INTO tags (name, category, pinned) VALUES (?1, ?2, ?3)
+            "INSERT INTO tags (name, category, pinned_group) VALUES (?1, ?2, ?3)
              ON CONFLICT (name) DO UPDATE SET
                  category = CASE WHEN excluded.category = 'general' THEN tags.category
                                   ELSE excluded.category END,
-                 pinned = MAX(tags.pinned, excluded.pinned)",
-            params![tags::canonical(&entry.name), entry.category, entry.pinned],
+                 pinned_group = CASE
+                     WHEN tags.pinned_group = 0 THEN excluded.pinned_group
+                     WHEN excluded.pinned_group = 0 THEN tags.pinned_group
+                     ELSE MIN(tags.pinned_group, excluded.pinned_group)
+                 END",
+            params![
+                tags::canonical(&entry.name),
+                entry.category,
+                entry.pinned_group.unwrap_or(0),
+            ],
         )?;
     }
     Ok(())
@@ -588,7 +611,8 @@ mod tests {
     use crate::ingest::{IngestInput, store_image};
     use crate::library::Library;
     use crate::model::{
-        ImageSource, ParsedTagSearch, PostRef, RuleInput, SearchRequest, SearchView, TagCategory,
+        ImageSource, ParsedTagSearch, PinTarget, PostRef, RuleInput, SearchRequest, SearchView,
+        TagCategory,
     };
     use crate::query;
 
@@ -805,7 +829,7 @@ mod tests {
         let (_dir, library) = library();
         store(&library, "a", &[], None);
         crate::tags::update_tags(&library, "a", &strs(&["artist:kantoku", "tagme"])).unwrap();
-        crate::tags::set_pinned(&library, "tagme", true).unwrap();
+        crate::tags::place_pinned(&library, "tagme", PinTarget::Group(1)).unwrap();
         store(&library, "b", &[], None);
         crate::tags::update_tags(&library, "b", &strs(&["copyright:azur_lane"])).unwrap();
         crate::tags::update_tags(&library, "b", &[]).unwrap();
@@ -816,17 +840,11 @@ mod tests {
 
         assert!(report.failures.is_empty(), "{:?}", report.failures);
         let rebuilt = Library::open_existing(paths.root.as_path()).unwrap();
-        assert_eq!(
-            tag_row(&rebuilt.conn, "kantoku"),
-            ("artist".to_string(), false)
-        );
-        assert_eq!(
-            tag_row(&rebuilt.conn, "tagme"),
-            ("general".to_string(), true)
-        );
+        assert_eq!(tag_row(&rebuilt.conn, "kantoku"), ("artist".to_string(), 0));
+        assert_eq!(tag_row(&rebuilt.conn, "tagme"), ("general".to_string(), 1));
         assert_eq!(
             tag_row(&rebuilt.conn, "azur_lane"),
-            ("copyright".to_string(), false)
+            ("copyright".to_string(), 0)
         );
         let suggested: Vec<String> = crate::tags::suggestions(&rebuilt.conn, "azur", 8)
             .unwrap()
@@ -834,6 +852,95 @@ mod tests {
             .map(|tag| tag.name)
             .collect();
         assert_eq!(suggested, vec!["azur_lane".to_string()]);
+    }
+
+    /// Spec `tag-vocabulary`, "Groups survive a rebuild": a tag pinned into a
+    /// group past 1 comes back in that same group, not folded down to 1.
+    #[test]
+    fn a_rebuild_restores_pinned_groups() {
+        let (_dir, library) = library();
+        store(&library, "a", &["1girl", "sketch"], None);
+        crate::tags::place_pinned(&library, "1girl", PinTarget::Group(1)).unwrap();
+        crate::tags::place_pinned(&library, "sketch", PinTarget::NewGroupAt(2)).unwrap();
+        let paths = library.paths.clone();
+        drop(library);
+
+        let report = rebuild(&paths, &mut |_, _| {}).unwrap();
+
+        assert!(report.failures.is_empty(), "{:?}", report.failures);
+        let rebuilt = Library::open_existing(paths.root.as_path()).unwrap();
+        assert_eq!(tag_row(&rebuilt.conn, "1girl"), ("general".to_string(), 1));
+        assert_eq!(
+            tag_row(&rebuilt.conn, "sketch"),
+            ("general".to_string(), 2),
+            "sketch comes back in group 2, not folded down to 1"
+        );
+    }
+
+    /// Review finding on `aa38dda`: `library.json` restores groups exactly
+    /// as written, and `insert_vocabulary`'s "lowest non-zero group wins"
+    /// merge can empty one on its own — `Tagme` (group 2) and `tagme`
+    /// (group 1) canonicalise onto one row in group 1, leaving `x`'s group 3
+    /// the only other group, so the file's three groups restore as two:
+    /// {1, 3}. Without compacting, the menu would show a numbered gap; the
+    /// rebuild densifies it to {1, 2} instead (`pinned-tag-groups` design
+    /// D3).
+    #[test]
+    fn a_rebuild_compacts_the_groups_a_merge_left_with_a_gap() {
+        let (_dir, library) = library();
+        sidecar::write_library(&library.paths, &library.conn).unwrap();
+        let file = sidecar::library_path(&library.paths);
+        let mut json: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&file).unwrap()).unwrap();
+        json.as_object_mut().unwrap().insert(
+            "tags".to_string(),
+            serde_json::json!([
+                { "name": "Tagme", "category": "general", "pinnedGroup": 2 },
+                { "name": "tagme", "category": "general", "pinnedGroup": 1 },
+                { "name": "x", "category": "general", "pinnedGroup": 3 },
+            ]),
+        );
+        std::fs::write(&file, serde_json::to_vec_pretty(&json).unwrap()).unwrap();
+        let paths = library.paths.clone();
+        drop(library);
+
+        let report = rebuild(&paths, &mut |_, _| {}).unwrap();
+
+        assert!(report.failures.is_empty(), "{:?}", report.failures);
+        let rebuilt = Library::open_existing(paths.root.as_path()).unwrap();
+        assert_eq!(tag_row(&rebuilt.conn, "tagme"), ("general".to_string(), 1));
+        assert_eq!(
+            tag_row(&rebuilt.conn, "x"),
+            ("general".to_string(), 2),
+            "group 3 compacts down to 2 once group 2 is gone"
+        );
+    }
+
+    /// Spec `tag-vocabulary`, "An old describing file": a `library.json`
+    /// written before groups existed names a tag `"pinned": true` with no
+    /// `pinnedGroup` key — `TagEntry`'s dual-key `Deserialize` (design D2)
+    /// reads that as group 1, and the rebuild restores it there.
+    #[test]
+    fn an_old_library_file_restores_pins_into_group_one() {
+        let (_dir, library) = library();
+        store(&library, "a", &["tagme"], None);
+        crate::tags::place_pinned(&library, "tagme", PinTarget::Group(1)).unwrap();
+        let file = sidecar::library_path(&library.paths);
+        let mut json: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&file).unwrap()).unwrap();
+        json.as_object_mut().unwrap().insert(
+            "tags".to_string(),
+            serde_json::json!([{ "name": "tagme", "category": "general", "pinned": true }]),
+        );
+        std::fs::write(&file, serde_json::to_vec_pretty(&json).unwrap()).unwrap();
+        let paths = library.paths.clone();
+        drop(library);
+
+        let report = rebuild(&paths, &mut |_, _| {}).unwrap();
+
+        assert!(report.failures.is_empty(), "{:?}", report.failures);
+        let rebuilt = Library::open_existing(paths.root.as_path()).unwrap();
+        assert_eq!(tag_row(&rebuilt.conn, "tagme"), ("general".to_string(), 1));
     }
 
     /// `stamps` task 1.2, spec "Stamps come back": two stamps survive a
@@ -916,13 +1023,13 @@ mod tests {
         // nothing to hand-edit yet, so this seeds the file the way
         // `a_general_prefixed_save_does_not_rewrite_library_json_but_a_
         // categorised_one_does` (`tags.rs`) does for the same reason.
-        crate::tags::set_pinned(&library, "tagme", true).unwrap();
+        crate::tags::place_pinned(&library, "tagme", PinTarget::Group(1)).unwrap();
         let file = sidecar::library_path(&library.paths);
         let mut json: serde_json::Value =
             serde_json::from_slice(&std::fs::read(&file).unwrap()).unwrap();
         json.as_object_mut().unwrap().insert(
             "tags".to_string(),
-            serde_json::json!([{ "name": "Tagme", "category": "artist", "pinned": false }]),
+            serde_json::json!([{ "name": "Tagme", "category": "artist" }]),
         );
         std::fs::write(&file, serde_json::to_vec_pretty(&json).unwrap()).unwrap();
         let paths = library.paths.clone();
@@ -932,38 +1039,36 @@ mod tests {
 
         assert!(report.failures.is_empty(), "{:?}", report.failures);
         let rebuilt = Library::open_existing(paths.root.as_path()).unwrap();
-        assert_eq!(
-            tag_row(&rebuilt.conn, "tagme"),
-            ("artist".to_string(), false)
-        );
+        assert_eq!(tag_row(&rebuilt.conn, "tagme"), ("artist".to_string(), 0));
     }
 
     /// Review finding on `dbcb7e3`: a pre-v9 `library.json` can list `Tagme`
-    /// (artist) and `tagme` (meta, pinned) as two separate entries, both
-    /// canonicalising onto one row. `insert_vocabulary` follows
+    /// (artist) and `tagme` (meta, pinned group 2) as two separate entries,
+    /// both canonicalising onto one row. `insert_vocabulary` follows
     /// `merge_case_duplicates`'s rule one entry at a time — a general
-    /// category never overwrites a non-general one, and pinned only turns
-    /// on — so the row ends up meta and pinned whichever entry lands last.
+    /// category never overwrites a non-general one, and the lowest non-zero
+    /// group wins — so the row ends up meta and in group 2 whichever entry
+    /// lands last (`pinned-tag-groups` design D2).
     #[test]
-    fn two_vocabulary_entries_that_canonicalise_together_keep_the_non_general_category_and_the_pin()
-    {
+    fn two_vocabulary_entries_that_canonicalise_together_keep_the_non_general_category_and_the_lowest_non_zero_group()
+     {
         let (_dir, library) = library();
         let entries = vec![
             TagEntry {
                 name: "Tagme".to_string(),
                 category: TagCategory::Artist,
-                pinned: false,
+                pinned_group: None,
             },
             TagEntry {
                 name: "tagme".to_string(),
                 category: TagCategory::Meta,
-                pinned: true,
+                pinned_group: Some(2),
             },
         ];
 
         insert_vocabulary(&library.conn, &entries).unwrap();
 
-        assert_eq!(tag_row(&library.conn, "tagme"), ("meta".to_string(), true));
+        assert_eq!(tag_row(&library.conn, "tagme"), ("meta".to_string(), 2));
     }
 
     /// Same as above, entries in the other order: the result must not depend
@@ -975,23 +1080,47 @@ mod tests {
             TagEntry {
                 name: "tagme".to_string(),
                 category: TagCategory::Meta,
-                pinned: true,
+                pinned_group: Some(2),
             },
             TagEntry {
                 name: "Tagme".to_string(),
                 category: TagCategory::Artist,
-                pinned: false,
+                pinned_group: None,
             },
         ];
 
         insert_vocabulary(&library.conn, &entries).unwrap();
 
-        assert_eq!(tag_row(&library.conn, "tagme"), ("meta".to_string(), true));
+        assert_eq!(tag_row(&library.conn, "tagme"), ("meta".to_string(), 2));
     }
 
-    fn tag_row(conn: &Connection, name: &str) -> (String, bool) {
+    /// `insert_vocabulary`'s merge rule when both entries name an actual
+    /// group (`pinned-tag-groups` design D2): the lowest non-zero group
+    /// wins, not the last one written.
+    #[test]
+    fn two_vocabulary_entries_both_grouped_keep_the_lowest_group() {
+        let (_dir, library) = library();
+        let entries = vec![
+            TagEntry {
+                name: "Tagme".to_string(),
+                category: TagCategory::General,
+                pinned_group: Some(3),
+            },
+            TagEntry {
+                name: "tagme".to_string(),
+                category: TagCategory::General,
+                pinned_group: Some(1),
+            },
+        ];
+
+        insert_vocabulary(&library.conn, &entries).unwrap();
+
+        assert_eq!(tag_row(&library.conn, "tagme"), ("general".to_string(), 1));
+    }
+
+    fn tag_row(conn: &Connection, name: &str) -> (String, u32) {
         conn.query_row(
-            "SELECT category, pinned FROM tags WHERE name = ?1",
+            "SELECT category, pinned_group FROM tags WHERE name = ?1",
             [name],
             |row| Ok((row.get(0)?, row.get(1)?)),
         )

@@ -2621,7 +2621,8 @@ mod tests {
     fn an_or_group_member_that_exists_but_has_no_carrier_in_the_result_is_at_zero() {
         let fixture = fixture();
         crate::tags::link_tag(&fixture.library.conn, "cat-s", "empty").unwrap();
-        crate::tags::set_pinned(&fixture.library, "empty", true).unwrap();
+        crate::tags::place_pinned(&fixture.library, "empty", crate::model::PinTarget::Group(1))
+            .unwrap();
         crate::tags::update_tags(
             &fixture.library,
             "cat-s",

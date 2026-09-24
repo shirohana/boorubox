@@ -21,10 +21,11 @@ use crate::model::{
     AppSettings, BooruConnectionTest, BooruSite, BooruUploadForm, BooruUploadOutcome, BundlePlan,
     CLICK_ZOOM_CEILING_MAX, CLICK_ZOOM_CEILING_MIN, Collection, CollectionCount, DeleteReport,
     ExportProgress, ExportReport, FactsEdit, GRID_TILE_MAX, GRID_TILE_MIN, ImageCounts,
-    ImageRecord, ImportReport, LibraryStatus, ListenerStatus, Note, PostRef, RebuildProgress,
-    RebuildReport, RecentLibrary, Rule, RuleInput, RuleListEntry, RulesImportReport,
-    RulesRunReport, SearchRequest, SearchResult, SidecarsProgress, Stamp, StampInput, TagCategory,
-    TagCount, TagCounts, TagEditSpec, TagEntry, Theme, ThumbnailRef, ThumbsProgress, ThumbsReport,
+    ImageRecord, ImportReport, LibraryStatus, ListenerStatus, Note, PinTarget, PostRef,
+    RebuildProgress, RebuildReport, RecentLibrary, Rule, RuleInput, RuleListEntry,
+    RulesImportReport, RulesRunReport, SearchRequest, SearchResult, SidecarsProgress, Stamp,
+    StampInput, TagCategory, TagCount, TagCounts, TagEditSpec, TagEntry, Theme, ThumbnailRef,
+    ThumbsProgress, ThumbsReport,
 };
 use crate::settings::Settings;
 use crate::{
@@ -646,16 +647,16 @@ pub async fn set_tag_category(
     .await
 }
 
-/// Pin or unpin a tag (`tag-vocabulary` design D8); answers with the
-/// vocabulary as it now stands.
+/// Pin, unpin or move a tag between pinned groups (`pinned-tag-groups`
+/// design D3); answers with the vocabulary as it now stands.
 #[tauri::command]
-pub async fn set_tag_pinned(
+pub async fn set_tag_pinned_group(
     name: String,
-    pinned: bool,
+    target: PinTarget,
     state: State<'_, AppState>,
 ) -> Result<Vec<TagEntry>> {
     with_library_off_main_thread(&state.library, move |library| {
-        tags::set_pinned(library, &name, pinned)
+        tags::place_pinned(library, &name, target)
     })
     .await
 }
@@ -874,7 +875,7 @@ pub async fn collection_remove(
 
 /// Pin or unpin collection `id`, without touching any image
 /// (`pinned-collections` design D3); answers with the collections as they now
-/// stand, the same shape [`set_tag_pinned`] answers for a tag.
+/// stand, the same shape [`set_tag_pinned_group`] answers for a tag.
 #[tauri::command]
 pub async fn set_collection_pinned(
     id: String,
@@ -2434,7 +2435,12 @@ mod tests {
                 app.state(),
             ))
             .unwrap_err(),
-            now(set_tag_pinned("a".to_string(), true, app.state())).unwrap_err(),
+            now(set_tag_pinned_group(
+                "a".to_string(),
+                PinTarget::Group(1),
+                app.state(),
+            ))
+            .unwrap_err(),
         ];
 
         for error in errors {
@@ -3097,7 +3103,7 @@ mod tests {
     }
 
     #[test]
-    fn set_tag_category_and_set_tag_pinned_reach_the_open_library_through_the_commands() {
+    fn set_tag_category_and_set_tag_pinned_group_reach_the_open_library_through_the_commands() {
         let (_library, app) = app_with_library();
         import(&app, &folder_of_images(1));
         let ids = ids_in_library(&app);
@@ -3111,12 +3117,22 @@ mod tests {
         .unwrap();
         assert_eq!(entries[0].category, TagCategory::Copyright);
 
-        let entries = now(set_tag_pinned("azur_lane".to_string(), true, app.state())).unwrap();
-        assert!(entries[0].pinned);
+        let entries = now(set_tag_pinned_group(
+            "azur_lane".to_string(),
+            PinTarget::Group(1),
+            app.state(),
+        ))
+        .unwrap();
+        assert_eq!(entries[0].pinned_group, Some(1));
 
-        let entries = now(set_tag_pinned("azur_lane".to_string(), false, app.state())).unwrap();
+        let entries = now(set_tag_pinned_group(
+            "azur_lane".to_string(),
+            PinTarget::Unpin,
+            app.state(),
+        ))
+        .unwrap();
         assert_eq!(entries[0].category, TagCategory::Copyright);
-        assert!(!entries[0].pinned);
+        assert_eq!(entries[0].pinned_group, None);
     }
 
     #[test]

@@ -342,6 +342,20 @@ const SCHEMA_V10: &str = r"
 ALTER TABLE collections ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0;
 ";
 
+/// Schema v11 (`pinned-tag-groups` design D1): the pinned flag becomes a
+/// group number — `0` unpinned, `n >= 1` group `n`. A rename rather than a
+/// second column, because one column cannot disagree with itself about
+/// whether a tag is pinned. Every row already pinned reads `1` after the
+/// rename, with no data patch: the owner's "at begin I only have one default
+/// group #1". The v9 merge migration's own SQL still names `pinned` and runs
+/// before this one on any database old enough to need it, so it is
+/// untouched; every other live query on the column (`tags.rs`'s
+/// `vocabulary`, the `LEFT JOIN` default rule, `collect_orphans`,
+/// `recover::insert_vocabulary`) reads `pinned_group`.
+const SCHEMA_V11: &str = r"
+ALTER TABLE tags RENAME COLUMN pinned TO pinned_group;
+";
+
 /// One schema version's step: plain SQL for every version but the one
 /// `merge_case_duplicates` is (its own doc comment says why that one has to be
 /// Rust).
@@ -363,6 +377,7 @@ const MIGRATIONS: &[Migration] = &[
     Migration::Sql(SCHEMA_V8),
     Migration::Rust(merge_case_duplicates),
     Migration::Sql(SCHEMA_V10),
+    Migration::Sql(SCHEMA_V11),
 ];
 
 /// Open (creating if needed) the library database with the pragmas D2 fixes,
@@ -734,16 +749,16 @@ mod tests {
             .unwrap();
         assert_eq!(version, MIGRATIONS.len() as i64);
         assert!(column_names(&conn, "tags").contains(&"category".to_string()));
-        assert!(column_names(&conn, "tags").contains(&"pinned".to_string()));
-        let (category, pinned): (String, bool) = conn
+        assert!(column_names(&conn, "tags").contains(&"pinned_group".to_string()));
+        let (category, pinned_group): (String, i64) = conn
             .query_row(
-                "SELECT category, pinned FROM tags WHERE name = 'cat'",
+                "SELECT category, pinned_group FROM tags WHERE name = 'cat'",
                 [],
                 |row| Ok((row.get(0)?, row.get(1)?)),
             )
             .unwrap();
         assert_eq!(category, "general");
-        assert!(!pinned);
+        assert_eq!(pinned_group, 0);
         assert_eq!(fts_matches(&conn, "kyoto"), vec!["a".to_string()]);
     }
 
@@ -837,6 +852,67 @@ mod tests {
             pinned.iter().all(|&is_pinned| !is_pinned),
             "an upgraded database's existing collections all read back unpinned"
         );
+        assert_eq!(fts_matches(&conn, "kyoto"), vec!["a".to_string()]);
+    }
+
+    /// A library written after `pinned-collections` shipped (v10, `pinned`
+    /// still a flag on `tags`) has to reach v11 with its rows intact and
+    /// every already pinned tag reading `pinned_group = 1`, every unpinned
+    /// tag `0` (`pinned-tag-groups` task 1.1) — the rename gives every
+    /// existing pin the one group that already existed before groups did.
+    #[test]
+    fn a_v10_library_migrates_reading_every_pinned_tag_in_group_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("library.sqlite");
+
+        let conn = Connection::open(&path).unwrap();
+        conn.execute_batch(SCHEMA_V1).unwrap();
+        conn.execute_batch(SCHEMA_V2).unwrap();
+        conn.execute_batch(SCHEMA_V3).unwrap();
+        conn.execute_batch(SCHEMA_V4).unwrap();
+        conn.execute_batch(SCHEMA_V5).unwrap();
+        conn.execute_batch(SCHEMA_V6).unwrap();
+        conn.execute_batch(SCHEMA_V7).unwrap();
+        conn.execute_batch(SCHEMA_V8).unwrap();
+        conn.execute_batch(SCHEMA_V10).unwrap();
+        conn.pragma_update(None, "user_version", 10i64).unwrap();
+        insert_bare_image(&conn, "a", "sunset over kyoto");
+        conn.execute(
+            "INSERT INTO tags (name, category, pinned) VALUES ('cat', 'general', 1)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO tags (name, category, pinned) VALUES ('dog', 'general', 0)",
+            [],
+        )
+        .unwrap();
+        drop(conn);
+
+        let conn = open(&path).unwrap();
+
+        let version: i64 = conn
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, MIGRATIONS.len() as i64);
+        assert!(column_names(&conn, "tags").contains(&"pinned_group".to_string()));
+        assert!(!column_names(&conn, "tags").contains(&"pinned".to_string()));
+        let cat_group: i64 = conn
+            .query_row(
+                "SELECT pinned_group FROM tags WHERE name = 'cat'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let dog_group: i64 = conn
+            .query_row(
+                "SELECT pinned_group FROM tags WHERE name = 'dog'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(cat_group, 1, "an already pinned tag reads group 1");
+        assert_eq!(dog_group, 0, "an unpinned tag reads 0");
         assert_eq!(fts_matches(&conn, "kyoto"), vec!["a".to_string()]);
     }
 
@@ -1070,9 +1146,9 @@ mod tests {
             .unwrap();
         assert_eq!(version, MIGRATIONS.len() as i64);
 
-        let rows: Vec<(String, String, bool)> = {
+        let rows: Vec<(String, String, i64)> = {
             let mut stmt = conn
-                .prepare("SELECT name, category, pinned FROM tags")
+                .prepare("SELECT name, category, pinned_group FROM tags")
                 .unwrap();
             stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
                 .unwrap()
@@ -1081,8 +1157,8 @@ mod tests {
         };
         assert_eq!(
             rows,
-            vec![("tagme".to_string(), "meta".to_string(), true)],
-            "the three rows merge into one canonical, meta, pinned row"
+            vec![("tagme".to_string(), "meta".to_string(), 1)],
+            "the three rows merge into one canonical, meta, pinned (group 1) row"
         );
 
         for id in ["a", "b", "c", "d"] {
@@ -1255,16 +1331,16 @@ mod tests {
             .query_row("PRAGMA user_version", [], |row| row.get(0))
             .unwrap();
         assert_eq!(version, MIGRATIONS.len() as i64);
-        let (name, category, pinned): (String, String, bool) = conn
+        let (name, category, pinned_group): (String, String, i64) = conn
             .query_row(
-                "SELECT name, category, pinned FROM tags WHERE id = ?1",
+                "SELECT name, category, pinned_group FROM tags WHERE id = ?1",
                 [cat_id],
                 |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
             )
             .unwrap();
         assert_eq!(name, "cat");
         assert_eq!(category, "artist");
-        assert!(pinned);
+        assert_eq!(pinned_group, 1);
         let count: i64 = conn
             .query_row("SELECT COUNT(*) FROM tags", [], |row| row.get(0))
             .unwrap();

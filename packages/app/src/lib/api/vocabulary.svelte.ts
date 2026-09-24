@@ -11,14 +11,14 @@
 // `$derived` rebuilds it only when a refresh or a setter replaces `entries`
 // wholesale, never once per `categoryOf` call from a panel full of badges.
 //
-// No `setCategory`/`setPinned` write of its own kind to read back: each
-// setter's command already answers the whole vocabulary, so the setters
-// below replace `entries` with that answer directly, the cheapest way to
-// keep the one list in step.
+// No `setCategory`/`place` write of its own kind to read back: each setter's
+// command already answers the whole vocabulary, so the setters below replace
+// `entries` with that answer directly, the cheapest way to keep the one list
+// in step.
 
-import type { TagCategory, TagEntry } from '@boorubox/shared'
+import type { PinTarget, TagCategory, TagEntry } from '@boorubox/shared'
 import { groupByCategory } from '$lib/domain/tag-categories'
-import { setTagCategory, setTagPinned, tagVocabulary } from './commands'
+import { setTagCategory, setTagPinnedGroup, tagVocabulary } from './commands'
 import { errorText } from './errors'
 
 export class Vocabulary {
@@ -46,24 +46,48 @@ export class Vocabulary {
   categoryOf = (name: string): TagCategory =>
     this.#byName.get(name)?.category ?? 'general'
 
-  isPinned = (name: string): boolean => this.#byName.get(name)?.pinned ?? false
+  /** `null` for a tag outside the exceptions list, which is never pinned. */
+  groupOf = (name: string): number | null => this.#byName.get(name)?.pinnedGroup ?? null
+
+  isPinned = (name: string): boolean => this.groupOf(name) !== null
 
   /**
-   * Every pinned tag, by name, in the sidebar's own order — `CATEGORY_ORDER`
-   * first, alphabetical within a category (`pinned-collections` design D7).
-   * Made here, once, because the inspector's two placements both draw the
-   * pinned strip from this list rather than sorting their own: a category
-   * changing cannot leave one placement's chip row out of step with the
-   * other's. `groupByCategory` is the sidebar's own grouping
-   * (`domain/tag-categories.ts`), not a second copy of it.
+   * Every pinned tag's group, in group order, each group in the sidebar's
+   * own order — `CATEGORY_ORDER` first, alphabetical within a category
+   * (`pinned-collections` design D7, `pinned-tag-groups` design D4). Made
+   * here, once, because the inspector's two placements both draw the pinned
+   * rows from this list rather than sorting their own: a category changing
+   * cannot leave one placement's chip row out of step with the other's.
+   * `groupByCategory` is the sidebar's own grouping (`domain/tag-categories.ts`),
+   * not a second copy of it. Group numbers come from the entries themselves,
+   * not a counted range, so a group Rust has already compacted is never
+   * second-guessed here.
    */
-  pinned = $derived(
-    groupByCategory(
-      this.entries.filter((entry) => entry.pinned),
-      (entry) => entry.name,
-      this.categoryOf,
-    ).flatMap((group) => group.items.map((entry) => entry.name)),
-  )
+  pinnedGroups: string[][] = $derived.by(() => {
+    const pinnedEntries = this.entries.filter((entry) => entry.pinnedGroup !== null)
+    const groupNumbers = pinnedEntries
+      .map((entry) => entry.pinnedGroup!)
+      .filter((groupNumber, index, all) => all.indexOf(groupNumber) === index)
+      .sort((a, b) => a - b)
+    return groupNumbers.map((groupNumber) =>
+      groupByCategory(
+        pinnedEntries.filter((entry) => entry.pinnedGroup === groupNumber),
+        (entry) => entry.name,
+        this.categoryOf,
+      ).flatMap((group) => group.items.map((entry) => entry.name)),
+    )
+  })
+
+  /** How many groups exist — the menu's "Move to #x" range (design D4). */
+  groupCount = $derived(this.pinnedGroups.length)
+
+  /**
+   * Every pinned tag, by name, groups flattened in order — `pinned-tag-groups`
+   * design D4's flattening of {@link pinnedGroups}, kept so
+   * `selectionTagCounts` and any other flat reader cannot disagree with the
+   * grouped view about which tags are pinned.
+   */
+  pinned = $derived(this.pinnedGroups.flat())
 
   /**
    * Re-reads the exceptions: on a library switch and after every tag write
@@ -89,9 +113,10 @@ export class Vocabulary {
     }
   }
 
-  async setPinned(name: string, pinned: boolean): Promise<void> {
+  /** A refusal is reported the same way `refresh()` reports one: `entries` untouched. */
+  async place(name: string, target: PinTarget): Promise<void> {
     try {
-      this.entries = await setTagPinned(name, pinned)
+      this.entries = await setTagPinnedGroup(name, target)
       this.error = null
     } catch (cause) {
       this.error = errorText(cause)

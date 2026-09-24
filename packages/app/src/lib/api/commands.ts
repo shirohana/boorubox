@@ -20,6 +20,7 @@ import type {
   LibraryStatus,
   ListenerStatus,
   Note,
+  PinTarget,
   Rating,
   RebuildReport,
   RecentLibrary,
@@ -363,9 +364,12 @@ export function setTagCategory(name: string, category: TagCategory): Promise<Tag
   return invoke('set_tag_category', { name, category })
 }
 
-/** Pins or unpins `name`; same refusal, same answer shape as {@link setTagCategory}. */
-export function setTagPinned(name: string, pinned: boolean): Promise<TagEntry[]> {
-  return invoke('set_tag_pinned', { name, pinned })
+/**
+ * Places or unplaces `name` per `target` (`pinned-tag-groups` design D3); same
+ * refusal, same answer shape as {@link setTagCategory}.
+ */
+export function setTagPinnedGroup(name: string, target: PinTarget): Promise<TagEntry[]> {
+  return invoke('set_tag_pinned_group', { name, target })
 }
 
 /**

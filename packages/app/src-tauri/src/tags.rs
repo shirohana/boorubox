@@ -13,7 +13,7 @@ use crate::db;
 use crate::error::{AppError, Result};
 use crate::ingest;
 use crate::library::Library;
-use crate::model::{ImageRecord, TagCategory, TagCount, TagEditSpec, TagEntry};
+use crate::model::{ImageRecord, PinTarget, TagCategory, TagCount, TagEditSpec, TagEntry};
 use crate::query::{ID_CHUNK, placeholders, text_values};
 
 /// A tag's one true spelling (`lowercase-tags` design D1): every door onto the
@@ -474,7 +474,7 @@ pub fn collect_orphans(conn: &Connection, tag_ids: &[i64]) -> Result<()> {
         &format!(
             "DELETE FROM tags
              WHERE id IN ({})
-               AND category = 'general' AND pinned = 0
+               AND category = 'general' AND pinned_group = 0
                AND NOT EXISTS (SELECT 1 FROM image_tags WHERE image_tags.tag_id = tags.id)",
             placeholders(tag_ids.len())
         ),
@@ -729,20 +729,23 @@ fn described(category: TagCategory) -> String {
 /// Every tag outside the `(general, unpinned)` default, by name — the
 /// vocabulary's own exceptions list (`tag-vocabulary` design D2): what
 /// `library.json`'s `tags` key holds, what the `tag_vocabulary` command
-/// answers with, and what [`set_category`] and [`set_pinned`] answer with
+/// answers with, and what [`set_category`] and [`place_pinned`] answer with
 /// after their own write, so the caller redraws from one list rather than
-/// trusting its own edit landed.
+/// trusting its own edit landed. Sorted by name: group order is the store's
+/// job (`pinned-tag-groups` design D4), and every exceptions read answers
+/// in one order so a caller never has to know which one it got.
 pub fn vocabulary(conn: &Connection) -> Result<Vec<TagEntry>> {
     let mut stmt = conn.prepare(
-        "SELECT name, category, pinned FROM tags
-         WHERE category != 'general' OR pinned = 1
+        "SELECT name, category, pinned_group FROM tags
+         WHERE category != 'general' OR pinned_group > 0
          ORDER BY name",
     )?;
     let rows = stmt.query_map([], |row| {
+        let group: u32 = row.get(2)?;
         Ok(TagEntry {
             name: row.get(0)?,
             category: row.get(1)?,
-            pinned: row.get(2)?,
+            pinned_group: if group == 0 { None } else { Some(group) },
         })
     })?;
     Ok(rows.collect::<rusqlite::Result<_>>()?)
@@ -768,20 +771,82 @@ pub fn set_category(library: &Library, name: &str, category: TagCategory) -> Res
     vocabulary(&library.conn)
 }
 
-/// Pin or unpin `name`, and answer with the vocabulary as it now stands. Same
-/// refusal, and the same canonicalisation, as [`set_category`] for a name that
-/// is not a tag.
-pub fn set_pinned(library: &Library, name: &str, pinned: bool) -> Result<Vec<TagEntry>> {
+/// Move `name` per `target` (`pinned-tag-groups` design D3), and answer with
+/// the vocabulary as it now stands. Same refusal, and the same
+/// canonicalisation, as [`set_category`] for a name that is not a tag.
+///
+/// One transaction: the write and [`compact_groups`] must never disagree
+/// about what the groups are, including when the write itself is the one
+/// that empties a group (an unpin, or a move out of a group of one).
+pub fn place_pinned(library: &Library, name: &str, target: PinTarget) -> Result<Vec<TagEntry>> {
     let name = canonical(name);
-    let changed = library.conn.execute(
-        "UPDATE tags SET pinned = ?1 WHERE name = ?2",
-        params![pinned, name],
-    )?;
+    let tx = library.conn.unchecked_transaction()?;
+
+    let changed = match target {
+        PinTarget::Unpin => tx.execute(
+            "UPDATE tags SET pinned_group = 0 WHERE name = ?1",
+            params![name],
+        )?,
+        PinTarget::Group(group) => {
+            // Past the last existing group means a new last group, never a
+            // numbered gap: the max plus one is that new last group,
+            // whatever number the caller asked for.
+            let max_group: u32 = tx.query_row(
+                "SELECT COALESCE(MAX(pinned_group), 0) FROM tags",
+                [],
+                |row| row.get(0),
+            )?;
+            let group = group.clamp(1, max_group + 1);
+            tx.execute(
+                "UPDATE tags SET pinned_group = ?1 WHERE name = ?2",
+                params![group, name],
+            )?
+        }
+        PinTarget::NewGroupAt(at) => {
+            let at = at.max(1);
+            tx.execute(
+                "UPDATE tags SET pinned_group = pinned_group + 1 WHERE pinned_group >= ?1",
+                params![at],
+            )?;
+            tx.execute(
+                "UPDATE tags SET pinned_group = ?1 WHERE name = ?2",
+                params![at, name],
+            )?
+        }
+    };
     if changed == 0 {
         return Err(AppError::NotFound(format!("tag {name}")));
     }
+    compact_groups(&tx)?;
+    tx.commit()?;
+
     crate::sidecar::write_library(&library.paths, &library.conn)?;
     vocabulary(&library.conn)
+}
+
+/// Renumber every non-zero `pinned_group` densely from 1, in ascending group
+/// order (`pinned-tag-groups` design D3): no group is ever left empty,
+/// whatever operation emptied it. Called inside the same transaction as the
+/// write that might have emptied one (`place_pinned`), so the two can never
+/// disagree about what the groups are.
+pub fn compact_groups(conn: &Connection) -> rusqlite::Result<()> {
+    let groups: Vec<u32> = {
+        let mut stmt = conn.prepare(
+            "SELECT DISTINCT pinned_group FROM tags WHERE pinned_group > 0 ORDER BY pinned_group",
+        )?;
+        stmt.query_map([], |row| row.get(0))?
+            .collect::<rusqlite::Result<_>>()?
+    };
+    for (index, group) in groups.iter().enumerate() {
+        let dense = (index + 1) as u32;
+        if *group != dense {
+            conn.execute(
+                "UPDATE tags SET pinned_group = ?1 WHERE pinned_group = ?2",
+                params![dense, group],
+            )?;
+        }
+    }
+    Ok(())
 }
 
 /// Record the edit against the image, and refuse one that names no image.
@@ -942,6 +1007,20 @@ mod tests {
             .query_row("SELECT category FROM tags WHERE name = ?1", [name], |row| {
                 row.get(0)
             })
+            .unwrap()
+    }
+
+    /// The raw `pinned_group` column: `0` unpinned, `n >= 1` group `n` —
+    /// what the tests below assert `place_pinned` and `compact_groups` leave
+    /// behind, without going through `TagEntry`'s `Option<u32>`.
+    fn group_of(library: &Library, name: &str) -> u32 {
+        library
+            .conn
+            .query_row(
+                "SELECT pinned_group FROM tags WHERE name = ?1",
+                [name],
+                |row| row.get(0),
+            )
             .unwrap()
     }
 
@@ -1435,14 +1514,14 @@ mod tests {
         assert_eq!(category_of(&library, "kantoku"), TagCategory::Artist);
     }
 
-    // -- `tag-vocabulary` task 1.3: `vocabulary` / `set_category` / `set_pinned` --
+    // -- `tag-vocabulary`/`pinned-tag-groups` task 1.3: `vocabulary` / `set_category` / `place_pinned` --
 
     #[test]
     fn vocabulary_lists_every_categorised_or_pinned_tag_sorted_by_name() {
         let (_dir, library) = library();
         store(&library, "a", None, &["cat", "dog"]);
         edit(&library, "a", &["artist:zebra", "cat", "dog"]);
-        set_pinned(&library, "dog", true).unwrap();
+        place_pinned(&library, "dog", PinTarget::Group(1)).unwrap();
 
         let entries = vocabulary(&library.conn).unwrap();
 
@@ -1452,12 +1531,42 @@ mod tests {
                 TagEntry {
                     name: "dog".to_string(),
                     category: TagCategory::General,
-                    pinned: true,
+                    pinned_group: Some(1),
                 },
                 TagEntry {
                     name: "zebra".to_string(),
                     category: TagCategory::Artist,
-                    pinned: false,
+                    pinned_group: None,
+                },
+            ]
+        );
+    }
+
+    /// `pinned-tag-groups` task 1.3: the vocabulary reports a group past 1
+    /// exactly as `place_pinned` left it — nothing rounds a grouped tag back
+    /// down to "pinned".
+    #[test]
+    fn vocabulary_lists_a_grouped_tag() {
+        let (_dir, library) = library();
+        store(&library, "a", None, &["cat", "dog"]);
+        place_pinned(&library, "cat", PinTarget::Group(1)).unwrap();
+        place_pinned(&library, "dog", PinTarget::Group(1)).unwrap();
+        place_pinned(&library, "dog", PinTarget::NewGroupAt(2)).unwrap();
+
+        let entries = vocabulary(&library.conn).unwrap();
+
+        assert_eq!(
+            entries,
+            vec![
+                TagEntry {
+                    name: "cat".to_string(),
+                    category: TagCategory::General,
+                    pinned_group: Some(1),
+                },
+                TagEntry {
+                    name: "dog".to_string(),
+                    category: TagCategory::General,
+                    pinned_group: Some(2),
                 },
             ]
         );
@@ -1480,7 +1589,7 @@ mod tests {
             vec![TagEntry {
                 name: "azur_lane".to_string(),
                 category: TagCategory::Copyright,
-                pinned: false,
+                pinned_group: None,
             }]
         );
     }
@@ -1546,26 +1655,117 @@ mod tests {
     }
 
     #[test]
-    fn set_pinned_toggles_and_answers_the_vocabulary() {
+    fn pin_lands_in_group_one() {
         let (_dir, library) = library();
         store(&library, "a", None, &["tagme"]);
 
-        let entries = set_pinned(&library, "tagme", true).unwrap();
+        let entries = place_pinned(&library, "tagme", PinTarget::Group(1)).unwrap();
+
+        assert_eq!(group_of(&library, "tagme"), 1);
         assert!(
             entries
                 .iter()
-                .any(|entry| entry.name == "tagme" && entry.pinned)
+                .any(|entry| entry.name == "tagme" && entry.pinned_group == Some(1))
         );
 
-        let entries = set_pinned(&library, "tagme", false).unwrap();
+        let entries = place_pinned(&library, "tagme", PinTarget::Unpin).unwrap();
+        assert_eq!(group_of(&library, "tagme"), 0);
         assert!(entries.is_empty());
     }
 
+    /// `pinned-tag-groups` task 1.3, design D3: a tag inserted with
+    /// `NewGroupAt` shifts every group at or after it up by one, and leaves
+    /// a group before the insertion point untouched.
     #[test]
-    fn set_pinned_for_an_unknown_tag_is_refused() {
+    fn new_group_at_shifts_the_groups_after_it() {
+        let (_dir, library) = library();
+        store(&library, "img", None, &["a", "b", "c", "d"]);
+        place_pinned(&library, "a", PinTarget::Group(1)).unwrap();
+        place_pinned(&library, "b", PinTarget::NewGroupAt(2)).unwrap();
+        place_pinned(&library, "c", PinTarget::NewGroupAt(3)).unwrap();
+
+        place_pinned(&library, "d", PinTarget::NewGroupAt(2)).unwrap();
+
+        assert_eq!(
+            group_of(&library, "a"),
+            1,
+            "before the insertion, untouched"
+        );
+        assert_eq!(group_of(&library, "d"), 2, "the newly inserted group");
+        assert_eq!(group_of(&library, "b"), 3, "shifted up by one");
+        assert_eq!(group_of(&library, "c"), 4, "shifted up by one");
+    }
+
+    /// Spec `tag-vocabulary`, "A new group below": `NewGroupAt` past every
+    /// existing group is a plain new last group, nothing to shift.
+    #[test]
+    fn new_group_below_the_last_makes_a_new_last() {
+        let (_dir, library) = library();
+        store(&library, "img", None, &["1girl", "smile", "sketch"]);
+        for tag in ["1girl", "smile", "sketch"] {
+            place_pinned(&library, tag, PinTarget::Group(1)).unwrap();
+        }
+
+        place_pinned(&library, "sketch", PinTarget::NewGroupAt(2)).unwrap();
+
+        assert_eq!(group_of(&library, "1girl"), 1);
+        assert_eq!(group_of(&library, "smile"), 1);
+        assert_eq!(group_of(&library, "sketch"), 2);
+    }
+
+    /// Design D3: `Group(n)` for an `n` past the last existing group clamps
+    /// to the max plus one — a new last group — rather than the literal
+    /// number asked for, and a group the move does not empty is left alone.
+    #[test]
+    fn move_to_a_group_past_the_last_makes_a_new_last() {
+        let (_dir, library) = library();
+        store(&library, "img", None, &["1girl", "cat", "sketch"]);
+        place_pinned(&library, "1girl", PinTarget::Group(1)).unwrap();
+        place_pinned(&library, "cat", PinTarget::Group(1)).unwrap();
+        place_pinned(&library, "sketch", PinTarget::NewGroupAt(2)).unwrap();
+
+        place_pinned(&library, "1girl", PinTarget::Group(10)).unwrap();
+
+        assert_eq!(
+            group_of(&library, "cat"),
+            1,
+            "1girl's old group keeps its other tag"
+        );
+        assert_eq!(group_of(&library, "sketch"), 2);
+        assert_eq!(
+            group_of(&library, "1girl"),
+            3,
+            "clamped to a new last group, not literally 10"
+        );
+    }
+
+    /// Spec `tag-vocabulary`, "An emptied group closes up": unpinning the
+    /// only tag of the middle group of three renumbers the third down to
+    /// second, closing the gap.
+    #[test]
+    fn an_emptied_group_closes_up() {
+        let (_dir, library) = library();
+        store(&library, "img", None, &["1girl", "smile", "sketch"]);
+        place_pinned(&library, "1girl", PinTarget::Group(1)).unwrap();
+        place_pinned(&library, "smile", PinTarget::NewGroupAt(2)).unwrap();
+        place_pinned(&library, "sketch", PinTarget::NewGroupAt(3)).unwrap();
+
+        place_pinned(&library, "smile", PinTarget::Unpin).unwrap();
+
+        assert_eq!(group_of(&library, "1girl"), 1);
+        assert_eq!(group_of(&library, "smile"), 0, "unpinned");
+        assert_eq!(
+            group_of(&library, "sketch"),
+            2,
+            "the third group closes up to become the second"
+        );
+    }
+
+    #[test]
+    fn place_pinned_on_an_unknown_tag_is_refused() {
         let (_dir, library) = library();
 
-        let error = set_pinned(&library, "nobody", true).unwrap_err();
+        let error = place_pinned(&library, "nobody", PinTarget::Group(1)).unwrap_err();
 
         assert!(matches!(error, AppError::NotFound(_)), "got {error}");
     }

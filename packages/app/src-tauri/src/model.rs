@@ -177,15 +177,87 @@ impl rusqlite::types::FromSql for TagCategory {
 }
 
 /// One tag outside the `(general, unpinned)` default: its name, its category
-/// and whether it is pinned — the vocabulary's own row (`tag-vocabulary`
-/// design D2). What `tag_vocabulary` answers with, what `library.json`'s
-/// `tags` key lists, and what a rebuild restores onto the row verbatim.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+/// and the group it is pinned into, `None` for a tag that is not pinned —
+/// the vocabulary's own row (`tag-vocabulary`/`pinned-tag-groups` design D2).
+/// What `tag_vocabulary` answers with, what `library.json`'s `tags` key
+/// lists, and what a rebuild restores onto the row verbatim.
+#[derive(Debug, Clone, PartialEq)]
 pub struct TagEntry {
     pub name: String,
     pub category: TagCategory,
-    pub pinned: bool,
+    pub pinned_group: Option<u32>,
+}
+
+/// Hand-written rather than derived (review finding on `aa38dda`,
+/// `pinned-tag-groups` design D2): a build before this change has
+/// `TagEntry { name, category, pinned: bool }` with `pinned` required — no
+/// `#[serde(default)]` — so a `library.json` this build writes has to keep
+/// carrying that key or that older build's `read_library` fails on the
+/// whole file, not just the vocabulary: rules, sites, note, collections and
+/// stamps are lost along with it on the next rebuild it runs. `pinnedGroup`
+/// is written for this build and any later one; `pinned` is computed from
+/// it (`pinned_group.is_some()`) and kept only for the older reader.
+impl Serialize for TagEntry {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeStruct;
+        let mut state = serializer.serialize_struct("TagEntry", 4)?;
+        state.serialize_field("name", &self.name)?;
+        state.serialize_field("category", &self.category)?;
+        state.serialize_field("pinnedGroup", &self.pinned_group)?;
+        state.serialize_field("pinned", &self.pinned_group.is_some())?;
+        state.end()
+    }
+}
+
+/// Hand-written rather than derived (`pinned-tag-groups` design D2): a
+/// `library.json` written before groups existed carries `"pinned":
+/// true|false` and no `pinnedGroup` key at all. `pinned: true` reads as
+/// `Some(1)` — every pin that existed before groups did becomes group 1, the
+/// owner's "at begin I only have one default group #1" — and `pinned: false`
+/// or an absent key reads as `None`. A file written by this version or later
+/// carries `pinnedGroup` directly and that key wins when both are present;
+/// `pinnedGroup: 0` reads as `None` too — `0` names no group, and D2 gives
+/// unpinned only one value.
+impl<'de> Deserialize<'de> for TagEntry {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct Raw {
+            name: String,
+            category: TagCategory,
+            #[serde(default)]
+            pinned_group: Option<u32>,
+            #[serde(default)]
+            pinned: bool,
+        }
+
+        let raw = Raw::deserialize(deserializer)?;
+        let pinned_group = raw
+            .pinned_group
+            .filter(|group| *group > 0)
+            .or(if raw.pinned { Some(1) } else { None });
+        Ok(TagEntry {
+            name: raw.name,
+            category: raw.category,
+            pinned_group,
+        })
+    }
+}
+
+/// Where a pin operation places a tag (`pinned-tag-groups` design D3):
+/// unpin it, move it into an existing group (`n` past the last existing
+/// group means a new last group), or insert a new, empty group at position
+/// `n` — every tag in a group `>= n` shifts to `group + 1` — and place the
+/// tag there. Externally tagged with no wrapper key, which is exactly the
+/// shape `set_tag_pinned_group`'s `target` argument takes from the webview:
+/// `Unpin` crosses the wire as the bare string `"unpin"`, `Group`/
+/// `NewGroupAt` as `{ group: n }` / `{ newGroupAt: n }`.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum PinTarget {
+    Unpin,
+    Group(u32),
+    NewGroupAt(u32),
 }
 
 /// One edit's every part (`stamps` design D1, D2): parsed from a stamp's text
@@ -1192,19 +1264,22 @@ mod tests {
         );
     }
 
-    /// `tag-vocabulary` task 1.2: the wire spelling a hand-mirrored rename
-    /// would silently break — camelCase keys, and every category its own
-    /// lower-case name in both directions.
+    /// `tag-vocabulary`/`pinned-tag-groups` task 1.2: the wire spelling a
+    /// hand-mirrored rename would silently break — camelCase keys, every
+    /// category its own lower-case name in both directions, and
+    /// `pinnedGroup` a plain number.
     #[test]
     fn a_tag_entry_crosses_the_wire_in_camel_case_with_lowercase_categories() {
         let entry = TagEntry {
             name: "kantoku".to_string(),
             category: TagCategory::Artist,
-            pinned: true,
+            pinned_group: Some(2),
         };
         assert_eq!(
             serde_json::to_value(&entry).unwrap(),
-            serde_json::json!({ "name": "kantoku", "category": "artist", "pinned": true }),
+            serde_json::json!({
+                "name": "kantoku", "category": "artist", "pinnedGroup": 2, "pinned": true
+            }),
         );
 
         for (category, name) in [
@@ -1220,6 +1295,125 @@ mod tests {
                 category,
             );
         }
+    }
+
+    /// `pinned-tag-groups` task 1.2, design D2: a `library.json` written
+    /// before groups existed carries `pinned: bool` and no `pinnedGroup` —
+    /// `pinned: true` reads as group 1, `pinned: false` or an absent key
+    /// reads as unpinned, and a value that already carries `pinnedGroup`
+    /// reads that directly, taking it over `pinned` when both are present.
+    #[test]
+    fn a_tag_entry_reads_an_old_pinned_flag_as_group_one() {
+        assert_eq!(
+            serde_json::from_value::<TagEntry>(serde_json::json!({
+                "name": "tagme", "category": "meta", "pinned": true
+            }))
+            .unwrap()
+            .pinned_group,
+            Some(1),
+        );
+        assert_eq!(
+            serde_json::from_value::<TagEntry>(serde_json::json!({
+                "name": "tagme", "category": "meta", "pinned": false
+            }))
+            .unwrap()
+            .pinned_group,
+            None,
+        );
+        assert_eq!(
+            serde_json::from_value::<TagEntry>(serde_json::json!({
+                "name": "tagme", "category": "meta"
+            }))
+            .unwrap()
+            .pinned_group,
+            None,
+        );
+        assert_eq!(
+            serde_json::from_value::<TagEntry>(serde_json::json!({
+                "name": "tagme", "category": "meta", "pinnedGroup": 3, "pinned": false
+            }))
+            .unwrap()
+            .pinned_group,
+            Some(3),
+            "pinnedGroup wins when both keys are present",
+        );
+        assert_eq!(
+            serde_json::from_value::<TagEntry>(serde_json::json!({
+                "name": "tagme", "category": "meta", "pinnedGroup": 0
+            }))
+            .unwrap()
+            .pinned_group,
+            None,
+            "pinnedGroup: 0 names no group, same as absent",
+        );
+    }
+
+    /// Review finding on `aa38dda`: a build before this change deserialises
+    /// `TagEntry { name, category, pinned: bool }` with `pinned` required —
+    /// no `#[serde(default)]` — so a `library.json` this build writes has to
+    /// keep carrying `pinned` or that reader's whole `read_library` fails.
+    /// `Serialize` is hand-written, not derived, to keep emitting both keys;
+    /// this locks that a value this build serialises still satisfies a
+    /// reader with a required `pinned` (and, since a plain `Option<u32>`
+    /// field is itself required unless defaulted, a required `pinnedGroup`).
+    #[test]
+    fn a_serialised_tag_entry_still_satisfies_an_old_readers_required_pinned_field() {
+        #[derive(Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        #[allow(dead_code)]
+        struct OldTagEntry {
+            name: String,
+            category: TagCategory,
+            pinned_group: Option<u32>,
+            pinned: bool,
+        }
+
+        let entry = TagEntry {
+            name: "kantoku".to_string(),
+            category: TagCategory::Artist,
+            pinned_group: Some(2),
+        };
+        let old: OldTagEntry = serde_json::from_value(serde_json::to_value(&entry).unwrap())
+            .expect("an old reader's required `pinned` and `pinnedGroup` are both present");
+        assert!(old.pinned);
+        assert_eq!(old.pinned_group, Some(2));
+
+        let unpinned = TagEntry {
+            name: "tagme".to_string(),
+            category: TagCategory::General,
+            pinned_group: None,
+        };
+        let old: OldTagEntry = serde_json::from_value(serde_json::to_value(&unpinned).unwrap())
+            .expect("an old reader's required `pinned` and `pinnedGroup` are both present");
+        assert!(!old.pinned);
+        assert_eq!(old.pinned_group, None);
+    }
+
+    /// `pinned-tag-groups` design D3: `PinTarget`'s three wire shapes, as
+    /// `set_tag_pinned_group`'s webview caller sends them — externally
+    /// tagged with no wrapper key, so a mis-shaped rename would silently
+    /// stop matching a variant rather than failing loudly.
+    #[test]
+    fn pin_target_reads_its_wire_shapes() {
+        assert_eq!(
+            serde_json::from_value::<PinTarget>(serde_json::json!("unpin")).unwrap(),
+            PinTarget::Unpin,
+        );
+        assert_eq!(
+            serde_json::from_value::<PinTarget>(serde_json::json!({ "group": 2 })).unwrap(),
+            PinTarget::Group(2),
+        );
+        assert_eq!(
+            serde_json::from_value::<PinTarget>(serde_json::json!({ "newGroupAt": 3 })).unwrap(),
+            PinTarget::NewGroupAt(3),
+        );
+        // Design D3 gives no meaning to group `0`; decoding accepts it
+        // rather than rejecting the request, and `place_pinned`'s own
+        // clamp (`tags.rs`) is what turns it into group 1.
+        assert_eq!(
+            serde_json::from_value::<PinTarget>(serde_json::json!({ "group": 0 })).unwrap(),
+            PinTarget::Group(0),
+        );
     }
 
     /// `pinned-collections` task 1.1: `Collection`'s wire shape — camelCase

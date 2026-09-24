@@ -642,7 +642,7 @@ mod tests {
         let entry = TagEntry {
             name: "cat".to_string(),
             category: TagCategory::Artist,
-            pinned: true,
+            pinned_group: Some(1),
         };
         let serialised = serde_json::to_value(&entry).unwrap();
         let fields: Vec<&String> = serialised.as_object().unwrap().keys().collect();
@@ -722,7 +722,7 @@ mod tests {
             vec![TagEntry {
                 name: "kantoku".to_string(),
                 category: TagCategory::Artist,
-                pinned: false,
+                pinned_group: None,
             }]
         );
         let stamps = file.stamps.expect("the key is always written");

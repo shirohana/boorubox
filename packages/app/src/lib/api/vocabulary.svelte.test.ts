@@ -9,9 +9,9 @@ afterEach(() => {
   clearMocks()
 })
 
-const kantoku: TagEntry = { name: 'kantoku', category: 'artist', pinned: false }
-const tagme: TagEntry = { name: 'tagme', category: 'general', pinned: true }
-const zebra: TagEntry = { name: 'zebra', category: 'general', pinned: true }
+const kantoku: TagEntry = { name: 'kantoku', category: 'artist', pinnedGroup: null }
+const tagme: TagEntry = { name: 'tagme', category: 'general', pinnedGroup: 1 }
+const zebra: TagEntry = { name: 'zebra', category: 'general', pinnedGroup: 1 }
 
 it('reads the exceptions list', async () => {
   const calls = vi.fn()
@@ -56,25 +56,37 @@ it('isPinned answers false for a tag outside the exceptions', async () => {
   expect(store.isPinned('bench')).toBe(false)
 })
 
-it('pinned lists only the pinned tags, sorted by name', async () => {
+it('pinned is the groups flattened', async () => {
   mockIPC(() => [zebra, kantoku, tagme])
   const store = new Vocabulary()
   await store.refresh()
 
+  expect(store.pinned).toEqual(store.pinnedGroups.flat())
   expect(store.pinned).toEqual(['tagme', 'zebra'])
 })
 
-it('pinned lists category order first, then alphabetical', async () => {
-  const tagmeMeta: TagEntry = { name: 'tagme', category: 'meta', pinned: true }
-  const kantokuArtist: TagEntry = { name: 'kantoku', category: 'artist', pinned: true }
-  const girl: TagEntry = { name: '1girl', category: 'general', pinned: true }
-  const azurLane: TagEntry = { name: 'azur_lane', category: 'copyright', pinned: true }
+it('pinnedGroups orders groups then category then name', async () => {
+  const tagmeMeta: TagEntry = { name: 'tagme', category: 'meta', pinnedGroup: 1 }
+  const kantokuArtist: TagEntry = { name: 'kantoku', category: 'artist', pinnedGroup: 1 }
+  const girl: TagEntry = { name: '1girl', category: 'general', pinnedGroup: 2 }
+  const azurLane: TagEntry = { name: 'azur_lane', category: 'copyright', pinnedGroup: 1 }
   mockIPC(() => [tagmeMeta, kantokuArtist, girl, azurLane])
 
   const store = new Vocabulary()
   await store.refresh()
 
-  expect(store.pinned).toEqual(['kantoku', 'azur_lane', '1girl', 'tagme'])
+  expect(store.pinnedGroups).toEqual([['kantoku', 'azur_lane', 'tagme'], ['1girl']])
+  expect(store.groupCount).toBe(2)
+})
+
+it('groupOf reads the group and null for unpinned', async () => {
+  mockIPC(() => [kantoku, tagme])
+  const store = new Vocabulary()
+  await store.refresh()
+
+  expect(store.groupOf('tagme')).toBe(1)
+  expect(store.groupOf('kantoku')).toBeNull()
+  expect(store.groupOf('ghost')).toBeNull()
 })
 
 it('reports a list that could not be read, and clears the reason on the next one', async () => {
@@ -109,7 +121,7 @@ it('setCategory calls the command and replaces the list with its answer', async 
   expect(store.entries).toEqual(next)
 })
 
-it('setPinned calls the command and replaces the list with its answer', async () => {
+it('place calls the command and replaces the list with its answer', async () => {
   const calls = vi.fn()
   const next = [tagme]
   mockIPC((cmd, args) => {
@@ -118,9 +130,9 @@ it('setPinned calls the command and replaces the list with its answer', async ()
   })
 
   const store = new Vocabulary()
-  await store.setPinned('tagme', true)
+  await store.place('tagme', { group: 1 })
 
-  expect(calls).toHaveBeenCalledWith('set_tag_pinned', { name: 'tagme', pinned: true })
+  expect(calls).toHaveBeenCalledWith('set_tag_pinned_group', { name: 'tagme', target: { group: 1 } })
   expect(store.entries).toEqual(next)
 })
 
@@ -138,7 +150,7 @@ it('setCategory reports a refusal instead of throwing, and leaves entries as the
   expect(store.entries).toEqual([kantoku])
 })
 
-it('setPinned reports a refusal instead of throwing, and leaves entries as they were', async () => {
+it('place reports a refusal instead of throwing, and leaves entries as they were', async () => {
   mockIPC(() => [kantoku])
   const store = new Vocabulary()
   await store.refresh()
@@ -146,7 +158,7 @@ it('setPinned reports a refusal instead of throwing, and leaves entries as they 
   mockIPC(() => {
     throw new Error('no such tag')
   })
-  await store.setPinned('ghost', true)
+  await store.place('ghost', { group: 1 })
 
   expect(store.error).toBe('no such tag')
   expect(store.entries).toEqual([kantoku])

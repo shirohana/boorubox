@@ -9,6 +9,7 @@ import type {
   DeleteReport,
   ExportReport,
   Note,
+  PinTarget,
   RebuildReport,
   RuleInput,
   RuleListEntry,
@@ -79,7 +80,7 @@ import {
   setShowTileTags,
   setTagCategory,
   setTagCategoryHidden,
-  setTagPinned,
+  setTagPinnedGroup,
   setTheme,
   stampsDelete,
   stampsList,
@@ -504,24 +505,25 @@ it('selection_tag_counts passes the optional names filter when given', async () 
 })
 
 it('tag_vocabulary takes no arguments and returns the exceptions list', async () => {
-  const vocabulary: TagEntry[] = [{ name: 'kantoku', category: 'artist', pinned: false }]
+  const vocabulary: TagEntry[] = [{ name: 'kantoku', category: 'artist', pinnedGroup: null }]
   const calls = spyIPC(vocabulary)
   await expect(tagVocabulary()).resolves.toEqual(vocabulary)
   expect(calls).toHaveBeenCalledWith('tag_vocabulary', {})
 })
 
 it('set_tag_category passes the name and the category and returns the vocabulary', async () => {
-  const vocabulary: TagEntry[] = [{ name: 'cat', category: 'artist', pinned: false }]
+  const vocabulary: TagEntry[] = [{ name: 'cat', category: 'artist', pinnedGroup: null }]
   const calls = spyIPC(vocabulary)
   await expect(setTagCategory('cat', 'artist')).resolves.toEqual(vocabulary)
   expect(calls).toHaveBeenCalledWith('set_tag_category', { name: 'cat', category: 'artist' })
 })
 
-it('set_tag_pinned passes the name and the flag and returns the vocabulary', async () => {
-  const vocabulary: TagEntry[] = [{ name: 'tagme', category: 'general', pinned: true }]
+it('set_tag_pinned_group passes the name and the target and returns the vocabulary', async () => {
+  const vocabulary: TagEntry[] = [{ name: 'tagme', category: 'general', pinnedGroup: 1 }]
   const calls = spyIPC(vocabulary)
-  await expect(setTagPinned('tagme', true)).resolves.toEqual(vocabulary)
-  expect(calls).toHaveBeenCalledWith('set_tag_pinned', { name: 'tagme', pinned: true })
+  const target: PinTarget = { group: 1 }
+  await expect(setTagPinnedGroup('tagme', target)).resolves.toEqual(vocabulary)
+  expect(calls).toHaveBeenCalledWith('set_tag_pinned_group', { name: 'tagme', target })
 })
 
 it('export_zip passes the ids, the path and this zone\'s offset, and returns the report', async () => {

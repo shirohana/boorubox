@@ -218,7 +218,7 @@ pub fn run() {
             commands::selection_tag_counts,
             commands::tag_vocabulary,
             commands::set_tag_category,
-            commands::set_tag_pinned,
+            commands::set_tag_pinned_group,
             commands::export_zip,
             commands::trash_images,
             commands::restore_images,
