@@ -100,13 +100,19 @@ export function suggestsOnFocus(value: string, caret: number): boolean {
 }
 
 /**
- * Drops the tags the input already names — including the one being typed, so an
- * exact match never offers itself — and caps what is left. SQL matched the
- * prefix; the parser is the only thing that can read a query string (design
- * D3), and it is here.
+ * Drops the tags the input already names elsewhere, and caps what is left.
+ * The token under the caret is cut out first — replaced by a single space,
+ * same as the gap between any two tokens — so the word being typed is never
+ * "taken" by its own presence (design D2): a whole typed tag reaches here
+ * still offered, and SQL's own ranking (`tags.rs` design D1) puts it first.
+ * Only a tag named a second time, elsewhere in the input, is dropped. The
+ * parser is the only thing that can read a query string (design D3), and it
+ * is here.
  */
-export function filterSuggestions(value: string, candidates: string[]): string[] {
-  const parsed = parseTagSearch(value)
+export function filterSuggestions(value: string, caret: number, candidates: string[]): string[] {
+  const { start, end } = currentToken(value, caret)
+  const withoutTyped = `${value.slice(0, start)} ${value.slice(end)}`
+  const parsed = parseTagSearch(withoutTyped)
   const taken = new Set(
     [...parsed.includeTags, ...parsed.excludeTags, ...parsed.orGroups.flat()]
       .map((tag) => tag.toLowerCase()),

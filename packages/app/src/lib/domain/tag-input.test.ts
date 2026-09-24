@@ -113,21 +113,27 @@ describe('suggestsOnFocus', () => {
 })
 
 describe('filterSuggestions', () => {
-  it('drops tags the input already names, the one being typed included', () => {
-    expect(filterSuggestions('cat cath', ['cat', 'cathedral', 'cath'])).toEqual(['cathedral'])
+  it('keeps a whole typed tag, so an exact match survives to be offered', () => {
+    expect(filterSuggestions('cat', 3, ['cat', 'cathedral'])).toEqual(['cat', 'cathedral'])
+  })
+
+  it('drops a tag named elsewhere in the input, not the token being typed', () => {
+    expect(filterSuggestions('cat ca', 6, ['cat', 'catalog'])).toEqual(['catalog'])
   })
 
   it('drops excluded tags and tags inside an or group', () => {
-    expect(filterSuggestions('-dog fox or owl', ['dog', 'fox', 'owl', 'bat'])).toEqual(['bat'])
+    const value = '-dog fox or owl '
+    expect(filterSuggestions(value, value.length, ['dog', 'fox', 'owl', 'bat'])).toEqual(['bat'])
   })
 
-  it('matches case-insensitively', () => {
-    expect(filterSuggestions('Cat', ['cat', 'cathedral'])).toEqual(['cathedral'])
+  it('matches case-insensitively, for a tag named elsewhere', () => {
+    const value = 'Cat dog'
+    expect(filterSuggestions(value, value.length, ['cat', 'cathedral'])).toEqual(['cathedral'])
   })
 
   it('caps the list', () => {
     const many = Array.from({ length: 20 }, (_, i) => `tag${i}`)
-    expect(filterSuggestions('', many)).toHaveLength(SUGGESTION_LIMIT)
+    expect(filterSuggestions('', 0, many)).toHaveLength(SUGGESTION_LIMIT)
   })
 })
 

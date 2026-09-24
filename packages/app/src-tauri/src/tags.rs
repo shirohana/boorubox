@@ -399,12 +399,19 @@ pub fn selection_tag_counts(
     Ok(counts)
 }
 
-/// Tags beginning with `prefix`, most used first and then by name, at most
-/// `limit` of them (design D12).
+/// Tags containing `prefix` anywhere in the name, ranked exact match, then
+/// prefix match, then the rest, each band most used first and then by name;
+/// at most `limit` rows (`tag-completion-match` design D1, amending
+/// `tag-vocabulary` design D12's "prefix query": the owner's vocabulary is
+/// compounds like `cute_cat` whose remembered half is the tail, so a prefix
+/// match alone finds neither half typed on its own).
 ///
-/// Ordering by usage rather than alphabetically is what makes a short list
-/// useful: in an eight-row popover, alphabetical order buries the tag used daily
-/// behind five used once. Ties break by name so the list is deterministic.
+/// Ranking by usage within a band rather than alphabetically is what makes a
+/// short list useful: in an eight-row popover, alphabetical order buries the
+/// tag used daily behind five used once. Ties break by name so the list is
+/// deterministic. The exact-match band exists so a whole typed tag heads its
+/// own list and confirming it accepts what was typed rather than a longer
+/// tag that happens to contain it.
 ///
 /// A `LEFT JOIN` (`tag-vocabulary` design D3): a categorised or pinned tag can
 /// outlive every image that carried it (`collect_orphans` spares it), so an
@@ -415,29 +422,42 @@ pub fn selection_tag_counts(
 /// rather than zero.
 pub fn suggestions(conn: &Connection, prefix: &str, limit: i64) -> Result<Vec<TagCount>> {
     // `prefix` is canonicalised (`lowercase-tags` design D1): every stored
-    // name is canonical now, so a prefix match against anything else would
-    // silently offer nothing for a capital the editor typed. The prefix and
-    // every stored name are both canonical by the time this runs, so LIKE's
-    // own ASCII case-folding contributes nothing here; with an ESCAPE clause
-    // and BINARY collation the UNIQUE index on `tags.name` cannot serve a
-    // prefix match either way, so this is a scan of `tags`, bounded by the
-    // vocabulary size rather than sped up by an index.
+    // name is canonical now, so a match against anything else would silently
+    // offer nothing for a capital the editor typed. The prefix and every
+    // stored name are both canonical by the time this runs, so LIKE's own
+    // ASCII case-folding contributes nothing here; with an ESCAPE clause and
+    // BINARY collation the UNIQUE index on `tags.name` cannot serve a
+    // substring match either way, so this was already, and stays, a scan of
+    // `tags`, bounded by the vocabulary size rather than sped up by an index
+    // — the leading `%` this adds costs nothing new (design D1).
     let prefix = canonical(prefix);
+    let escaped = like_escape(&prefix);
+    let contains_pattern = format!("%{escaped}%");
+    let prefix_pattern = format!("{escaped}%");
     let mut stmt = conn.prepare(
         r"SELECT tags.name, COUNT(image_tags.tag_id) AS uses
           FROM tags
           LEFT JOIN image_tags ON image_tags.tag_id = tags.id
           WHERE tags.name LIKE ?1 ESCAPE '\'
           GROUP BY tags.id
-          ORDER BY uses DESC, tags.name
-          LIMIT ?2",
+          ORDER BY
+            CASE
+              WHEN tags.name = ?2 THEN 0
+              WHEN tags.name LIKE ?3 ESCAPE '\' THEN 1
+              ELSE 2
+            END,
+            uses DESC, tags.name
+          LIMIT ?4",
     )?;
-    let rows = stmt.query_map(params![like_prefix(&prefix), limit], |row| {
-        Ok(TagCount {
-            name: row.get(0)?,
-            count: row.get(1)?,
-        })
-    })?;
+    let rows = stmt.query_map(
+        params![contains_pattern, prefix, prefix_pattern, limit],
+        |row| {
+            Ok(TagCount {
+                name: row.get(0)?,
+                count: row.get(1)?,
+            })
+        },
+    )?;
     Ok(rows.collect::<rusqlite::Result<_>>()?)
 }
 
@@ -909,13 +929,13 @@ fn unlink_tags_other_than(conn: &Connection, id: &str, keep: &[String]) -> Resul
     Ok(unlinked)
 }
 
-/// `%`, `_` and the escape character are LIKE syntax; a typed prefix is data.
-fn like_prefix(prefix: &str) -> String {
-    let escaped = prefix
-        .replace('\\', r"\\")
+/// `%`, `_` and the escape character are LIKE syntax; typed text is data.
+/// Shared by every pattern `suggestions` builds, so the contains and the
+/// prefix pattern escape the same text the same way.
+fn like_escape(text: &str) -> String {
+    text.replace('\\', r"\\")
         .replace('%', r"\%")
-        .replace('_', r"\_");
-    format!("{escaped}%")
+        .replace('_', r"\_")
 }
 
 #[cfg(test)]
@@ -2636,6 +2656,60 @@ mod tests {
         assert!(suggested(&library, "zebra", 8).is_empty());
     }
 
+    /// `tag-completion-match` design D1, spec "Substring": the owner's tags
+    /// are compounds like `cute_cat` whose remembered half is the tail, which
+    /// a prefix-only match could never find.
+    #[test]
+    fn suggestions_match_anywhere_in_the_name() {
+        let (_dir, library) = library();
+        store(&library, "a", None, &["cute_cat", "strong_cat"]);
+
+        let names: Vec<String> = suggested(&library, "cat", 8)
+            .into_iter()
+            .map(|(name, _)| name)
+            .collect();
+
+        assert_eq!(
+            names,
+            vec!["cute_cat".to_string(), "strong_cat".to_string()]
+        );
+    }
+
+    /// `tag-completion-match` design D1, spec "A whole tag confirms": the
+    /// exact match heads the list even though another tag it is a substring
+    /// of is used far more, so confirming the first row inserts the tag just
+    /// typed rather than a longer one that happens to contain it.
+    #[test]
+    fn an_exact_match_is_offered_first() {
+        let (_dir, library) = library();
+        store(&library, "a", None, &["cat"]);
+        store(&library, "b", None, &["cathedral"]);
+        store(&library, "c", None, &["cathedral"]);
+        store(&library, "d", None, &["cathedral"]);
+
+        assert_eq!(
+            suggested(&library, "cat", 8),
+            vec![("cat".to_string(), 1), ("cathedral".to_string(), 3)],
+        );
+    }
+
+    /// `tag-completion-match` design D1's ranking bands: a tag that begins
+    /// with the typed text outranks one that only contains it, whatever
+    /// either's usage count is.
+    #[test]
+    fn a_prefix_match_outranks_a_contains_match_whatever_the_counts() {
+        let (_dir, library) = library();
+        store(&library, "a", None, &["cathedral"]);
+        store(&library, "b", None, &["strong_cat"]);
+        store(&library, "c", None, &["strong_cat"]);
+        store(&library, "d", None, &["strong_cat"]);
+
+        assert_eq!(
+            suggested(&library, "cat", 8),
+            vec![("cathedral".to_string(), 1), ("strong_cat".to_string(), 3)],
+        );
+    }
+
     #[test]
     fn an_empty_prefix_lists_the_most_used_tags() {
         let (_dir, library) = tag_usage_fixture();
@@ -2702,9 +2776,10 @@ mod tests {
         let (_dir, library) = library();
         store(&library, "a", None, &["cat", "100%_wool"]);
 
-        assert!(
-            suggested(&library, "%", 8).is_empty(),
-            "a bare wildcard must match nothing, not everything",
+        assert_eq!(
+            suggested(&library, "%", 8),
+            vec![("100%_wool".to_string(), 1)],
+            "a bare wildcard must match a literal % in a name, not every name",
         );
         assert_eq!(
             suggested(&library, "100%_", 8),

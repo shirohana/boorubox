@@ -123,7 +123,8 @@
   }
 
   async function refresh() {
-    const prefix = suggestionPrefix(value, caretNow())
+    const caret = caretNow()
+    const prefix = suggestionPrefix(value, caret)
     if (prefix === null) {
       close()
       return
@@ -141,7 +142,7 @@
     }
     if (request !== asked) return
 
-    suggestions = filterSuggestions(value, names)
+    suggestions = filterSuggestions(value, caret, names)
     highlight = initialHighlight(prefix, suggestions.length)
     open = suggestions.length > 0
   }
