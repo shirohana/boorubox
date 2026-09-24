@@ -93,9 +93,9 @@
   Below the frame's top bar (which holds the toggle and the drag region, D13):
   nav, then the library footer. Collapsed, the shadcn icon rail keeps the nav
   icons and the library icon in view, so the sidebar never vanishes; the
-  toggle in the bar, the rail's edge strip and Cmd+B (bound by the provider)
-  bring it back. The `!` overrides move the fixed container under the bar —
-  the copy-in pins it to the window's top edge.
+  toggle in the bar and Cmd+B (bound by the provider) bring it back. The `!`
+  overrides move the fixed container under the bar — the copy-in pins it to
+  the window's top edge.
 -->
 <Sidebar.Root
   collapsible="icon"
@@ -132,19 +132,22 @@
       on /settings or /trash. There is no note without a library, and no frame
       either, so nothing here guards for one. Hidden on the icon rail for the
       reason the filters are: a text area clipped to 3rem is not one.
+
+      Nav sits directly below, at the bottom above the library footer: the
+      filters are used on every search and the two nav items a few times a
+      session, so the filters start at the top. `mt-auto` pins the note (and
+      the nav below it) there on a route with no filters to render — the
+      library route needs nothing extra, since `TagSidebar` is already
+      `flex-1` (`sidebar-inspector-polish` design D5).
     -->
-    <div class="group-data-[collapsible=icon]:hidden">
+    <div class="mt-auto group-data-[collapsible=icon]:hidden">
       <NotesPanel />
     </div>
     <Sidebar.Separator class="my-2 group-data-[collapsible=icon]:hidden" />
 
-    <!--
-      Nav sits at the bottom, directly above the library footer: the filters are
-      used on every search and the two nav items a few times a session, so the
-      filters start at the top. `mt-auto` pins the nav there on routes with no
-      filters to render.
-    -->
-    <Sidebar.Menu class="mt-auto gap-1">
+    <!-- The Notes wrapper and the filter div above are both hidden on the icon
+         rail, so nothing else pushes the nav down there. -->
+    <Sidebar.Menu class="gap-1 group-data-[collapsible=icon]:mt-auto">
       {#each nav as item (item.href)}
         {@const count = item.count?.() ?? 0}
         <Sidebar.MenuItem>
@@ -209,13 +212,4 @@
       <p class="px-2 text-xs text-destructive">{error}</p>
     {/if}
   </Sidebar.Footer>
-  <!--
-    The rail collapses and expands the sidebar; nothing in the frame is
-    resizable (design D10), so its edge must not offer a resize cursor. The
-    copy-in's cursors are variant-scoped (`in-data-[side=left]:`, and a second
-    pair for the collapsed state), which a plain utility does not outrank —
-    hence `!`, and hence the override from here rather than an edit to the
-    copy-in, which `shadcn-svelte add sidebar` would overwrite.
-  -->
-  <Sidebar.Rail class="cursor-pointer!" />
 </Sidebar.Root>

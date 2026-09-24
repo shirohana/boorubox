@@ -146,7 +146,9 @@ that image alone.
 Every tag shown for an image SHALL be usable as a search term: acting on it SHALL add it to
 the tag search, and acting on a tag the search already includes SHALL take it out again. The
 app SHALL also offer excluding it, which SHALL add it as an exclusion instead. A tag added or
-removed this way SHALL leave the rest of the query intact.
+removed this way SHALL leave the rest of the query intact. A pinned tag's chip SHALL offer
+the same two actions from its context menu, in both placements of the panel and over a
+selection, since the chip is a tag on screen like any other (owner, 2026-09-24).
 
 Each tag shown for an image SHALL be drawn as plain text in its category's colour, not as a
 pill: a pill's own fill competes with the marking that says the tag is in the search (owner,
@@ -176,6 +178,14 @@ screen fall back to no current image.
 #### Scenario: Exclude
 - **WHEN** the search reads `cat` and the user excludes `dog`
 - **THEN** the search reads `cat -dog`
+
+#### Scenario: Searching from a pinned chip
+- **WHEN** `tagme` is pinned, the search is empty, and the user opens the chip's context menu and chooses "Search for this tag"
+- **THEN** the search reads `tagme`, and no image's tags changed
+
+#### Scenario: Excluding from a pinned chip
+- **WHEN** `tagme` is pinned, the search reads `cat`, and the user chooses "Exclude from the search" on the chip
+- **THEN** the search reads `cat -tagme`
 
 #### Scenario: The rest of the query survives
 - **WHEN** the search reads `cat rating:s is:png` and the user adds `dog`

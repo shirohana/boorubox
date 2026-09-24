@@ -15,6 +15,13 @@ export const KEY_SPACE = ' '
 export const KEY_ESCAPE = 'Escape'
 /** Toggles the inspector column in the grid, inspect mode in the lightbox. */
 export const KEY_INSPECT = 'i'
+/**
+ * Opens the tag editor for the focused (grid) or shown (viewer) image, showing
+ * the inspector first if it is hidden (owner's keyboard rule, 2026-09-23: keys
+ * go to the most frequent day-to-day actions; design D9). Acts only while the
+ * panel would describe one image — a multi-selection leaves it alone.
+ */
+export const KEY_EDIT_TAGS = 'e'
 /** Focuses the tag search field from anywhere in the frame. */
 export const KEY_SEARCH = '/'
 /**
@@ -84,9 +91,11 @@ export const KEYBOARD_MAP: KeyBinding[] = [
     action: 'Move the selection, or the focused image, to the trash',
   },
   { where: 'Grid', keys: ['I'], action: 'Show or hide the inspector' },
+  { where: 'Grid', keys: ['E'], action: 'Edit the focused image\'s tags' },
   { where: 'Viewer', keys: ['←', '→'], action: 'Previous or next image' },
   { where: 'Viewer', keys: ['↑', '↓'], action: 'The image one grid row up or down' },
   { where: 'Viewer', keys: ['I'], action: 'Show or hide the inspector' },
+  { where: 'Viewer', keys: ['E'], action: 'Edit this image\'s tags' },
   { where: 'Viewer', keys: ['Esc', 'Space'], action: 'Close, focusing the image shown last' },
 ]
 

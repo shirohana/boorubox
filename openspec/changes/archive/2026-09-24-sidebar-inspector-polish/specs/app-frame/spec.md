@@ -1,11 +1,4 @@
-# app-frame Specification
-
-## Purpose
-The frame every screen of the app is drawn in: a fixed set of regions, one inspector panel
-that appears in two places, one keyboard map, and one theme setting. Later features fill named
-slots in this frame instead of adding screens of their own.
-
-## Requirements
+## MODIFIED Requirements
 
 ### Requirement: The frame has fixed regions
 While a library is open the app SHALL present four regions — a navigation sidebar, a toolbar,
@@ -96,19 +89,6 @@ window draws its own full-screen control the toolbar SHALL NOT draw a second.
 #### Scenario: The inspector stays hidden
 - **WHEN** the user hides the inspector on the library screen, opens the import screen and returns to the library
 - **THEN** the inspector is still hidden
-
-### Requirement: No control appears before it does something
-The app SHALL NOT present a control, menu entry or navigation item that performs no action,
-and SHALL NOT show a navigation item for a screen that does not exist. A region reserved for a
-feature that is not built SHALL be absent, not empty.
-
-#### Scenario: A feature that is not built
-- **WHEN** a screen or action for a capability the app does not yet have would appear
-- **THEN** nothing for it is rendered: no disabled control, no placeholder and no empty panel
-
-#### Scenario: Read-only stands in for an editor
-- **WHEN** a fact can be shown but not yet changed
-- **THEN** it is shown as text with no editing affordance
 
 ### Requirement: One inspector panel, two placements
 The app SHALL show the facts of the current image in an inspector panel that is the same in
@@ -278,21 +258,3 @@ dialog) SHALL leave the focus there.
 #### Scenario: Clicking into the editor
 - **WHEN** the user clicks into the panel's tag editor and presses the right arrow
 - **THEN** the caret moves and the grid's focus does not
-
-### Requirement: Theme follows the system unless chosen
-The app SHALL offer three appearance settings — follow the system, light, dark — SHALL persist
-the choice outside the library folder, and SHALL apply it before the first frame is painted.
-While set to follow the system it SHALL react to the operating system changing appearance
-without a restart.
-
-#### Scenario: First launch
-- **WHEN** the app has never been given an appearance setting and the system is in dark mode
-- **THEN** the app opens dark, with no flash of the light palette
-
-#### Scenario: Chosen explicitly
-- **WHEN** the user picks light while the system is dark
-- **THEN** the app is light, and is still light after a restart
-
-#### Scenario: System changes while running
-- **WHEN** the setting is "follow the system" and the operating system switches to dark
-- **THEN** the app switches to dark without a restart

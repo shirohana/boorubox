@@ -73,6 +73,7 @@
     blurOnEscape,
     isInDialog,
     isTypingTarget,
+    KEY_EDIT_TAGS,
     KEY_ENTER,
     KEY_ESCAPE,
     KEY_SEARCH,
@@ -150,6 +151,8 @@
   /** Written by the grid, read by the viewer's row step (design D9). */
   let columns = $state(1)
   let grid = $state<LibraryGrid | null>(null)
+  /** `e`'s way into the grid-side panel's tag editor (design D9). */
+  let inspector = $state<Inspector | null>(null)
   let hovering = $state(false)
   let actionError = $state<string | null>(null)
   /** Kept until dismissed: the only place a missing file is named (design D11). */
@@ -668,6 +671,15 @@
       event.preventDefault()
       selection.clear()
     }
+
+    // `e` acts only while the panel would describe one image (spec
+    // `app-frame`, "One keyboard map"): with more than one selected it shows
+    // the selection strip instead, and there is no tag editor to open.
+    if (event.key === KEY_EDIT_TAGS && focused && selection.count <= 1) {
+      event.preventDefault()
+      browseSession.inspectorOpen = true
+      void tick().then(() => inspector?.startEditTags())
+    }
   }
 
   /**
@@ -975,6 +987,7 @@
   {#if browseSession.inspectorOpen}
     <aside class="w-80 shrink-0 border-s border-border">
       <Inspector
+        bind:this={inspector}
         image={focused}
         {results}
         {selection}

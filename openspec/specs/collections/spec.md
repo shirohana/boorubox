@@ -111,11 +111,19 @@ neither action SHALL disturb the rest of the query. Each entry SHALL offer renam
 on its context menu; deleting SHALL ask first, naming the collection and how many images are in
 it. The section SHALL offer creating a collection.
 
+Each row SHALL be drawn exactly as a row of the tag list is — the same text size, the same
+row height, the same spacing between rows — so the two lists read as one column (owner,
+2026-09-24: the collection rows were taller and looser than the tags above them). The list
+SHALL have no frame of its own around it.
+
 The section SHALL fold away and unfold on request, and whether it is folded SHALL be kept
 with the app's other preferences, so the choice survives a restart. Unfolded, its list SHALL
-occupy a height the user can change by dragging, kept for the session, and SHALL scroll inside
-that height: a library with many collections SHALL NOT push the tag list or the controls
-below out of their room.
+occupy a height the user can change by dragging the section's top edge — the edge it shares
+with the tag list, dragged up for more room and down for less — kept for the session, and
+SHALL scroll inside that height: a library with many collections SHALL NOT push the tag list
+or the controls below out of their room. The handle SHALL be on the top edge and not the
+bottom, because the section's bottom is pinned against the sections below it and a handle
+there cannot be dragged past them (owner, 2026-09-24).
 
 #### Scenario: Counts follow the search
 - **WHEN** `Favorites` holds 300 images and the search is `cat`, matching 40 of them
@@ -148,6 +156,14 @@ below out of their room.
 #### Scenario: Many collections
 - **WHEN** the library has thirty collections
 - **THEN** the section shows as many as fit the height it has, scrolls to the rest, and the tag list keeps its height
+
+#### Scenario: Dragging the top edge
+- **WHEN** the user drags the section's top edge upward by 100 pixels
+- **THEN** the list is 100 pixels taller, the tag list above it 100 pixels shorter, and dragging it back down restores both
+
+#### Scenario: Rows match the tag list
+- **WHEN** the tag list and the collection list are both on screen
+- **THEN** a collection row is the same height as a tag row, in the same text size, with the same spacing to the next row
 
 #### Scenario: Folded across a restart
 - **WHEN** the user folds the section and restarts the app

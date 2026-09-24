@@ -48,7 +48,7 @@
 <section class="p-2">
   <h2 class="px-1 pb-1 text-xs font-medium text-muted-foreground">Filter</h2>
 
-  <div class="flex flex-col gap-1">
+  <div class="flex flex-col gap-0.5">
     <Select.Root
       type="single"
       value={sortKey}
@@ -57,7 +57,9 @@
         if (picked) onsort(picked.sort)
       }}
     >
-      <Select.Trigger size="sm" class="w-full" aria-label="Sort">{sortLabel}</Select.Trigger>
+      <Select.Trigger size="sm" class="w-full text-xs data-[size=sm]:h-6" aria-label="Sort">
+        {sortLabel}
+      </Select.Trigger>
       <Select.Content>
         {#each offered as option (option.key)}
           <Select.Item value={option.key} label={option.label}>{option.label}</Select.Item>
@@ -70,7 +72,9 @@
       value={group}
       onValueChange={(key) => ongroup(key as GroupBy)}
     >
-      <Select.Trigger size="sm" class="w-full" aria-label="Group">{groupLabel}</Select.Trigger>
+      <Select.Trigger size="sm" class="w-full text-xs data-[size=sm]:h-6" aria-label="Group">
+        {groupLabel}
+      </Select.Trigger>
       <Select.Content>
         {#each GROUPS as option (option.key)}
           <Select.Item value={option.key} label={option.label}>{option.label}</Select.Item>

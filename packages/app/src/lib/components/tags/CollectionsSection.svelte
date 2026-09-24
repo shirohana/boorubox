@@ -10,16 +10,18 @@
   // unmount and remount on each click, which throws the box's scroll
   // position away — the row the user just clicked scrolled out of view. The
   // store's list is stable across searches, and a count that has not arrived
-  // is a blank (design D8's honest blank), not a missing row. The fold and
-  // the list's height are the note's own pattern (`NotesPanel.svelte`): a
-  // stored preference and a `resize-y` box.
+  // is a blank (design D8's honest blank), not a missing row. The fold is a
+  // stored preference, the note's own pattern (`NotesPanel.svelte`); the
+  // list's height is dragged from its top edge, `SectionResizer`'s
+  // (`sidebar-inspector-polish` design D8).
   import type { Collection, CollectionCount } from '@boorubox/shared'
   import ChevronDownIcon from '@lucide/svelte/icons/chevron-down'
-  import MinusIcon from '@lucide/svelte/icons/minus'
   import PlusIcon from '@lucide/svelte/icons/plus'
   import { collectionDelete, collections, errorText, settings } from '$lib/api'
   import CollectionNameDialog from '$lib/components/common/CollectionNameDialog.svelte'
   import ConfirmDialog from '$lib/components/common/ConfirmDialog.svelte'
+  import SectionResizer from '$lib/components/common/SectionResizer.svelte'
+  import { roomAbove } from '$lib/components/common/section-resizer'
   import { Button } from '$lib/components/ui/button'
   import * as Collapsible from '$lib/components/ui/collapsible'
   import * as ContextMenu from '$lib/components/ui/context-menu'
@@ -29,8 +31,9 @@
     excludeCollectionFromQuery,
     toggleCollectionInQuery,
   } from '$lib/domain/tag-utils'
-  import { searchMark, searchMarkClass } from './categories'
+  import { searchMark } from './categories'
   import CollectionPinMenuItem from './CollectionPinMenuItem.svelte'
+  import FilterRow from './FilterRow.svelte'
 
   interface Props {
     /** `null` while a search is running (design D8): the heading stays, the list is blank. */
@@ -47,6 +50,9 @@
 
   let { counts, tagQuery, onquery, onchanged }: Props = $props()
 
+  /** Follows a window resize, so the drag ceiling (`max` below) does too. */
+  let innerHeight = $state(window.innerHeight)
+
   // The fold is a stored preference, not local state (`browse-feedback`
   // design D4), the same reasoning as the notes panel's own fold.
   const expanded = $derived(!(settings.current?.collectionsCollapsed ?? false))
@@ -62,6 +68,13 @@
   let renaming = $state<Collection | null>(null)
   let deleting = $state<Collection | null>(null)
   let error = $state<string | null>(null)
+
+  // The list's height, session-only like the note's (`sidebar-inspector-polish`
+  // design D8, `browse-feedback` design D4's session-only reasoning stands):
+  // dragged by `SectionResizer` below. 128px, not more: at an 800px window the
+  // sidebar's fixed parts already take most of the height, and a taller default
+  // starved the tag list to nothing on the first run.
+  let height = $state(128)
 
   const nameDialogOpen = $derived(creating || renaming !== null)
 
@@ -111,11 +124,38 @@
   }
 </script>
 
+<svelte:window bind:innerHeight />
+
 <Collapsible.Root
   open={expanded}
   onOpenChange={(open) => void settings.setCollectionsCollapsed(!open)}
   class="flex flex-col gap-1 p-2"
 >
+  <!--
+    Unfolded only (collections spec "Unfolded, its list SHALL occupy a
+    height..."): the handle is the edge the list shares with the tag list
+    above it, and there is nothing to drag while the list itself is hidden.
+    `max` is a function, not `innerHeight / 2`: that ceiling alone lets
+    Collections and Notes each grow to half the window, which together
+    overflow the column once the tag list is already at its floor (design
+    D8's ceiling amendment). The function reads how much the tag list can
+    still give up at drag start, so the two sections' ceilings share one
+    budget instead of two independent halves.
+  -->
+  {#if expanded}
+    <SectionResizer
+      {height}
+      min={40}
+      max={() =>
+        Math.min(
+          innerHeight / 2,
+          height + roomAbove(document.querySelector('[data-sidebar="tags"]')),
+        )}
+      label="Resize the collections list"
+      onresize={(next) => (height = next)}
+    />
+  {/if}
+
   <div class="flex items-center justify-between px-1 pb-1">
     <Collapsible.Trigger
       class="
@@ -140,97 +180,41 @@
 
   <Collapsible.Content class="flex flex-col gap-1">
     <!--
-      `h-32`, not more: at an 800px window the sidebar's fixed parts already
-      take most of the height, and a taller default here starved the tag list
-      to nothing on the first run. The user drags the corner for more.
+      No border, no corner handle: `SectionResizer` above draws the top edge,
+      and `max-h-[50vh]` is the CSS ceiling the clamp above mirrors
+      (`sidebar-inspector-polish` design D8).
     -->
-    <div class="
-      h-32 max-h-[50vh] min-h-10 resize-y overflow-y-auto rounded-md border border-border
-    ">
+    <div class="max-h-[50vh] min-h-10 overflow-y-auto" style:height="{height}px">
       {#if collections.list.length === 0}
         <p class="p-1 text-xs text-muted-foreground">No collections</p>
       {:else}
-        <ul class="flex flex-col gap-0.5 p-0.5">
+        <ul class="flex flex-col">
           {#each collections.list as collection (collection.id)}
-            <li>
-              <ContextMenu.Root>
-                <ContextMenu.Trigger>
-                  {#snippet child({ props })}
-                    <!--
-                      The row reads the same table the tag sidebar and the
-                      inspector do (design D3): background only, no
-                      strike-through, the shared emerald tint for an included
-                      collection rather than one of its own. `searchMarkClass`
-                      supplies `hover:bg-sidebar-accent` only while the row
-                      carries no mark, so an active or excluded row keeps its
-                      own hover instead of losing it to a competing neutral
-                      one at equal specificity.
-                    -->
-                    <div
-                      {...props}
-                      class="
-                        flex items-center gap-1 rounded-md px-1 text-xs
-                        {searchMarkClass(
-                          searchMark(collection.slug, terms.collections, terms.excludedCollections),
-                          'hover:bg-sidebar-accent',
-                        )}
-                      "
-                    >
-                      <button
-                        type="button"
-                        class="
-                          shrink-0 rounded-sm p-0.5 text-muted-foreground
-                          hover:text-foreground
-                        "
-                        aria-label="Include {collection.name}"
-                        title="Include {collection.name}"
-                        onclick={() => onquery(addCollectionToQuery(tagQuery, collection.slug))}
-                      >
-                        <PlusIcon class="size-3" />
-                      </button>
-                      <button
-                        type="button"
-                        class="
-                          shrink-0 rounded-sm p-0.5 text-muted-foreground
-                          hover:text-foreground
-                        "
-                        aria-label="Exclude {collection.name}"
-                        title="Exclude {collection.name}"
-                        onclick={() => {
-                          onquery(excludeCollectionFromQuery(tagQuery, collection.slug))
-                        }}
-                      >
-                        <MinusIcon class="size-3" />
-                      </button>
-                      <!--
-                        Clicking an active collection takes it out again
-                        (spec "Filter from the list").
-                      -->
-                      <button
-                        type="button"
-                        class="min-w-0 flex-1 truncate py-1 text-left"
-                        onclick={() => onquery(toggleCollectionInQuery(tagQuery, collection.slug))}
-                      >
-                        {collection.name}
-                      </button>
-                      <span class="shrink-0 text-muted-foreground tabular-nums">
-                        {countById.get(collection.id) ?? ''}
-                      </span>
-                    </div>
-                  {/snippet}
-                </ContextMenu.Trigger>
-                <ContextMenu.Content>
-                  <CollectionPinMenuItem {collection} />
-                  <ContextMenu.Separator />
-                  <ContextMenu.Item onSelect={() => (renaming = collection)}>
-                    Rename…
-                  </ContextMenu.Item>
-                  <ContextMenu.Item variant="destructive" onSelect={() => (deleting = collection)}>
-                    Delete…
-                  </ContextMenu.Item>
-                </ContextMenu.Content>
-              </ContextMenu.Root>
-            </li>
+            <!--
+              The row reads the same table the tag sidebar does (design D3),
+              through `FilterRow` (`sidebar-inspector-polish` design D7): the
+              shared emerald tint for an included collection rather than one
+              of its own.
+            -->
+            <FilterRow
+              name={collection.name}
+              count={countById.get(collection.id) ?? ''}
+              mark={searchMark(collection.slug, terms.collections, terms.excludedCollections)}
+              oninclude={() => onquery(addCollectionToQuery(tagQuery, collection.slug))}
+              onexclude={() => onquery(excludeCollectionFromQuery(tagQuery, collection.slug))}
+              ontoggle={() => onquery(toggleCollectionInQuery(tagQuery, collection.slug))}
+            >
+              {#snippet menu()}
+                <CollectionPinMenuItem {collection} />
+                <ContextMenu.Separator />
+                <ContextMenu.Item onSelect={() => (renaming = collection)}>
+                  Rename…
+                </ContextMenu.Item>
+                <ContextMenu.Item variant="destructive" onSelect={() => (deleting = collection)}>
+                  Delete…
+                </ContextMenu.Item>
+              {/snippet}
+            </FilterRow>
           {/each}
         </ul>
       {/if}

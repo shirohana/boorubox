@@ -5,6 +5,8 @@
   // absent on /start, where the frame itself is not drawn.
   import ChevronDownIcon from '@lucide/svelte/icons/chevron-down'
   import { library, notes, settings } from '$lib/api'
+  import SectionResizer from '$lib/components/common/SectionResizer.svelte'
+  import { roomAbove } from '$lib/components/common/section-resizer'
   import * as Collapsible from '$lib/components/ui/collapsible'
   import { Textarea } from '$lib/components/ui/textarea'
 
@@ -12,6 +14,14 @@
   // reads it from the settings store and writes it back through the command —
   // a local copy would be a second answer to open the app on.
   const expanded = $derived(!(settings.current?.notesCollapsed ?? false))
+
+  // The textarea's height, session-only (`sidebar-inspector-polish` design D8,
+  // `browse-feedback` design D4's session-only reasoning stands): dragged by
+  // `SectionResizer` below. 96px is the floor the textarea keeps otherwise.
+  let height = $state(96)
+
+  /** Follows a window resize, so the drag ceiling (`max` below) does too. */
+  let innerHeight = $state(window.innerHeight)
 
   // The note belongs to the library, so opening another one reads its note.
   // `load` drops anything the debounce still owes — `LibraryMenu` flushes
@@ -36,13 +46,35 @@
   write and lets the window go. Removing it loses the last unpaused sentence of
   every session that ends by closing the window.
 -->
-<svelte:window onbeforeunload={() => void notes.flush()} />
+<svelte:window bind:innerHeight onbeforeunload={() => void notes.flush()} />
 
 <Collapsible.Root
   open={expanded}
   onOpenChange={(open) => void settings.setNotesCollapsed(!open)}
   class="flex flex-col gap-1 p-2"
 >
+  <!--
+    Unfolded only (notes spec "Expanded, the note's height SHALL be
+    changed..."): nothing to drag while the textarea itself is hidden.
+    `max` is a function, not `innerHeight / 2`: see `CollectionsSection`'s
+    comment on the same shape (design D8's ceiling amendment) — Notes and
+    Collections each growing to half the window can together overflow the
+    column, so the ceiling is capped by what the tag list can still give up.
+  -->
+  {#if expanded}
+    <SectionResizer
+      {height}
+      min={96}
+      max={() =>
+        Math.min(
+          innerHeight / 2,
+          height + roomAbove(document.querySelector('[data-sidebar="tags"]')),
+        )}
+      label="Resize the note"
+      onresize={(next) => (height = next)}
+    />
+  {/if}
+
   <Collapsible.Trigger
     class="
       flex items-center gap-1 rounded-md px-1 py-0.5 text-xs font-medium text-muted-foreground
@@ -55,7 +87,8 @@
 
   <Collapsible.Content class="flex flex-col gap-1">
     <Textarea
-      class="min-h-24 resize-y bg-sidebar text-xs"
+      class="max-h-[50vh] resize-none bg-sidebar text-xs"
+      style="height: {height}px"
       placeholder="Anything to remember about this library"
       aria-label="Library note"
       value={notes.content}

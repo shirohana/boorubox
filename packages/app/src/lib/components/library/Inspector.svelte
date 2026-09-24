@@ -93,7 +93,12 @@
      * panel describes — `image` below, not always the focused card (design
      * D2) — so the screen can keep it current in the new result.
      */
-    onquery: (next: string, id: string) => void
+    /**
+     * `id` is the described image, for the screen to keep current across the
+     * re-run; `undefined` over a selection with no focused card (a ⌘A after a
+     * fresh search), where the pinned chips' search items still have to work.
+     */
+    onquery: (next: string, id: string | undefined) => void
     /**
      * A completed action in this panel: a rating chosen, a tag saved or
      * removed, a tag or account acted on as a search term (`app-frame` design
@@ -220,8 +225,7 @@
    * `focusCard` takes it, on the row the image lands at in the new result.
    */
   function query(next: string) {
-    if (!image) return
-    onquery(next, image.id)
+    onquery(next, image?.id)
     onrelease?.()
   }
 
@@ -250,7 +254,7 @@
     error = null
   })
 
-  function startEditTags() {
+  export function startEditTags() {
     if (!image) return
     draft = editorText(tags, vocabulary.categoryOf)
     error = null
@@ -316,6 +320,10 @@
     draftImageUrl = image.imageUrl ?? ''
     factsError = null
     editingFacts = true
+    // The form sits below Tags and Collections, out of view under a long tag
+    // list, while its pencil is in the header: focusing the first field is
+    // what scrolls the form to where the click's effect can be seen.
+    void tick().then(() => root?.querySelector<HTMLInputElement>('input[aria-label="Title"]')?.focus())
   }
 
   function cancelEditFacts() {
@@ -642,6 +650,21 @@
 </script>
 
 <!--
+  The two things one can do to a tag as a search term (spec `tag-editing`),
+  shared by the tag list's own menu and a pinned chip's menu (design D3): a
+  pinned chip is a tag on screen like any other, so it gets the same two
+  items rather than a copy of them.
+-->
+{#snippet tagSearchItems(tag: string)}
+  <ContextMenu.Item onSelect={() => query(toggleTagInQuery(tagQuery, tag))}>
+    Search for this tag
+  </ContextMenu.Item>
+  <ContextMenu.Item onSelect={() => query(excludeTagFromQuery(tagQuery, tag))}>
+    Exclude from the search
+  </ContextMenu.Item>
+{/snippet}
+
+<!--
   A pinned chip, tag or collection alike (`pinned-collections` design D7,
   `tag-vocabulary` design D8): one image's membership or a selection's
   tri-state — `state` is `'all' | 'some' | 'none'` either way, `'some'`
@@ -707,6 +730,8 @@
       </ContextMenu.Trigger>
       <ContextMenu.Content portalProps={{ to: portalTo }}>
         {#if chip.kind === 'tag'}
+          {@render tagSearchItems(chip.tag)}
+          <ContextMenu.Separator />
           <TagVocabularyMenuItems name={chip.tag} />
         {:else}
           <CollectionPinMenuItem collection={chip.collection} />
@@ -802,141 +827,8 @@
       {/if}
     </header>
 
-    <dl class="grid grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-1.5 px-4 py-3 text-xs">
-      <!--
-        The header falls back to the image URL and then the id so it is never
-        blank; this row is the stored page title itself, which is often absent.
-      -->
-      <dt class="text-muted-foreground">Title</dt>
-      {#if editingFacts}
-        <dd>
-          <Input
-            bind:value={draftTitle}
-            class="h-6 px-1.5 text-xs"
-            aria-label="Title"
-            onkeydown={onFactsKeydown}
-          />
-        </dd>
-      {:else}
-        <dd class="wrap-break-word">{image.pageTitle ?? '—'}</dd>
-      {/if}
-
-      <dt class="text-muted-foreground">Source</dt>
-      <dd class="wrap-break-word">{origin}</dd>
-
-      {#if image.account}
-        {@const account = image.account}
-        <!--
-          Spec `tag-editing`, "An X account on screen is a search term": a
-          fact of the page address, beside Page, not among the tags —
-          `account:` searches the address, not the tags, and the handle
-          reaches the tags only as the derived artist tag a capture creates
-          from it (`auto-artist-tag`, spec `capture-ingest` "A capture is
-          stored with its author as an artist tag"); this row never writes
-          one. Read the same in both `editingFacts` states: the address
-          being edited is the draft, but the account is derived from the
-          stored one, so this row does not flip with the form. No colour of
-          its own (blue is general's now, design D2) — the padded,
-          hoverable box and the pointer cursor are what say it is a control,
-          not a fact to merely read (owner, 2026-09-23: the row did not look
-          clickable). `searchMarkClass` (design D3, amended again
-          2026-09-23) supplies `hover:bg-accent` only while the row carries
-          no tint, so hovering an active account keeps its mark instead of
-          losing it to a competing neutral hover.
-        -->
-        <dt class="text-muted-foreground">Account</dt>
-        <dd>
-          <button
-            type="button"
-            class="
-              cursor-pointer rounded-md px-1 py-0.5 text-foreground
-              {searchMarkClass(searchMark(account, terms.accounts, terms.excludedAccounts), 'hover:bg-accent')}
-            "
-            title="Search for this account"
-            onclick={() => query(toggleAccountInQuery(tagQuery, account))}
-          >
-            @{account}
-          </button>
-        </dd>
-      {/if}
-
-      <dt class="text-muted-foreground">Page</dt>
-      {#if editingFacts}
-        <dd>
-          <Input
-            bind:value={draftPageUrl}
-            class="h-6 px-1.5 text-xs"
-            aria-label="Page address"
-            placeholder="https://…"
-            onkeydown={onFactsKeydown}
-          />
-        </dd>
-      {:else}
-        <!-- Wrapping, so `ExternalLink`'s failure line gets a row of its own. -->
-        <dd class="flex flex-wrap items-start gap-1 wrap-break-word">
-          <span class="min-w-0 flex-1 wrap-break-word">{image.pageUrl ?? '—'}</span>
-          <ExternalLink url={image.pageUrl} />
-        </dd>
-      {/if}
-
-      <dt class="text-muted-foreground">Image</dt>
-      {#if editingFacts}
-        <dd>
-          <Input
-            bind:value={draftImageUrl}
-            class="h-6 px-1.5 text-xs"
-            aria-label="Image address"
-            placeholder="https://…"
-            onkeydown={onFactsKeydown}
-          />
-        </dd>
-      {:else}
-        <dd class="flex flex-wrap items-start gap-1 wrap-break-word">
-          <span class="min-w-0 flex-1 wrap-break-word">{image.imageUrl ?? '—'}</span>
-          <ExternalLink url={image.imageUrl} />
-        </dd>
-      {/if}
-
-      {#if editingFacts}
-        <div class="col-span-2 flex items-center justify-end gap-2 pt-0.5">
-          <Button size="xs" variant="outline" disabled={factsSaving} onclick={cancelEditFacts}>
-            Cancel
-          </Button>
-          <Button size="xs" disabled={factsSaving} onclick={saveFacts}>Save</Button>
-        </div>
-        {#if factsError}
-          <p class="col-span-2 text-destructive">{factsError}</p>
-        {/if}
-      {/if}
-
-      <dt class="text-muted-foreground">Dimensions</dt>
-      <dd>{image.width} × {image.height}</dd>
-
-      <dt class="text-muted-foreground">Size</dt>
-      <dd>{formatBytes(image.size)}</dd>
-
-      <dt class="text-muted-foreground">Type</dt>
-      <dd>{image.mime}</dd>
-
-      <dt class="text-muted-foreground">Captured</dt>
-      <dd>{formatTimestamp(image.capturedAt)}</dd>
-
-      <dt class="text-muted-foreground">Imported</dt>
-      <dd>{formatTimestamp(image.createdAt)}</dd>
-
-      <!--
-        `formatTimestamp` already reads a non-finite number as `—`; passing
-        `NaN` for an image with no file behind it reuses that fallback instead
-        of a second one written here (design D11).
-      -->
-      <dt class="text-muted-foreground">File modified</dt>
-      <dd>{formatTimestamp(image.fileModifiedAt ?? Number.NaN)}</dd>
-
-      <dt class="text-muted-foreground">ID</dt>
-      <dd class="font-mono wrap-break-word">{image.id}</dd>
-    </dl>
-
-    <section class="border-t border-border px-4 py-3">
+    <!-- No top border: the header above already draws the line between them. -->
+    <section class="px-4 py-3">
       <h3 class="mb-2 text-xs font-medium text-muted-foreground">Rating</h3>
       <RatingControl value={image.rating} onchoose={rate} onchosen={onrelease} />
     </section>
@@ -1058,12 +950,7 @@
                     {/snippet}
                   </ContextMenu.Trigger>
                   <ContextMenu.Content portalProps={{ to: portalTo }}>
-                    <ContextMenu.Item onSelect={() => query(toggleTagInQuery(tagQuery, tag))}>
-                      Search for this tag
-                    </ContextMenu.Item>
-                    <ContextMenu.Item onSelect={() => query(excludeTagFromQuery(tagQuery, tag))}>
-                      Exclude from the search
-                    </ContextMenu.Item>
+                    {@render tagSearchItems(tag)}
                     <ContextMenu.Separator />
                     <ContextMenu.Item variant="destructive" onSelect={() => remove(tag)}>
                       Remove from this image
@@ -1200,6 +1087,162 @@
     {/if}
 
     <!--
+      Not in the trash: an image on its way out of the library is not one to
+      publish, and the row it would write claims the library holds the file.
+    -->
+    {#if results.view === 'library'}
+      <!--
+        The post is the only thing that changed about the image, and Rust
+        answered with it, so the loaded record is edited where it sits —
+        `tags-and-ratings` design D10: a write replaces the record, the search
+        is never re-run. Re-running it here would clear the rows under the
+        dialog that is still reporting the post it just made.
+      -->
+      <UploadAction
+        {image}
+        part="action"
+        {portalTo}
+        onposted={(post) => results.replace({ ...image, posts: [...image.posts, post] })}
+      />
+    {/if}
+
+    <dl class="
+      grid grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-1.5 border-t border-border px-4 py-3 text-xs
+    ">
+      <!--
+        The header falls back to the image URL and then the id so it is never
+        blank; this row is the stored page title itself, which is often absent.
+      -->
+      <dt class="text-muted-foreground">Title</dt>
+      {#if editingFacts}
+        <dd>
+          <Input
+            bind:value={draftTitle}
+            class="h-6 px-1.5 text-xs"
+            aria-label="Title"
+            onkeydown={onFactsKeydown}
+          />
+        </dd>
+      {:else}
+        <dd class="wrap-break-word">{image.pageTitle ?? '—'}</dd>
+      {/if}
+
+      <dt class="text-muted-foreground">Source</dt>
+      <dd class="wrap-break-word">{origin}</dd>
+
+      {#if image.account}
+        {@const account = image.account}
+        <!--
+          Spec `tag-editing`, "An X account on screen is a search term": a
+          fact of the page address, beside Page, not among the tags —
+          `account:` searches the address, not the tags, and the handle
+          reaches the tags only as the derived artist tag a capture creates
+          from it (`auto-artist-tag`, spec `capture-ingest` "A capture is
+          stored with its author as an artist tag"); this row never writes
+          one. Read the same in both `editingFacts` states: the address
+          being edited is the draft, but the account is derived from the
+          stored one, so this row does not flip with the form. No colour of
+          its own (blue is general's now, design D2) — the padded,
+          hoverable box and the pointer cursor are what say it is a control,
+          not a fact to merely read (owner, 2026-09-23: the row did not look
+          clickable). `searchMarkClass` (design D3, amended again
+          2026-09-23) supplies `hover:bg-accent` only while the row carries
+          no tint, so hovering an active account keeps its mark instead of
+          losing it to a competing neutral hover.
+        -->
+        <dt class="text-muted-foreground">Account</dt>
+        <dd>
+          <button
+            type="button"
+            class="
+              cursor-pointer rounded-md px-1 py-0.5 text-foreground
+              {searchMarkClass(searchMark(account, terms.accounts, terms.excludedAccounts), 'hover:bg-accent')}
+            "
+            title="Search for this account"
+            onclick={() => query(toggleAccountInQuery(tagQuery, account))}
+          >
+            @{account}
+          </button>
+        </dd>
+      {/if}
+
+      <dt class="text-muted-foreground">Page</dt>
+      {#if editingFacts}
+        <dd>
+          <Input
+            bind:value={draftPageUrl}
+            class="h-6 px-1.5 text-xs"
+            aria-label="Page address"
+            placeholder="https://…"
+            onkeydown={onFactsKeydown}
+          />
+        </dd>
+      {:else}
+        <!-- Wrapping, so `ExternalLink`'s failure line gets a row of its own. -->
+        <dd class="flex flex-wrap items-start gap-1 wrap-break-word">
+          <span class="min-w-0 flex-1 wrap-break-word">{image.pageUrl ?? '—'}</span>
+          <ExternalLink url={image.pageUrl} />
+        </dd>
+      {/if}
+
+      <dt class="text-muted-foreground">Image</dt>
+      {#if editingFacts}
+        <dd>
+          <Input
+            bind:value={draftImageUrl}
+            class="h-6 px-1.5 text-xs"
+            aria-label="Image address"
+            placeholder="https://…"
+            onkeydown={onFactsKeydown}
+          />
+        </dd>
+      {:else}
+        <dd class="flex flex-wrap items-start gap-1 wrap-break-word">
+          <span class="min-w-0 flex-1 wrap-break-word">{image.imageUrl ?? '—'}</span>
+          <ExternalLink url={image.imageUrl} />
+        </dd>
+      {/if}
+
+      {#if editingFacts}
+        <div class="col-span-2 flex items-center justify-end gap-2 pt-0.5">
+          <Button size="xs" variant="outline" disabled={factsSaving} onclick={cancelEditFacts}>
+            Cancel
+          </Button>
+          <Button size="xs" disabled={factsSaving} onclick={saveFacts}>Save</Button>
+        </div>
+        {#if factsError}
+          <p class="col-span-2 text-destructive">{factsError}</p>
+        {/if}
+      {/if}
+
+      <dt class="text-muted-foreground">Dimensions</dt>
+      <dd>{image.width} × {image.height}</dd>
+
+      <dt class="text-muted-foreground">Size</dt>
+      <dd>{formatBytes(image.size)}</dd>
+
+      <dt class="text-muted-foreground">Type</dt>
+      <dd>{image.mime}</dd>
+
+      <dt class="text-muted-foreground">Captured</dt>
+      <dd>{formatTimestamp(image.capturedAt)}</dd>
+
+      <dt class="text-muted-foreground">Imported</dt>
+      <dd>{formatTimestamp(image.createdAt)}</dd>
+
+      <!--
+        `formatTimestamp` already reads a non-finite number as `—`; passing
+        `NaN` for an image with no file behind it reuses that fallback instead
+        of a second one written here (design D11).
+      -->
+      <dt class="text-muted-foreground">File modified</dt>
+      <dd>{formatTimestamp(image.fileModifiedAt ?? Number.NaN)}</dd>
+
+      <dt class="text-muted-foreground">ID</dt>
+      <dd class="font-mono wrap-break-word">{image.id}</dd>
+    </dl>
+
+    <!--
       `posted-label`: absent, not an empty placeholder, for an image that has
       never been posted. Shown in the trash too — where an image has been is a
       fact about it, not an action on it.
@@ -1212,46 +1255,33 @@
     {/if}
 
     <!--
-      Slot Inspector · actions (`trash` design D13, `booru-upload` design D9).
-      `mt-auto` keeps it at the foot of the panel rather than floating under a
-      short tag list, and it is inside this branch, so a panel showing no image
-      has no action row at all.
+      Slot Inspector · actions (`trash` design D13). `mt-auto` keeps it at the
+      foot of the panel rather than floating under a short tag list, and it is
+      inside this branch, so a panel showing no image has no action row at all.
     -->
-    <section class="mt-auto flex flex-col gap-2 border-t border-border px-4 py-3">
-      <!--
-        Not in the trash: an image on its way out of the library is not one to
-        publish, and the row it would write claims the library holds the file.
-      -->
-      {#if results.view === 'library'}
-        <!--
-          The post is the only thing that changed about the image, and Rust
-          answered with it, so the loaded record is edited where it sits —
-          `tags-and-ratings` design D10: a write replaces the record, the search
-          is never re-run. Re-running it here would clear the rows under the
-          dialog that is still reporting the post it just made.
-        -->
-        <UploadAction
-          {image}
-          {portalTo}
-          onposted={(post) => results.replace({ ...image, posts: [...image.posts, post] })}
-        />
+    <section class="mt-auto flex gap-2 border-t border-border px-4 py-3">
+      {#if results.view === 'trash'}
+        <Button size="xs" variant="outline" onclick={() => actAndRelease(actions.restore)}>
+          Restore
+        </Button>
+        <Button size="xs" variant="destructive" onclick={() => act(actions.deleteForever)}>
+          Delete forever…
+        </Button>
+      {:else}
+        <Button size="xs" variant="outline" onclick={() => actAndRelease(actions.trash)}>
+          Move to trash
+        </Button>
       {/if}
-
-      <div class="flex gap-2">
-        {#if results.view === 'trash'}
-          <Button size="xs" variant="outline" onclick={() => actAndRelease(actions.restore)}>
-            Restore
-          </Button>
-          <Button size="xs" variant="destructive" onclick={() => act(actions.deleteForever)}>
-            Delete forever…
-          </Button>
-        {:else}
-          <Button size="xs" variant="outline" onclick={() => actAndRelease(actions.trash)}>
-            Move to trash
-          </Button>
-        {/if}
-      </div>
     </section>
+
+    <!--
+      `part="hint"` last (design D2 of `sidebar-inspector-polish`): the note
+      that no booru is configured, kept out of the trash view like the action
+      mount above.
+    -->
+    {#if results.view === 'library'}
+      <UploadAction {image} part="hint" />
+    {/if}
   {/if}
 </div>
 

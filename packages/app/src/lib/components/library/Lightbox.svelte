@@ -9,13 +9,14 @@
   // state and the keys can never disagree. `↑` `↓` are the grid's row step and
   // therefore CLAMPED (design D5) — the asymmetry is deliberate and argued in
   // `navigation-math`.
-  import { onDestroy } from 'svelte'
+  import { onDestroy, tick } from 'svelte'
   import type { SearchResults } from '$lib/api'
   import { imageUrl } from '$lib/api'
   import { offsetIndexBounded } from '$lib/domain/navigation-math'
   import {
     isTypingTarget,
     KEY_DOWN,
+    KEY_EDIT_TAGS,
     KEY_INSPECT,
     KEY_LEFT,
     KEY_RIGHT,
@@ -57,7 +58,7 @@
     clickZoomCeiling: number
     /** Forwarded to the inspector, which edits here exactly as it does beside the grid. */
     tagQuery: string
-    onquery: (next: string, id: string) => void
+    onquery: (next: string, id: string | undefined) => void
     /**
      * Every image this viewer moves to. The grid behind it scrolls that index
      * into view, so closing does not jump to a row the user never saw it reach
@@ -83,6 +84,8 @@
   }: Props = $props()
 
   let dialog = $state<HTMLDialogElement | null>(null)
+  /** `e`'s way into the panel's tag editor (design D9). */
+  let inspector = $state<Inspector | null>(null)
   /** Where the focus lands on open, and not a tab stop (design D2). */
   let surface = $state<HTMLDivElement | null>(null)
   /** The image is fitted into this; the empty space around it closes the viewer (design D4). */
@@ -383,6 +386,10 @@
     } else if (event.key === KEY_INSPECT) {
       event.preventDefault()
       mode = mode === 'inspect' ? 'gallery' : 'inspect'
+    } else if (event.key === KEY_EDIT_TAGS) {
+      event.preventDefault()
+      mode = 'inspect'
+      void tick().then(() => inspector?.startEditTags())
     } else if (event.key === KEY_SPACE && (event.target === surface || event.target === dialog)) {
       // Escape is the dialog's own; Space is not, so it has to ask — and only
       // from the two non-controls: the surface the dialog opens focused on, and
@@ -489,6 +496,7 @@
           the grid the grid's own card gets it instead.
         -->
         <Inspector
+          bind:this={inspector}
           image={image ?? null}
           {results}
           {actions}

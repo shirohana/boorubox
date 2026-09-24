@@ -16,10 +16,12 @@ export const EXTENSION_ORIGIN_PREFIX = 'chrome-extension://'
  * The grid tile's edge in pixels: what the size slider offers and what
  * `set_grid_tile_size` clamps a stored value to (design D11). The grid reads
  * these; Rust bounds them again in `model.rs`, since a webview cannot be the
- * guard on what reaches the settings file.
+ * guard on what reaches the settings file. The cap is sized for a 2K monitor:
+ * 360 was too small there (owner, 2026-09-24), and the thumbnail edge (768,
+ * `thumbs.rs`) is what keeps a tile this large sharp.
  */
 export const GRID_TILE_MIN = 120
-export const GRID_TILE_MAX = 360
+export const GRID_TILE_MAX = 640
 export const GRID_TILE_DEFAULT = 180
 
 /**

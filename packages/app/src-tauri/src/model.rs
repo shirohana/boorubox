@@ -25,9 +25,11 @@ pub const EXTENSION_ORIGIN_PREFIX: &str = "chrome-extension://";
 /// The grid tile's edge in pixels: what the size slider offers and what
 /// `set_grid_tile_size` clamps to (design D11). The webview has the same three
 /// numbers for the slider's own bounds; these are the ones that decide what
-/// reaches the settings file.
+/// reaches the settings file. The cap is sized for a 2K monitor (360 was too
+/// small there, owner 2026-09-24); `thumbs::THUMB_EDGE` is what keeps a tile
+/// this large sharp, so the two move together.
 pub const GRID_TILE_MIN: u32 = 120;
-pub const GRID_TILE_MAX: u32 = 360;
+pub const GRID_TILE_MAX: u32 = 640;
 pub const GRID_TILE_DEFAULT: u32 = 180;
 
 /// The click zoom's ceiling, as a percent of the fit: what the settings

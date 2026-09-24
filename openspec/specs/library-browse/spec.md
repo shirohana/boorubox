@@ -16,7 +16,8 @@ tile without cropping, and the image SHALL be the tile: any text about it SHALL 
 while the tile is hovered or focused. The tile the keyboard is on SHALL be marked as the
 current tile in a way that is visible at a glance across the grid and distinct from the text
 overlay, so that the current tile can be told from a hovered one. The tile size SHALL be
-adjustable from the toolbar, and the setting SHALL survive a restart.
+adjustable from the toolbar, from 120 to 640 pixels (owner, 2026-09-24: 360 was too small on
+a 2K monitor), and the setting SHALL survive a restart.
 
 #### Scenario: Open library
 - **WHEN** a library with images is opened
@@ -41,6 +42,10 @@ adjustable from the toolbar, and the setting SHALL survive a restart.
 #### Scenario: Changing the tile size
 - **WHEN** the user moves the thumbnail size control
 - **THEN** the grid re-flows to the new size, keeps the images uncropped, still renders only the tiles near the viewport, and opens at that size after a restart
+
+#### Scenario: The largest tile
+- **WHEN** the user moves the thumbnail size control to its end
+- **THEN** the tiles are 640 pixels wide
 
 ### Requirement: Tag search uses the legacy query language
 A search box SHALL accept the legacy extension's query syntax: space-separated tags are AND,

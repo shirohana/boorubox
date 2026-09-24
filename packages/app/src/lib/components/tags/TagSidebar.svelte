@@ -8,10 +8,7 @@
   // grouping, and a count or category order under the search's own tags read
   // as noise once the labels were gone).
   import type { TagCount } from '@boorubox/shared'
-  import MinusIcon from '@lucide/svelte/icons/minus'
-  import PlusIcon from '@lucide/svelte/icons/plus'
   import { settings, vocabulary } from '$lib/api'
-  import * as ContextMenu from '$lib/components/ui/context-menu'
   import { CATEGORY_ORDER, categoryLabel, sidebarRows } from '$lib/domain/tag-categories'
   import {
     activeTerms,
@@ -19,7 +16,8 @@
     excludeTagFromQuery,
     toggleTagInQuery,
   } from '$lib/domain/tag-utils'
-  import { CATEGORY_ICON, CATEGORY_TEXT_CLASS, searchMark, searchMarkClass } from './categories'
+  import { CATEGORY_ICON, CATEGORY_TEXT_CLASS, searchMark } from './categories'
+  import FilterRow from './FilterRow.svelte'
   import TagVocabularyMenuItems from './TagVocabularyMenuItems.svelte'
 
   interface Props {
@@ -121,69 +119,25 @@
     <!-- No gap and half the padding: the owner wants more rows on screen (2026-09-23). -->
     <ul class="flex flex-col">
       {#each rows as { name, count } (name)}
-        <li>
-          <ContextMenu.Root>
-            <ContextMenu.Trigger>
-              {#snippet child({ props })}
-                <!--
-                  The search marking (design D3, amended `tag-panel-polish` 2026-09-23)
-                  sits on the whole row — the hoverable box, not just the name — same
-                  as it did before unit C's pass moved it onto the name alone.
-                  `searchMarkClass` (amended again 2026-09-23) supplies
-                  `hover:bg-sidebar-accent` only for a row with no mark, so an
-                  active or excluded row keeps its own hover instead of losing
-                  it to a competing neutral one at equal specificity.
-                -->
-                <div
-                  {...props}
-                  class="
-                    flex items-center gap-1 rounded-md px-1 text-xs
-                    {searchMarkClass(searchMark(name, included, excluded), 'hover:bg-sidebar-accent')}
-                  "
-                >
-                  <button
-                    type="button"
-                    class="shrink-0 rounded-sm p-0.5 text-muted-foreground hover:text-foreground"
-                    aria-label="Include {name}"
-                    title="Include {name}"
-                    onclick={() => onquery(addTagToQuery(tagQuery, name))}
-                  >
-                    <PlusIcon class="size-3" />
-                  </button>
-                  <button
-                    type="button"
-                    class="shrink-0 rounded-sm p-0.5 text-muted-foreground hover:text-foreground"
-                    aria-label="Exclude {name}"
-                    title="Exclude {name}"
-                    onclick={() => onquery(excludeTagFromQuery(tagQuery, name))}
-                  >
-                    <MinusIcon class="size-3" />
-                  </button>
-                  <!--
-                    Clicking an active tag takes it out again (spec `tag-sidebar`). The
-                    category colour is the vocabulary's, read fresh on every render
-                    (`tag-vocabulary` design D5) — the name carries only that colour now;
-                    the search marking is the row's, above.
-                  -->
-                  <button
-                    type="button"
-                    class="
-                      min-w-0 flex-1 truncate py-0.5 text-left
-                      {CATEGORY_TEXT_CLASS[vocabulary.categoryOf(name)]}
-                    "
-                    onclick={() => onquery(toggleTagInQuery(tagQuery, name))}
-                  >
-                    {name}
-                  </button>
-                  <span class="shrink-0 text-muted-foreground tabular-nums">{count}</span>
-                </div>
-              {/snippet}
-            </ContextMenu.Trigger>
-            <ContextMenu.Content>
-              <TagVocabularyMenuItems {name} />
-            </ContextMenu.Content>
-          </ContextMenu.Root>
-        </li>
+        <!--
+          The category colour is the vocabulary's, read fresh on every render
+          (`tag-vocabulary` design D5); the search marking (design D3) is
+          `FilterRow`'s own, shared with the collection list
+          (`sidebar-inspector-polish` design D7).
+        -->
+        <FilterRow
+          {name}
+          {count}
+          mark={searchMark(name, included, excluded)}
+          nameClass={CATEGORY_TEXT_CLASS[vocabulary.categoryOf(name)]}
+          oninclude={() => onquery(addTagToQuery(tagQuery, name))}
+          onexclude={() => onquery(excludeTagFromQuery(tagQuery, name))}
+          ontoggle={() => onquery(toggleTagInQuery(tagQuery, name))}
+        >
+          {#snippet menu()}
+            <TagVocabularyMenuItems {name} />
+          {/snippet}
+        </FilterRow>
       {/each}
     </ul>
   {/if}
