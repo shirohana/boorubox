@@ -61,6 +61,11 @@ pub struct AppState {
     /// one function that can change the answer, on both outcomes, so nothing
     /// else has to remember to clear it.
     pub open_failure: Mutex<Option<(std::path::PathBuf, OpenFailureKind)>>,
+    /// Whether `regenerate_thumbnails` is on its blocking thread right now
+    /// (`one-level-buckets` design D4), swapped rather than locked: the flag
+    /// is checked and set in one step so two calls that land at the same
+    /// instant cannot both read it `false` and both start.
+    pub thumbs_regenerating: std::sync::atomic::AtomicBool,
     /// The path `open_remembered_library_and_listen` is still opening on its
     /// blocking thread (`launch-screen` design D1), `None` once that open has
     /// settled either way. `LibraryStatus.opening` mirrors this so the
@@ -85,6 +90,7 @@ impl Default for AppState {
             listener_shutdown: Mutex::new(None),
             import_control: Mutex::new(None),
             open_failure: Mutex::new(None),
+            thumbs_regenerating: std::sync::atomic::AtomicBool::new(false),
             launch_opening: Mutex::new(None),
             credentials: Arc::new(booru::credentials::KeyringCredentials),
         }
@@ -200,6 +206,7 @@ pub fn run() {
             commands::tag_suggestions,
             commands::image_counts,
             commands::thumbnail_path,
+            commands::regenerate_thumbnails,
             commands::import_paths,
             commands::import_bundle,
             commands::bundle_plan,

@@ -151,7 +151,11 @@ fn write_library_json_if_missing(library: &SharedLibrary, root: &Path) -> Result
     })
 }
 
-fn all_image_ids(conn: &Connection) -> Result<Vec<String>> {
+/// Every id in the library, trashed rows included — shared with
+/// `thumbs::regenerate_all` (`one-level-buckets` design D4), which needs the
+/// same "everything, deleted or not" read `backfill_sidecars` already does: a
+/// trashed image keeps its thumbnail until it is deleted forever.
+pub(crate) fn all_image_ids(conn: &Connection) -> Result<Vec<String>> {
     let mut stmt = conn.prepare("SELECT id FROM images")?;
     let ids = stmt.query_map([], |row| row.get::<_, String>(0))?;
     Ok(ids.collect::<rusqlite::Result<_>>()?)
@@ -168,7 +172,7 @@ impl Library {
             },
             conn: create_layout_then_open(root)?,
         };
-        library.relayout_to_buckets()?;
+        library.relayout_to_one_level()?;
         library.sweep_inbox()?;
         Ok(library)
     }
@@ -210,23 +214,93 @@ impl Library {
         Ok(())
     }
 
-    /// Move files sitting flat under `images/` or `.thumbs/` — the shape a
-    /// library made before the sharded layout (design D1) left them in — into
-    /// their buckets (design D4). Idempotent: a library already sharded costs
-    /// one `read_dir` of each near-empty top level, since `read_dir` never
-    /// descends into a bucket.
-    fn relayout_to_buckets(&self) -> Result<()> {
+    /// Move files under `images/` and `.thumbs/` into today's one-level
+    /// bucket shape (`one-level-buckets` design D2), from either of the two
+    /// shapes an existing library might be in: flat under the top level, or
+    /// one level too deep at `<a1>/<b2>/`. Idempotent: one `read_dir` of
+    /// `images/`, one of `.thumbs/`, and one `read_dir` per bucket — every
+    /// file-or-directory check reads `DirEntry::file_type()` off the listing
+    /// itself, no stat per file.
+    fn relayout_to_one_level(&self) -> Result<()> {
         let paths = &self.paths;
-        relayout_flat_files(&paths.images_dir(), |stem, ext| {
+        relayout_one_level(&paths.images_dir(), |stem, ext| {
             Some(paths.image_path(stem, ext))
         })?;
-        relayout_flat_files(&paths.thumbs_dir(), |stem, ext| {
+        relayout_one_level(&paths.thumbs_dir(), |stem, ext| {
             // A flat file under `.thumbs/` with any other extension is not one
             // of ours — `thumbnail_path` only ever names a `.jpg` — and must
             // not be renamed onto a `.jpg` it never had.
             (ext == "jpg").then(|| crate::thumbs::thumbnail_path(paths, stem))
         })
     }
+}
+
+/// `relayout_flat_files` reaches the bucket shape from a pre-shard library;
+/// this reaches it from a two-level one, then does the same for `dir` itself
+/// so a library in either stale shape lands in the one this change targets in
+/// a single open (`one-level-buckets` design D2).
+fn relayout_one_level(dir: &Path, dest_for: impl Fn(&str, &str) -> Option<PathBuf>) -> Result<()> {
+    relayout_flat_files(dir, &dest_for)?;
+    lift_second_level(dir)
+}
+
+/// Move every regular file sitting at `<a1>/<b2>/<name>` up to `<a1>/<name>`,
+/// and remove `<b2>/` once nothing is left in it (design D2). The destination
+/// is `<a1>/<name>` verbatim, the same rule `relayout_flat_files` follows: the
+/// walk never recomputes a bucket from a stem, so a file already in the wrong
+/// bucket stays there rather than being "fixed" into a path the record does
+/// not expect. A `<b2>/` a file could not leave — a stale destination, a
+/// nested directory, a rename that failed — is left for the next open to try
+/// again, exactly as `relayout_flat_files` leaves a file it could not move.
+fn lift_second_level(dir: &Path) -> Result<()> {
+    let Ok(buckets) = fs::read_dir(dir) else {
+        return Ok(());
+    };
+    for bucket in buckets {
+        let Ok(bucket) = bucket else {
+            continue;
+        };
+        let Ok(bucket_type) = bucket.file_type() else {
+            continue;
+        };
+        if !bucket_type.is_dir() {
+            continue;
+        }
+        let bucket = bucket.path();
+        let Ok(subdirs) = fs::read_dir(&bucket) else {
+            continue;
+        };
+        for subdir in subdirs {
+            let Ok(subdir) = subdir else {
+                continue;
+            };
+            let Ok(subdir_type) = subdir.file_type() else {
+                continue;
+            };
+            if !subdir_type.is_dir() {
+                continue;
+            }
+            let subdir = subdir.path();
+            // A sync client (Dropbox, iCloud) can evict `<b2>/` between this
+            // listing and `relayout_flat_files` reading it; that one bucket
+            // is left for the next open to try again, the same swallow every
+            // per-file failure inside `relayout_flat_files` gets, rather than
+            // failing the whole library open over it.
+            let _ = relayout_flat_files(&subdir, |stem, ext| {
+                Some(bucket.join(format!("{stem}.{ext}")))
+            });
+            // The OS's own droppings (Finder's `.DS_Store`, Explorer's
+            // `Thumbs.db`) reappear in any directory it is shown, not one
+            // anything here wrote to; removed like a stray `.part`, or a
+            // `<b2>/` that holds only one of these never empties and is
+            // re-walked on every open.
+            for name in [".DS_Store", "Thumbs.db"] {
+                let _ = fs::remove_file(subdir.join(name));
+            }
+            let _ = fs::remove_dir(&subdir);
+        }
+    }
+    Ok(())
 }
 
 /// Move every regular file directly under `dir` to where `dest_for` (its stem
@@ -236,14 +310,15 @@ impl Library {
 /// than moved; an inbox write's `.part` lives under `inbox/` and never reaches
 /// here, but the check costs nothing to keep on both directories this walks.
 ///
-/// Every failure here — the entry, the bucket `mkdir`, the rename — is
-/// swallowed rather than propagated: a Dropbox "conflicted copy", an iCloud
-/// placeholder, or (design D4 did not anticipate this) a stray file that
-/// happens to be named exactly one id's two-character bucket prefix, blocking
-/// `create_dir_all` for every id sharding into it, must cost that one file its
-/// migration, not the library its ability to open. A file already sitting at
-/// its destination — a library caught mid-migration, or a conflicted copy
-/// restored flat — is left alone rather than overwritten.
+/// Every failure here — the entry, the bucket `mkdir`, the link or its
+/// fallback rename — is swallowed rather than propagated: a Dropbox
+/// "conflicted copy", an iCloud placeholder, or (design D4 did not
+/// anticipate this) a stray file that happens to be named exactly one id's
+/// two-character bucket prefix, blocking `create_dir_all` for every id
+/// sharding into it, must cost that one file its migration, not the library
+/// its ability to open. A file already sitting at its destination — a
+/// library caught mid-migration, or a conflicted copy restored flat — is
+/// left alone rather than overwritten.
 fn relayout_flat_files(dir: &Path, dest_for: impl Fn(&str, &str) -> Option<PathBuf>) -> Result<()> {
     for entry in fs::read_dir(dir)? {
         let Ok(path) = entry.map(|entry| entry.path()) else {
@@ -265,15 +340,30 @@ fn relayout_flat_files(dir: &Path, dest_for: impl Fn(&str, &str) -> Option<PathB
         let Some(dest) = dest_for(stem, ext) else {
             continue;
         };
-        if dest.exists() {
-            continue;
-        }
         if let Some(bucket) = dest.parent()
             && fs::create_dir_all(bucket).is_err()
         {
             continue;
         }
-        let _ = fs::rename(&path, &dest);
+        // A hard link, not a rename: `rename` overwrites its destination on
+        // unix, so a file a cloud client lands at `dest` in the window
+        // between a `dest.exists()` check and the move would be destroyed.
+        // `hard_link` instead fails atomically with `AlreadyExists`, and that
+        // file is left exactly as `dest.exists()` used to leave it.
+        match fs::hard_link(&path, &dest) {
+            Ok(()) => {
+                let _ = fs::remove_file(&path);
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+            // A filesystem with no hard links (exFAT, some network shares):
+            // fall back to the rename this replaced, `dest.exists()` checked
+            // first since a plain `rename` would otherwise overwrite it.
+            Err(_) => {
+                if !dest.exists() {
+                    let _ = fs::rename(&path, &dest);
+                }
+            }
+        }
     }
     Ok(())
 }
@@ -306,12 +396,12 @@ impl LibraryPaths {
         path
     }
 
-    /// `images/<a1>/<b2>/<id>.<ext>` (design D1, D2): the path `ImageRecord.file`
-    /// carries, so it is a `/`-joined string, not a `PathBuf` — the webview
-    /// reads this same value with no path module of its own (design D2).
-    /// Filesystem paths (`image_path`, `thumbnail_path`) never build on this;
-    /// both instead push `shard_dirs`' components directly, the one thing the
-    /// two representations share.
+    /// `images/<a1>/<id>.<ext>` (`one-level-buckets` design D1): the path
+    /// `ImageRecord.file` carries, so it is a `/`-joined string, not a
+    /// `PathBuf` — the webview reads this same value with no path module of
+    /// its own (design D2). Filesystem paths (`image_path`, `thumbnail_path`)
+    /// never build on this; both instead push `shard_dirs`' components
+    /// directly, the one thing the two representations share.
     pub fn relative_image_path(id: &str, ext: &str) -> String {
         let mut components: Vec<&str> = vec![IMAGES_DIR];
         components.extend(shard_dirs(id));
@@ -325,12 +415,12 @@ impl LibraryPaths {
     }
 }
 
-/// The bucket directories `id` shards into (design D1, Danbooru's shape):
-/// the first two characters, then the next two. An id shorter than four
-/// characters uses what it has, omitting a level it cannot fill rather than
-/// emitting one with an empty name (`a` -> `["a"]`, `abc` -> `["ab", "c"]`).
-/// Shared by `LibraryPaths::relative_image_path` and `thumbs::thumbnail_path`,
-/// the one definition of the bucket rule.
+/// The bucket directory `id` shards into (`one-level-buckets` design D1): one
+/// level, the first two characters, nothing after them. An id shorter than
+/// two characters uses what it has, omitting a level it
+/// cannot fill rather than emitting one with an empty name (`a` -> `["a"]`,
+/// `abc` -> `["ab"]`). Shared by `LibraryPaths::relative_image_path` and
+/// `thumbs::thumbnail_path`, the one definition of the bucket rule.
 ///
 /// FIXME: this never validates `id` — a `/` or `..` inside one would escape
 /// the bucket it should be confined to, and nothing stops an id built from
@@ -339,14 +429,13 @@ impl LibraryPaths {
 /// place for that check is the capture door (`ingest::store_image`), before an
 /// id ever reaches a path; not built yet (design D1's non-goal).
 pub(crate) fn shard_dirs(id: &str) -> Vec<&str> {
-    // Byte indices of character boundaries, never byte offsets: an id is
+    // A byte index of a character boundary, never a byte offset: an id is
     // arbitrary and unvalidated (the `FIXME` above), and `id[..2]` panics the
     // instant one non-ASCII character puts a byte boundary mid-character —
-    // which the relayout in `Library::relayout_to_buckets` would then hit on
+    // which the relayout in `Library::relayout_to_one_level` would then hit on
     // every stem in the directory, not just the one bad id.
     let a1_end = char_boundary(id, 2);
-    let b2_end = char_boundary(id, 4);
-    [&id[..a1_end], &id[a1_end..b2_end]]
+    [&id[..a1_end]]
         .into_iter()
         .filter(|part| !part.is_empty())
         .collect()
@@ -425,21 +514,16 @@ mod tests {
 
         assert_eq!(
             library.paths.image_path("abc", "png"),
-            library
-                .paths
-                .images_dir()
-                .join("ab")
-                .join("c")
-                .join("abc.png"),
+            library.paths.images_dir().join("ab").join("abc.png"),
             "never built by joining a `/`-string onto root (design D2's mixed-separator risk)"
         );
     }
 
     #[test]
-    fn a_uuid_id_shards_two_levels_deep() {
+    fn a_uuid_id_shards_one_bucket_level() {
         assert_eq!(
             LibraryPaths::relative_image_path("a1b2c3d4-e5f6-7890-abcd-ef1234567890", "jpg"),
-            "images/a1/b2/a1b2c3d4-e5f6-7890-abcd-ef1234567890.jpg"
+            "images/a1/a1b2c3d4-e5f6-7890-abcd-ef1234567890.jpg"
         );
     }
 
@@ -452,10 +536,10 @@ mod tests {
     }
 
     #[test]
-    fn a_three_character_id_shards_a_two_and_a_one_character_bucket() {
+    fn a_three_character_id_shards_its_first_two_characters() {
         assert_eq!(
             LibraryPaths::relative_image_path("abc", "png"),
-            "images/ab/c/abc.png"
+            "images/ab/abc.png"
         );
     }
 
@@ -466,7 +550,7 @@ mod tests {
     fn a_non_ascii_id_shards_by_character_not_byte() {
         assert_eq!(
             LibraryPaths::relative_image_path("日本語テスト", "png"),
-            "images/日本/語テ/日本語テスト.png"
+            "images/日本/日本語テスト.png"
         );
     }
 
@@ -514,7 +598,27 @@ mod tests {
         let record = crate::ingest::load_record(&library.conn, "abc")
             .unwrap()
             .unwrap();
-        assert_eq!(record.file, "images/ab/c/abc.png");
+        assert_eq!(record.file, "images/ab/abc.png");
+    }
+
+    /// The hard-link move (design D3, review of `f126c3f`): the destination
+    /// carries the exact bytes and the flat copy is gone, the same outcome a
+    /// `rename` gave — a TOCTOU race between the two is not portable to force
+    /// in a test, so this only pins the happy path the link/remove pair must
+    /// keep matching.
+    #[test]
+    fn a_flat_file_moved_into_its_bucket_is_byte_identical_and_the_flat_copy_is_gone() {
+        let dir = tempfile::tempdir().unwrap();
+        let library = Library::open_or_create(dir.path()).unwrap();
+        let flat_images = library.paths.root.join(IMAGES_DIR);
+        fs::write(flat_images.join("abc.png"), b"the original bytes").unwrap();
+        drop(library);
+
+        let library = Library::open_or_create(dir.path()).unwrap();
+
+        let bucketed = library.paths.image_path("abc", "png");
+        assert_eq!(fs::read(&bucketed).unwrap(), b"the original bytes");
+        assert!(!flat_images.join("abc.png").exists());
     }
 
     #[test]
@@ -644,6 +748,170 @@ mod tests {
             before,
             "an already-sharded library is untouched"
         );
+    }
+
+    /// Where `id` sits under the two-level layout `one-level-buckets` design
+    /// D2 lifts a library out of: `<base>/<a1>/<b2>/<id>.<ext>`, `<a1>` and
+    /// `<b2>` split the same way `shard_dirs` splits the one level it keeps.
+    fn two_level_path(base: &Path, id: &str, ext: &str) -> PathBuf {
+        base.join(&id[..2])
+            .join(&id[2..4])
+            .join(format!("{id}.{ext}"))
+    }
+
+    #[test]
+    fn a_two_level_library_lifts_its_files_one_level_on_open() {
+        let dir = tempfile::tempdir().unwrap();
+        let id = "a1b2c3d4";
+        {
+            let library = Library::open_or_create(dir.path()).unwrap();
+            store(&library, id);
+            let record = crate::ingest::load_record(&library.conn, id)
+                .unwrap()
+                .unwrap();
+            crate::thumbs::warm_thumbnail(&library.paths, &record);
+
+            // Simulate a library from before this change: move the image, its
+            // sidecar and its thumbnail one level deeper than `open_or_create`
+            // just bucketed them, the shape a real pre-existing library was
+            // actually found in.
+            for (bucketed, two_level) in [
+                (
+                    library.paths.image_path(id, "png"),
+                    two_level_path(&library.paths.images_dir(), id, "png"),
+                ),
+                (
+                    sidecar::path(&library.paths, id),
+                    two_level_path(&library.paths.images_dir(), id, "json"),
+                ),
+                (
+                    crate::thumbs::thumbnail_path(&library.paths, id),
+                    two_level_path(&library.paths.thumbs_dir(), id, "jpg"),
+                ),
+            ] {
+                fs::create_dir_all(two_level.parent().unwrap()).unwrap();
+                fs::rename(&bucketed, &two_level).unwrap();
+            }
+        }
+
+        let library = Library::open_or_create(dir.path()).unwrap();
+
+        assert!(library.paths.image_path(id, "png").is_file());
+        assert!(sidecar::path(&library.paths, id).is_file());
+        assert!(crate::thumbs::thumbnail_path(&library.paths, id).is_file());
+        assert!(!library.paths.images_dir().join("a1").join("b2").exists());
+        assert!(!library.paths.thumbs_dir().join("a1").join("b2").exists());
+        let record = crate::ingest::load_record(&library.conn, id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(record.file, format!("images/a1/{id}.png"));
+
+        let before = tree(dir.path());
+        Library::open_or_create(dir.path()).unwrap();
+        assert_eq!(tree(dir.path()), before, "a second open moves nothing");
+    }
+
+    /// A library caught mid-migration, or a conflicted copy restored at the
+    /// two-level path: the bucketed file already there must survive, byte for
+    /// byte, and the two-level copy is left — `b2` stays — rather than
+    /// destroyed by an overwrite.
+    #[test]
+    fn a_file_already_at_its_destination_is_left_alone() {
+        let dir = tempfile::tempdir().unwrap();
+        let library = Library::open_or_create(dir.path()).unwrap();
+        let id = "abcdxyz9";
+        let bucketed = library.paths.image_path(id, "png");
+        fs::create_dir_all(bucketed.parent().unwrap()).unwrap();
+        fs::write(&bucketed, b"the bucketed file").unwrap();
+        let two_level = two_level_path(&library.paths.images_dir(), id, "png");
+        fs::create_dir_all(two_level.parent().unwrap()).unwrap();
+        fs::write(&two_level, b"a stale two-level copy").unwrap();
+        drop(library);
+
+        Library::open_or_create(dir.path()).unwrap();
+
+        assert_eq!(fs::read(&bucketed).unwrap(), b"the bucketed file");
+        assert_eq!(fs::read(&two_level).unwrap(), b"a stale two-level copy");
+        assert!(
+            two_level.parent().unwrap().is_dir(),
+            "b2 must stay: the file it holds could not move"
+        );
+    }
+
+    #[test]
+    fn a_stray_part_under_b2_is_removed() {
+        let dir = tempfile::tempdir().unwrap();
+        let library = Library::open_or_create(dir.path()).unwrap();
+        let id = "abcdxyz9";
+        let b2 = two_level_path(&library.paths.images_dir(), id, "png")
+            .parent()
+            .unwrap()
+            .to_path_buf();
+        fs::create_dir_all(&b2).unwrap();
+        fs::write(b2.join(format!("{id}.png.part")), b"half a copy").unwrap();
+        drop(library);
+
+        Library::open_or_create(dir.path()).unwrap();
+
+        assert!(
+            !b2.exists(),
+            "b2 must be removed once emptied of its stray part"
+        );
+    }
+
+    /// The OS's own droppings must not keep `b2` from emptying: without this,
+    /// a `b2` Finder or Explorer has ever shown never empties and is
+    /// re-walked on every open.
+    #[test]
+    fn a_b2_holding_only_os_droppings_is_removed() {
+        let dir = tempfile::tempdir().unwrap();
+        let library = Library::open_or_create(dir.path()).unwrap();
+        let id = "abcdxyz9";
+        let b2 = two_level_path(&library.paths.images_dir(), id, "png")
+            .parent()
+            .unwrap()
+            .to_path_buf();
+        fs::create_dir_all(&b2).unwrap();
+        fs::write(b2.join(".DS_Store"), b"finder metadata").unwrap();
+        fs::write(b2.join("Thumbs.db"), b"explorer metadata").unwrap();
+        drop(library);
+
+        Library::open_or_create(dir.path()).unwrap();
+
+        assert!(
+            !b2.exists(),
+            "b2 must be removed once its only contents are the OS's own droppings"
+        );
+    }
+
+    /// design D2's "a stray directory" case: `b2` holding a subdirectory is
+    /// not something `relayout_flat_files` will ever move — it walks files
+    /// only — so `b2` is left rather than silently dropped along with what it
+    /// holds.
+    ///
+    /// The other half of `lift_second_level`'s swallow — `b2` itself going
+    /// unreadable between this listing and `relayout_flat_files` reading it,
+    /// the sync-client-eviction case its call site comments — has no
+    /// portable test: `chmod`ing a directory unreadable is unix-only and
+    /// root-dependent, and a `b2` that is a file rather than a directory (the
+    /// only cross-platform way to break `read_dir`) is caught earlier by the
+    /// `file_type().is_dir()` check above and never reaches the call at all.
+    #[test]
+    fn a_non_empty_b2_is_left() {
+        let dir = tempfile::tempdir().unwrap();
+        let library = Library::open_or_create(dir.path()).unwrap();
+        let id = "abcdxyz9";
+        let b2 = two_level_path(&library.paths.images_dir(), id, "png")
+            .parent()
+            .unwrap()
+            .to_path_buf();
+        fs::create_dir_all(b2.join("stray")).unwrap();
+        drop(library);
+
+        Library::open_or_create(dir.path()).unwrap();
+
+        assert!(b2.is_dir(), "a b2 holding a subdirectory is not empty");
+        assert!(b2.join("stray").is_dir());
     }
 
     fn png_bytes() -> Vec<u8> {

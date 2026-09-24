@@ -1,5 +1,6 @@
-//! Thumbnails under `<library>/.thumbs/<a1>/<b2>/<id>.jpg` (design D1) — a
-//! derived cache that is safe to delete and regenerated on demand (design D7).
+//! Thumbnails under `<library>/.thumbs/<a1>/<id>.jpg` (`one-level-buckets`
+//! design D1) — a derived cache that is safe to delete and regenerated on
+//! demand (design D7).
 
 use std::fs::{self, File};
 use std::path::{Path, PathBuf};
@@ -7,15 +8,20 @@ use std::path::{Path, PathBuf};
 use image::{DynamicImage, ImageEncoder, codecs::jpeg::JpegEncoder};
 
 use crate::error::{AppError, Result};
-use crate::library::LibraryPaths;
-use crate::model::ImageRecord;
+use crate::ingest;
+use crate::library::{LibraryPaths, SharedLibrary, with_library, with_library_if_open};
+use crate::model::{ImageRecord, ThumbsReport};
 
-/// Longest edge of a generated thumbnail. 384 px until the grid exists to judge
-/// it (design, Open Questions).
-pub const THUMB_EDGE: u32 = 384;
+/// Longest edge of a generated thumbnail (`one-level-buckets` design D3):
+/// 768, sized for the 640 px tile cap (`sidebar-inspector-polish`) at DPR 2
+/// (1.67×). `downscale` never upscales, so a smaller source keeps its own
+/// size. Existing thumbnails stay at their old size until `regenerate_all`
+/// re-renders them (design D4).
+pub const THUMB_EDGE: u32 = 768;
 
-/// JPEG quality. High enough that the recompression is invisible at 384 px,
-/// low enough that a library of thousands stays a cache and not a second copy.
+/// JPEG quality, unchanged by the edge going up (design D3): high enough that
+/// the recompression is invisible at `THUMB_EDGE`, low enough that a library
+/// of thousands stays a cache and not a second copy.
 const THUMB_QUALITY: u8 = 82;
 
 /// Path of `record`'s thumbnail, generating it first if it is not there.
@@ -58,11 +64,75 @@ pub fn warm_thumbnail(paths: &LibraryPaths, record: &ImageRecord) {
     let _ = ensure_thumbnail(paths, record);
 }
 
+/// Re-render every image's thumbnail at the current `THUMB_EDGE`
+/// (`one-level-buckets` design D4): a user-started background pass, the same
+/// shape `library::backfill_sidecars` runs the sidecar repair in — the id
+/// list and the records are read once under the lock, trashed rows included
+/// (a trashed image keeps its thumbnail until it is deleted forever). Before
+/// each image, the lock is taken again only to check the open library's root
+/// still matches `root`; the decode, downscale and encode never run under it
+/// — they run against `paths`, cloned once above the loop, with the library
+/// free for a search or a capture, `ensure_thumbnail`'s own contract for
+/// every caller. Each render goes through `write_through_part` directly
+/// rather than `ensure_thumbnail`, whose already-there check would skip
+/// every image this pass exists to redo: the rename `write_through_part`
+/// ends in replaces `<id>.jpg` atomically, so a render that fails (a source
+/// gone missing) leaves the old thumbnail in place rather than losing it to
+/// an earlier delete.
+///
+/// `root` is the path this pass was started for: every image checks the open
+/// library's root still matches it before touching a file, and the pass
+/// returns short — without writing that image or any after it — the moment it
+/// does not, the same check that stops `backfill_sidecars` on a library
+/// switch (`pending-work` spec's "Switching libraries mid-pass").
+pub fn regenerate_all(
+    library: &SharedLibrary,
+    root: &Path,
+    on_progress: &mut dyn FnMut(i64, i64),
+) -> Result<ThumbsReport> {
+    let (paths, ids) = with_library(library, |open| {
+        Ok((
+            open.paths.clone(),
+            crate::library::all_image_ids(&open.conn)?,
+        ))
+    })?;
+    if paths.root != root {
+        return Ok(ThumbsReport::default());
+    }
+    let records = with_library(library, |open| ingest::load_records(&open.conn, &ids))?;
+
+    let total = records.len() as i64;
+    let mut report = ThumbsReport::default();
+    on_progress(0, total);
+    for (index, record) in records.iter().enumerate() {
+        let still_open = with_library_if_open(library, |open| {
+            Ok(matches!(open, Some(open) if open.paths.root == root))
+        })?;
+        if !still_open {
+            // The library closed, or a switch moved it onto another root:
+            // this pass's write for this image, and every one after it,
+            // belongs to a folder that is no longer open.
+            return Ok(report);
+        }
+        match write_through_part(
+            &paths.image_path(&record.id, &record.ext),
+            &part_path(&paths, &record.id),
+            &thumbnail_path(&paths, &record.id),
+        ) {
+            Ok(_) => report.regenerated += 1,
+            Err(_) => report.failed += 1,
+        }
+        on_progress(index as i64 + 1, total);
+    }
+
+    Ok(report)
+}
+
 /// Where `id`'s thumbnail lives, whether or not it has been generated:
-/// `.thumbs/<a1>/<b2>/<id>.jpg` (design D1), sharing `library::shard_dirs`
-/// with `LibraryPaths::relative_image_path` — one definition of the bucket
-/// rule for both directories. Dropping a record deletes this file (design
-/// D16), so the name is defined once here.
+/// `.thumbs/<a1>/<id>.jpg` (`one-level-buckets` design D1), sharing
+/// `library::shard_dirs` with `LibraryPaths::relative_image_path` — one
+/// definition of the bucket rule for both directories. Dropping a record
+/// deletes this file (design D16), so the name is defined once here.
 pub fn thumbnail_path(paths: &LibraryPaths, id: &str) -> PathBuf {
     bucketed_thumbs_path(paths, id, &format!("{id}.jpg"))
 }
@@ -254,5 +324,168 @@ mod tests {
             "unexpected error: {error}"
         );
         assert!(!part_path(&library.paths, &record.id).exists());
+    }
+
+    /// `n` images, all the same 800x600 source, distinct ids — what the
+    /// `regenerate_all` tests below need a library holding several of.
+    fn library_with_images(n: u32) -> (tempfile::TempDir, Library, Vec<ImageRecord>) {
+        let dir = tempfile::tempdir().unwrap();
+        let library = Library::open_or_create(dir.path()).unwrap();
+        let bytes = png_bytes(800, 600);
+        let mut records = Vec::new();
+        for index in 0..n {
+            let id = format!("id-{index}");
+            let ingested = ingest::store_image(
+                &library,
+                IngestInput {
+                    id: &id,
+                    bytes: &bytes,
+                    source: ImageSource::Local,
+                    source_ref: None,
+                    image_url: None,
+                    page_url: None,
+                    page_title: None,
+                    adapter: None,
+                    rating: None,
+                    tags: &[],
+                    captured_at: 0,
+                    file_modified_at: None,
+                    deleted_at: None,
+                },
+            )
+            .unwrap();
+            records.push(ingested.record().clone());
+        }
+        (dir, library, records)
+    }
+
+    fn shared(library: Library) -> crate::library::SharedLibrary {
+        std::sync::Arc::new(std::sync::Mutex::new(Some(library)))
+    }
+
+    /// A thumbnail-shaped JPEG at `width`x`height`, written straight to
+    /// `path` rather than through `ensure_thumbnail` — what a thumbnail left
+    /// over from the old `THUMB_EDGE` looks like on disk.
+    fn write_jpeg(path: &Path, width: u32, height: u32) {
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let image = DynamicImage::ImageRgb8(image::RgbImage::new(width, height));
+        let mut file = File::create(path).unwrap();
+        let rgb = image.to_rgb8();
+        JpegEncoder::new_with_quality(&mut file, THUMB_QUALITY)
+            .write_image(
+                rgb.as_raw(),
+                rgb.width(),
+                rgb.height(),
+                image::ExtendedColorType::Rgb8,
+            )
+            .unwrap();
+    }
+
+    #[test]
+    fn regenerate_all_replaces_a_small_thumbnail_with_one_at_the_current_edge() {
+        let (_dir, library, record) = library_with_image(800, 600);
+        let thumb = thumbnail_path(&library.paths, &record.id);
+        write_jpeg(&thumb, 384, 288);
+        let root = library.paths.root.clone();
+        let shared = shared(library);
+
+        regenerate_all(&shared, &root, &mut |_, _| {}).unwrap();
+
+        assert_eq!(dimensions(&thumb), (THUMB_EDGE, THUMB_EDGE * 600 / 800));
+    }
+
+    #[test]
+    fn regenerate_all_counts_an_unreadable_image_and_continues() {
+        let (_dir, library, records) = library_with_images(3);
+        let unreadable = &records[1];
+        fs::remove_file(library.paths.image_path(&unreadable.id, &unreadable.ext)).unwrap();
+        let root = library.paths.root.clone();
+        let shared = shared(library);
+
+        let report = regenerate_all(&shared, &root, &mut |_, _| {}).unwrap();
+
+        assert_eq!(report.regenerated, 2);
+        assert_eq!(report.failed, 1);
+        with_library(&shared, |open| {
+            for record in &records {
+                if record.id != unreadable.id {
+                    assert!(thumbnail_path(&open.paths, &record.id).is_file());
+                }
+            }
+            Ok(())
+        })
+        .unwrap();
+    }
+
+    /// A render that fails must not have already destroyed the thumbnail it
+    /// was about to replace: `write_through_part` renders to a `.part` and
+    /// only then renames over `<id>.jpg`, so a source gone missing leaves the
+    /// old file exactly where it was rather than removing it up front.
+    #[test]
+    fn a_missing_image_keeps_its_old_thumbnail_and_is_counted_failed() {
+        let (_dir, library, records) = library_with_images(3);
+        let missing = &records[1];
+        let thumb = thumbnail_path(&library.paths, &missing.id);
+        write_jpeg(&thumb, 384, 288);
+        fs::remove_file(library.paths.image_path(&missing.id, &missing.ext)).unwrap();
+        let root = library.paths.root.clone();
+        let shared = shared(library);
+
+        let report = regenerate_all(&shared, &root, &mut |_, _| {}).unwrap();
+
+        assert_eq!(report.regenerated, 2);
+        assert_eq!(report.failed, 1);
+        assert_eq!(
+            dimensions(&thumb),
+            (384, 288),
+            "a failed render must leave the old thumbnail in place"
+        );
+    }
+
+    #[test]
+    fn regenerate_all_reports_done_and_total() {
+        let (_dir, library, records) = library_with_images(3);
+        let root = library.paths.root.clone();
+        let shared = shared(library);
+
+        let mut ticks = Vec::new();
+        let report =
+            regenerate_all(&shared, &root, &mut |done, total| ticks.push((done, total))).unwrap();
+
+        assert_eq!(ticks, vec![(0, 3), (1, 3), (2, 3), (3, 3)]);
+        assert_eq!(report.regenerated, records.len() as i64);
+        assert_eq!(report.failed, 0);
+    }
+
+    /// The `Mutex` this pass reads from is swapped mid-run, from inside the
+    /// progress callback — the shape `library-sidecars` design D7's own
+    /// switch-mid-pass test uses — and the pass must notice on its very next
+    /// image rather than carry on writing into the library that is no longer
+    /// open.
+    #[test]
+    fn regenerate_all_stops_when_the_library_is_switched() {
+        let (_dir, library, records) = library_with_images(3);
+        let root = library.paths.root.clone();
+        let shared = shared(library);
+        let switched = shared.clone();
+
+        let mut ticks = Vec::new();
+        let report = regenerate_all(&shared, &root, &mut |done, total| {
+            ticks.push((done, total));
+            if done == 1 {
+                let other_dir = tempfile::tempdir().unwrap();
+                let other = Library::open_or_create(other_dir.path()).unwrap();
+                *switched.lock().unwrap() = Some(other);
+            }
+        })
+        .unwrap();
+
+        assert_eq!(ticks, vec![(0, 3), (1, 3)], "no tick after the switch");
+        assert_eq!(
+            report.regenerated + report.failed,
+            1,
+            "only the image processed before the switch counts"
+        );
+        assert!((records.len() as i64) > report.regenerated + report.failed);
     }
 }

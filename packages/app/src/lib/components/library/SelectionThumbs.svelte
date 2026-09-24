@@ -9,7 +9,7 @@
   // its own button drops that one image out of the selection.
   import XIcon from '@lucide/svelte/icons/x'
   import { tick } from 'svelte'
-  import { cachedThumbnail, thumbnail } from './thumbnail-cache'
+  import { cachedThumbnail, cacheEpoch, thumbnail } from './thumbnail-cache.svelte'
 
   interface Props {
     ids: string[]
@@ -45,6 +45,12 @@
   // `cachedThumbnail` rather than `urls` decides what still has to be asked for:
   // reading `urls` here would make this effect depend on its own writes.
   $effect(() => {
+    // Read so a `forgetAll()` (design D6) re-runs this effect for ids already
+    // drawn — otherwise the strip never asks again once a card is on screen.
+    // Stale entries in `urls` are left as they are below when the round trip
+    // has to repeat, so a tile keeps its old thumbnail rather than flashing
+    // empty while it reloads.
+    cacheEpoch()
     let current = true
     for (const id of ids) {
       const known = cachedThumbnail(id)

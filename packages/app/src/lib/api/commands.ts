@@ -38,6 +38,8 @@ import type {
   TagEditSpec,
   TagEntry,
   Theme,
+  ThumbnailRef,
+  ThumbsReport,
 } from '@boorubox/shared'
 import { invoke } from '@tauri-apps/api/core'
 
@@ -194,9 +196,24 @@ export function imageCounts(): Promise<ImageCounts> {
   return invoke('image_counts')
 }
 
-/** Absolute path to the id's bucketed thumbnail under `<library>/.thumbs/`, generated on demand. */
-export function thumbnailPath(id: string): Promise<string> {
+/**
+ * The id's bucketed thumbnail under `<library>/.thumbs/`, generated on demand
+ * (`one-level-buckets` design D6): its absolute path and the file's own
+ * modified time, which `assets.ts`'s `thumbnailUrl` appends as a query string
+ * so a regenerated file is fetched under a new URL.
+ */
+export function thumbnailPath(id: string): Promise<ThumbnailRef> {
   return invoke('thumbnail_path', { id })
+}
+
+/**
+ * Re-renders every thumbnail at the current edge (`one-level-buckets` design
+ * D4), against whichever library is open when the call starts. Progress
+ * arrives on the `thumbs:progress` event; refused with a `Busy` error while a
+ * pass is already running.
+ */
+export function regenerateThumbnails(): Promise<ThumbsReport> {
+  return invoke('regenerate_thumbnails')
 }
 
 /** Imports files and folders; progress arrives on the `import:progress` event. */

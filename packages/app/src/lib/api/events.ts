@@ -4,6 +4,7 @@ import type {
   ExportProgress,
   ImageRecord,
   ImportProgress,
+  ThumbsProgress,
 } from '@boorubox/shared'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 
@@ -116,6 +117,21 @@ export function onSidecarsProgress(
   handler: (progress: ExportProgress) => void,
 ): Promise<UnlistenFn> {
   return listen<ExportProgress>(SIDECARS_PROGRESS_EVENT, (event) => handler(event.payload))
+}
+
+/**
+ * The event `regenerate_thumbnails` emits while it runs (`one-level-buckets`
+ * design D4), payload {@link ThumbsProgress} — its own type since it is shown
+ * in its own place (Settings), the reason it is not `ExportProgress` like the
+ * events above despite the identical `{ done, total }` shape.
+ */
+export const THUMBS_PROGRESS_EVENT = 'thumbs:progress'
+
+/** Subscribes to a thumbnail regeneration's progress. */
+export function onThumbsProgress(
+  handler: (progress: ThumbsProgress) => void,
+): Promise<UnlistenFn> {
+  return listen<ThumbsProgress>(THUMBS_PROGRESS_EVENT, (event) => handler(event.payload))
 }
 
 /**

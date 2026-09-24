@@ -398,6 +398,41 @@ export interface ExportProgress {
 }
 
 /**
+ * What `thumbnail_path` answers (`one-level-buckets` design D6): the file's
+ * absolute path and its modified time in milliseconds, `0` if that cannot be
+ * read. `assets.ts`'s `thumbnailUrl` appends `version` as a query string, so a
+ * card drawn after a regeneration fetches the new bytes under a new URL —
+ * `thumbnail_path` itself always answers the same `path` for a given id, and
+ * without something that changes when the file does, the browser's own cache
+ * would keep showing the old thumbnail.
+ */
+export interface ThumbnailRef {
+  path: string
+  version: number
+}
+
+/**
+ * Payload of the `thumbs:progress` event, emitted while `regenerate_thumbnails`
+ * runs (`one-level-buckets` design D4). Its own type rather than reusing
+ * {@link ExportProgress}: seen in its own place (Settings), the same reason
+ * `SidecarsProgress` is not `RebuildProgress` on the Rust side either.
+ */
+export interface ThumbsProgress {
+  done: number
+  total: number
+}
+
+/**
+ * What `regenerate_thumbnails` answers with (design D4): how many thumbnails
+ * were rendered and how many images could not be read, over every image the
+ * pass reached before a library switch stopped it short.
+ */
+export interface ThumbsReport {
+  regenerated: number
+  failed: number
+}
+
+/**
  * What `deleteForever` and `emptyTrash` answer with (`trash` design D4, D7):
  * how many images were permanently removed, and the full path of every file
  * that could not be unlinked — named on screen rather than swept, since the

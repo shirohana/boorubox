@@ -10,6 +10,7 @@
     pendingCaptures,
     settings,
     sidecarsBackfill,
+    thumbsRegenerate,
   } from '$lib/api'
   import OpeningScreen from '$lib/components/common/OpeningScreen.svelte'
   import AppSidebar from '$lib/components/frame/Sidebar.svelte'
@@ -95,6 +96,17 @@
   // reads `sidecarsBackfill.progress` on whichever route shows it.
   $effect(() => {
     const subscription = sidecarsBackfill.subscribe()
+    subscription.catch(() => {})
+    return () => {
+      void subscription.then((unlisten) => unlisten()).catch(() => {})
+    }
+  })
+
+  // Same reasoning again: a thumbnail regeneration is started from Settings,
+  // but its last tick has to drop the thumbnail cache (design D6) even if the
+  // user has since left that screen.
+  $effect(() => {
+    const subscription = thumbsRegenerate.subscribe()
     subscription.catch(() => {})
     return () => {
       void subscription.then((unlisten) => unlisten()).catch(() => {})

@@ -15,7 +15,14 @@ export function imageUrl(libraryPath: string, image: Pick<ImageRecord, 'file'>):
   return convertFileSrc(`${libraryPath}/${image.file}`)
 }
 
-/** The thumbnail; Rust generates it if it is not on disk yet. */
+/**
+ * The thumbnail; Rust generates it if it is not on disk yet. `?v=` carries the
+ * file's own modified time (`one-level-buckets` design D6): `thumbnail_path`
+ * always answers the same path for a given id, so without something in the
+ * URL that changes when the file does, the browser's own cache would keep
+ * showing the old thumbnail after a regeneration.
+ */
 export async function thumbnailUrl(id: string): Promise<string> {
-  return convertFileSrc(await thumbnailPath(id))
+  const { path, version } = await thumbnailPath(id)
+  return `${convertFileSrc(path)}?v=${version}`
 }

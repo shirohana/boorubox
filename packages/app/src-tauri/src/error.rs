@@ -51,6 +51,14 @@ pub enum AppError {
     /// rejection of a credential it did receive.
     #[error("{reason}")]
     Credential { reason: String },
+
+    /// A second call arrived while a one-at-a-time background pass was
+    /// already running (`one-level-buckets` design D4: `regenerate_thumbnails`
+    /// against its `AtomicBool` on `AppState`). Never reached over HTTP, so it
+    /// carries no status mapping in `http::mod`'s table and falls to that
+    /// table's 500 default.
+    #[error("{reason}")]
+    Busy { reason: String },
 }
 
 /// Commands reject with a plain string: the webview has no use for the variant,

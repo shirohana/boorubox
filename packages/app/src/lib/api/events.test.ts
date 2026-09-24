@@ -26,9 +26,11 @@ import {
   onRebuildProgress,
   onRulesProgress,
   onSidecarsProgress,
+  onThumbsProgress,
   REBUILD_PROGRESS_EVENT,
   RULES_PROGRESS_EVENT,
   SIDECARS_PROGRESS_EVENT,
+  THUMBS_PROGRESS_EVENT,
 } from './events'
 
 afterEach(() => {
@@ -129,6 +131,17 @@ it('hands the subscriber the sidecar backfill progress payload, unwrapped', asyn
 
   await onSidecarsProgress(handler)
   await emit(SIDECARS_PROGRESS_EVENT, progress)
+
+  expect(handler).toHaveBeenCalledWith(progress)
+})
+
+it('hands the subscriber the thumbnail-regeneration progress payload, unwrapped', async () => {
+  mockIPC(() => {}, { shouldMockEvents: true })
+  const handler = vi.fn()
+  const progress = { done: 100, total: 300 }
+
+  await onThumbsProgress(handler)
+  await emit(THUMBS_PROGRESS_EVENT, progress)
 
   expect(handler).toHaveBeenCalledWith(progress)
 })

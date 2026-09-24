@@ -17,12 +17,12 @@ it('builds the full-image URL from the library path and the record\'s file', () 
     .toBe(`asset://localhost/${encodeURIComponent('/library/images/ab/c/abc.png')}`)
 })
 
-it('asks Rust for the thumbnail path and converts that', async () => {
+it('asks Rust for the thumbnail path and converts that, with the version as a query string', async () => {
   mockIPC((cmd, args) => {
     if (cmd !== 'thumbnail_path') throw `unexpected command ${cmd}`
-    return `/library/.thumbs/${(args as { id: string }).id}.jpg`
+    return { path: `/library/.thumbs/${(args as { id: string }).id}.jpg`, version: 1_700_000_000_000 }
   })
 
   await expect(thumbnailUrl('abc'))
-    .resolves.toBe(`asset://localhost/${encodeURIComponent('/library/.thumbs/abc.jpg')}`)
+    .resolves.toBe(`asset://localhost/${encodeURIComponent('/library/.thumbs/abc.jpg')}?v=1700000000000`)
 })

@@ -21,6 +21,7 @@
     rebuild,
     setListenerPort,
     settings,
+    thumbsRegenerate,
     trash,
   } from '$lib/api'
   import BooruSection from '$lib/components/booru/BooruSection.svelte'
@@ -32,6 +33,7 @@
   import { Button } from '$lib/components/ui/button'
   import { Input } from '$lib/components/ui/input'
   import { Kbd } from '$lib/components/ui/kbd'
+  import { Progress } from '$lib/components/ui/progress'
   import { Slider } from '$lib/components/ui/slider'
   import { Switch } from '$lib/components/ui/switch'
   import { KEYBOARD_MAP } from '$lib/keyboard'
@@ -153,6 +155,17 @@
     }
   }
 
+  /**
+   * Starts a regeneration pass (`one-level-buckets` design D4, D5). The store
+   * keeps its own `error`, read back here only on a refusal — `Busy` while a
+   * pass already runs, which the disabled button otherwise prevents.
+   */
+  async function runRegenerateThumbnails() {
+    error = null
+    const outcome = await thumbsRegenerate.start()
+    if (!outcome) error = thumbsRegenerate.error
+  }
+
   /** The explicit check (design D4): answers in all three cases. */
   async function checkForUpdate() {
     checkMessage = null
@@ -259,6 +272,64 @@
         </span>
         {trash.count === 1 ? 'image' : 'images'}, not counted above.
       </p>
+
+      <!--
+        `one-level-buckets` design D4, D5: a user-started background pass over
+        every thumbnail, off the lock and per image, so the library stays
+        usable while it runs. Always offered, unlike Rebuild below: it needs
+        no confirm, since nothing it does is destructive.
+      -->
+      <div class="flex flex-wrap items-center justify-between gap-3 border-t border-border pt-4">
+        <div class="min-w-0">
+          <p class="text-sm font-medium">Regenerate thumbnails</p>
+          <p class="text-sm text-muted-foreground">
+            Re-renders every thumbnail at the current size. Existing files are replaced as the
+            pass reaches them.
+          </p>
+        </div>
+        <Button
+          variant="outline"
+          size="sm"
+          disabled={thumbsRegenerate.running}
+          onclick={() => void runRegenerateThumbnails()}
+        >
+          {thumbsRegenerate.running ? 'Regenerating…' : 'Regenerate thumbnails'}
+        </Button>
+      </div>
+
+      <!--
+        The report and the error are read from the store directly, not the
+        page's own `error` (which `runRegenerateThumbnails` also sets, for a
+        refusal caught while this screen is mounted): the store keeps both
+        for the window's life, so a pass that failed or finished while the
+        user was on another screen still shows when they come back. Gated on
+        `report`/`error`/`progress` rather than `running`, so no empty div
+        sits on screen for the instant after `start()` before the first tick
+        arrives.
+      -->
+      {#if thumbsRegenerate.report || thumbsRegenerate.error || thumbsRegenerate.progress}
+        <div class="flex flex-col gap-2">
+          {#if thumbsRegenerate.report}
+            <p class="text-sm text-muted-foreground tabular-nums">
+              Regenerated {thumbsRegenerate.report.regenerated.toLocaleString()}
+              {#if thumbsRegenerate.report.failed > 0}
+                — {thumbsRegenerate.report.failed.toLocaleString()} could not be read
+              {/if}
+            </p>
+          {:else if thumbsRegenerate.error}
+            <p class="text-sm text-destructive">{thumbsRegenerate.error}</p>
+          {:else if thumbsRegenerate.progress}
+            <p class="text-sm text-muted-foreground tabular-nums">
+              {thumbsRegenerate.progress.done.toLocaleString()} of
+              {thumbsRegenerate.progress.total.toLocaleString()}
+            </p>
+            <Progress
+              value={thumbsRegenerate.progress.done}
+              max={thumbsRegenerate.progress.total}
+            />
+          {/if}
+        </div>
+      {/if}
 
       <!--
         `launch-screen` design D3: on by default (spec `library-folder`'s

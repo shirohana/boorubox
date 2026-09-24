@@ -18,7 +18,7 @@
   import CollectionMenuItems from './CollectionMenuItems.svelte'
   import { isOrphanedFocus } from './focus-handback'
   import { TAG_FOOTER } from './grid-window'
-  import { cachedThumbnail, thumbnail } from './thumbnail-cache'
+  import { cachedThumbnail, cacheEpoch, thumbnail } from './thumbnail-cache.svelte'
   import type { TilePress } from './tile-click'
   import { shouldActivate, travelled } from './tile-click'
   import type { TrashActions } from './trash-actions'
@@ -110,6 +110,9 @@
 
   let src = $state<string | null>(null)
   let previewFailed = $state(false)
+  // Plain closure state, not `$state`: only the effect below reads it, to
+  // tell a same-id rerun (an epoch bump) apart from a genuine id change.
+  let lastPreviewId: string | null = null
 
   const title = $derived(image?.pageTitle || image?.imageUrl || image?.id || '')
   const capturedOn = $derived(image ? new Date(image.capturedAt).toLocaleDateString() : '')
@@ -246,9 +249,24 @@
 
   $effect(() => {
     const id = previewId
+    // Read so a `forgetAll()` (design D6) re-runs this effect for a card
+    // already on screen — otherwise it never asks again, since the closure
+    // only ever tracked `previewId`.
+    cacheEpoch()
     previewFailed = false
     const cached = id ? cachedThumbnail(id) : null
-    src = cached
+    const sameId = id === lastPreviewId
+    lastPreviewId = id
+    if (!id) {
+      src = null
+    } else if (cached !== null) {
+      src = cached
+    } else if (!sameId) {
+      src = null
+    }
+    // Else: the same id lost its cache entry (an epoch bump) — keep the
+    // tile's current `src` until the round trip below resolves, so it does
+    // not flash empty while it reloads.
     if (!id || cached) return
 
     let current = true

@@ -8,6 +8,7 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 
 use tauri::{AppHandle, Emitter, Manager, Runtime, State};
 use tauri_plugin_dialog::DialogExt;
@@ -23,7 +24,7 @@ use crate::model::{
     ImageRecord, ImportReport, LibraryStatus, ListenerStatus, Note, PostRef, RebuildProgress,
     RebuildReport, RecentLibrary, Rule, RuleInput, RuleListEntry, RulesImportReport,
     RulesRunReport, SearchRequest, SearchResult, SidecarsProgress, Stamp, StampInput, TagCategory,
-    TagCount, TagCounts, TagEditSpec, TagEntry, Theme,
+    TagCount, TagCounts, TagEditSpec, TagEntry, Theme, ThumbnailRef, ThumbsProgress, ThumbsReport,
 };
 use crate::settings::Settings;
 use crate::{
@@ -68,6 +69,12 @@ const REBUILD_PROGRESS_EVENT: &str = "library:rebuild";
 /// is missing, shown as one tile in the pending-work band (`library-sidecars`
 /// design D7, D13, spec `pending-work`).
 const SIDECARS_PROGRESS_EVENT: &str = "library:sidecars";
+
+/// Progress while `regenerate_thumbnails` runs (`one-level-buckets` design
+/// D4), shown in Settings where the pass was started — its own event, not
+/// `import:progress` or `library:rebuild`, for the reason those already carry
+/// fields this pass has no answer for.
+const THUMBS_PROGRESS_EVENT: &str = "thumbs:progress";
 
 /// Emitted once the launch-time open of the remembered library settles,
 /// success or failure alike (`launch-screen` design D1). Carries no payload:
@@ -1107,9 +1114,16 @@ pub async fn booru_upload(
     Ok(BooruUploadOutcome::Posted { post, commentary })
 }
 
-/// Absolute path; the thumbnail is generated if it is not there yet.
+/// Absolute path and the file's version (`one-level-buckets` design D6): the
+/// thumbnail is generated if it is not there yet, and `version` is its
+/// modified time in milliseconds — `0` if that cannot be read, never a
+/// reason to fail a call the thumbnail itself already succeeded at. The
+/// webview's URL carries `version` as a query string (`assets.ts`), so a card
+/// drawn again after a regeneration fetches the new bytes under a new URL
+/// instead of the browser's cache serving the old ones back under the path
+/// alone, which never changes for a given id.
 #[tauri::command]
-pub async fn thumbnail_path(id: String, state: State<'_, AppState>) -> Result<String> {
+pub async fn thumbnail_path(id: String, state: State<'_, AppState>) -> Result<ThumbnailRef> {
     off_main_thread(&state.library, move |library| {
         // Only reading the record needs the library. Generating the thumbnail
         // is a read, a decode, a downscale and an encode of the full image, and
@@ -1119,9 +1133,70 @@ pub async fn thumbnail_path(id: String, state: State<'_, AppState>) -> Result<St
                 .ok_or_else(|| AppError::NotFound(format!("image {id}")))?;
             Ok((library.paths.clone(), record))
         })?;
-        Ok(thumbs::ensure_thumbnail(&paths, &record)?
-            .display()
-            .to_string())
+        let path = thumbs::ensure_thumbnail(&paths, &record)?;
+        Ok(ThumbnailRef {
+            version: file_version_ms(&path),
+            path: path.display().to_string(),
+        })
+    })
+    .await
+}
+
+// FIXME: exFAT and SMB round a file's modified time to a 1-2 s resolution,
+// so two regenerations of the same thumbnail inside that window can answer
+// the same `version` and the webview's `?v=` cache-buster (design D6) fails
+// to bust. The fix is `"{ms}-{len}"` — the byte length breaks the tie mtime
+// alone can't — but that changes `ThumbnailRef.version` from a number to a
+// string on both sides of the transport contract, and the webview is
+// building against the `i64` shape right now; not built yet.
+fn file_version_ms(path: &Path) -> i64 {
+    std::fs::metadata(path)
+        .and_then(|metadata| metadata.modified())
+        .ok()
+        .and_then(|modified| modified.duration_since(std::time::UNIX_EPOCH).ok())
+        .map_or(0, |elapsed| elapsed.as_millis() as i64)
+}
+
+/// Re-render every thumbnail at the current edge (`one-level-buckets` design
+/// D4), against whichever library is open when the call starts. Refused with
+/// `Busy` while `AppState.thumbs_regenerating` is already set — the `swap` is
+/// what makes "one pass at a time" true here rather than merely assumed, and
+/// the flag comes back down whichever way the pass ends, including a refusal
+/// with no library open.
+#[tauri::command]
+pub async fn regenerate_thumbnails<R: Runtime>(
+    app: AppHandle<R>,
+    state: State<'_, AppState>,
+) -> Result<ThumbsReport> {
+    if state.thumbs_regenerating.swap(true, Ordering::SeqCst) {
+        return Err(AppError::Busy {
+            reason: "thumbnails are already being regenerated".to_string(),
+        });
+    }
+    let result = run_regenerate_thumbnails(&app, &state).await;
+    state.thumbs_regenerating.store(false, Ordering::SeqCst);
+    result
+}
+
+async fn run_regenerate_thumbnails<R: Runtime>(
+    app: &AppHandle<R>,
+    state: &AppState,
+) -> Result<ThumbsReport> {
+    // The root of whichever library is open right now: what this pass was
+    // started for, and what `thumbs::regenerate_all` checks against on every
+    // image so a switch mid-pass stops it rather than writing into the
+    // library that replaced it (mirrors `rebuild_library`'s `target`).
+    let root =
+        with_library_off_main_thread(&state.library, |library| Ok(library.paths.root.clone()))
+            .await?;
+    let app = app.clone();
+    off_main_thread(&state.library, move |library| {
+        thumbs::regenerate_all(library, &root, &mut |done, total| {
+            // A dropped tick is a progress bar that skips a number; the pass
+            // itself is unaffected, so it is not worth failing over (mirrors
+            // every other progress emitter in this file).
+            let _ = app.emit(THUMBS_PROGRESS_EVENT, ThumbsProgress { done, total });
+        })
     })
     .await
 }
@@ -2622,13 +2697,42 @@ mod tests {
         let (_library, app) = app_with_library();
         import(&app, &folder_of_images(1));
         let id = ids_in_library(&app).remove(0);
-        let path = PathBuf::from(now(thumbnail_path(id.clone(), app.state())).unwrap());
+        let path = PathBuf::from(now(thumbnail_path(id.clone(), app.state())).unwrap().path);
         std::fs::remove_file(&path).unwrap();
 
         let again = now(thumbnail_path(id, app.state())).unwrap();
 
-        assert_eq!(PathBuf::from(&again), path);
+        assert_eq!(PathBuf::from(&again.path), path);
         assert!(path.is_file());
+    }
+
+    /// `one-level-buckets` design D6: `version` is the thumbnail file's own
+    /// modified time, so a file that changes on disk answers a different
+    /// value without the id or the path changing at all.
+    #[test]
+    fn thumbnail_path_answers_the_file_s_version() {
+        let (_library, app) = app_with_library();
+        import(&app, &folder_of_images(1));
+        let id = ids_in_library(&app).remove(0);
+        let first = now(thumbnail_path(id.clone(), app.state())).unwrap();
+        assert_ne!(
+            first.version, 0,
+            "a file that was just written must answer a real mtime"
+        );
+
+        let path = PathBuf::from(&first.path);
+        std::fs::remove_file(&path).unwrap();
+        let second = now(thumbnail_path(id, app.state())).unwrap();
+
+        assert_eq!(
+            second.path, first.path,
+            "the path never changes for a given id"
+        );
+        assert_eq!(
+            second.version,
+            file_version_ms(&path),
+            "the version answered must be the regenerated file's own mtime"
+        );
     }
 
     #[test]
@@ -2638,6 +2742,23 @@ mod tests {
         let error = now(thumbnail_path("no-such-id".to_string(), app.state())).unwrap_err();
 
         assert!(matches!(error, AppError::NotFound(_)), "{error:?}");
+    }
+
+    /// `one-level-buckets` design D4: the `AtomicBool` flag is what a second
+    /// call while one is running reads as busy — set directly here rather
+    /// than by racing two real passes against each other, the way
+    /// `install_import_control`'s own invariant is asserted rather than
+    /// exercised by a race.
+    #[test]
+    fn regenerate_thumbnails_refuses_a_second_run_while_one_runs() {
+        let (_library, app) = app_with_library();
+        app.state::<AppState>()
+            .thumbs_regenerating
+            .store(true, Ordering::SeqCst);
+
+        let error = now(regenerate_thumbnails(app.handle().clone(), app.state())).unwrap_err();
+
+        assert!(matches!(error, AppError::Busy { .. }), "{error:?}");
     }
 
     #[test]

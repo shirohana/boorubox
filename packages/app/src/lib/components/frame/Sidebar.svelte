@@ -13,6 +13,7 @@
     library,
     libraryCounts,
     sidecarsBackfill,
+    thumbsRegenerate,
     stamps,
     trash,
     vocabulary,
@@ -69,6 +70,7 @@
     void trash.refresh()
     imports.dismissAll()
     sidecarsBackfill.reset()
+    thumbsRegenerate.reset()
     void libraryCounts.refresh()
     // `collections` design D7: the menus and the sidebar section need the
     // list itself following a library switch, the same round trip the trash

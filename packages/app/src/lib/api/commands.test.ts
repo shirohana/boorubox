@@ -20,6 +20,7 @@ import type {
   TagCounts,
   TagEditSpec,
   TagEntry,
+  ThumbsReport,
 } from '@boorubox/shared'
 import {
   CLICK_ZOOM_CEILING_DEFAULT,
@@ -54,6 +55,7 @@ import {
   pickLibrary,
   recentLibraries,
   rebuildLibrary,
+  regenerateThumbnails,
   restoreImages,
   revealLibrary,
   rulesDelete,
@@ -357,10 +359,18 @@ it('image_counts takes no arguments', async () => {
   expect(calls).toHaveBeenCalledWith('image_counts', {})
 })
 
-it('thumbnail_path passes the id and returns the absolute path', async () => {
-  const calls = spyIPC('/library/.thumbs/abc.jpg')
-  await expect(thumbnailPath('abc')).resolves.toBe('/library/.thumbs/abc.jpg')
+it('thumbnail_path passes the id and returns the path and version', async () => {
+  const ref = { path: '/library/.thumbs/abc.jpg', version: 1_700_000_000_000 }
+  const calls = spyIPC(ref)
+  await expect(thumbnailPath('abc')).resolves.toEqual(ref)
   expect(calls).toHaveBeenCalledWith('thumbnail_path', { id: 'abc' })
+})
+
+it('regenerate_thumbnails takes no arguments and returns the report', async () => {
+  const report: ThumbsReport = { regenerated: 300, failed: 1 }
+  const calls = spyIPC(report)
+  await expect(regenerateThumbnails()).resolves.toEqual(report)
+  expect(calls).toHaveBeenCalledWith('regenerate_thumbnails', {})
 })
 
 it('import_paths passes the path array', async () => {

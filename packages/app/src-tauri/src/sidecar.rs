@@ -40,12 +40,12 @@ const LIBRARY_FILE_NAME: &str = "library.json";
 const SIDECAR_PART_SUFFIX: &str = "json.part";
 
 /// One image's row, its tags and its posts, exactly as
-/// `images/<a1>/<b2>/<id>.json` holds them (design D1). Deliberately not
-/// `ImageRecord` (design D2): `file` is a function of `id` and `ext`
-/// (`LibraryPaths::image_path`) and storing it would be a second spelling of
-/// the layout, and `missing` is a cache of the last stat that the rebuild
-/// recomputes for free — see `maintenance::refresh_missing_for`, the one
-/// write to `images` that never touches a sidecar.
+/// `images/<a1>/<id>.json` holds them (design D1; `one-level-buckets` design
+/// D1). Deliberately not `ImageRecord` (design D2): `file` is a function of
+/// `id` and `ext` (`LibraryPaths::image_path`) and storing it would be a
+/// second spelling of the layout, and `missing` is a cache of the last stat
+/// that the rebuild recomputes for free — see `maintenance::refresh_missing_for`,
+/// the one write to `images` that never touches a sidecar.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Sidecar {

@@ -278,9 +278,9 @@ pub struct ImageRecord {
     pub id: String,
     pub ext: String,
     /// Path to the file, relative to the library root, `/`-separated on every
-    /// platform (design D1, D2): `images/<a1>/<b2>/<id>.<ext>`. The one field
-    /// that names where the file is — the webview builds its URL from this
-    /// rather than composing the layout itself.
+    /// platform (design D1, D2; `one-level-buckets` design D1): `images/<a1>/
+    /// <id>.<ext>`. The one field that names where the file is — the webview
+    /// builds its URL from this rather than composing the layout itself.
     pub file: String,
     pub mime: String,
     pub size: i64,
@@ -615,6 +615,42 @@ pub struct RebuildProgress {
 pub struct SidecarsProgress {
     pub done: i64,
     pub total: i64,
+}
+
+/// Payload of the `thumbs:progress` event, emitted while `regenerate_thumbnails`
+/// runs (`one-level-buckets` design D4), the same `{ done, total }` shape as
+/// every other progress event in this file — its own type since it is seen in
+/// its own place (Settings), the reason [`SidecarsProgress`] is not
+/// [`RebuildProgress`] either.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ThumbsProgress {
+    pub done: i64,
+    pub total: i64,
+}
+
+/// What `regenerate_thumbnails` answers with (design D4): how many thumbnails
+/// were rendered and how many images could not be read, over every image the
+/// pass reached before a library switch stopped it short.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ThumbsReport {
+    pub regenerated: i64,
+    pub failed: i64,
+}
+
+/// What `thumbnail_path` answers (`one-level-buckets` design D6): the file's
+/// absolute path and its modified time in milliseconds, `0` if that cannot be
+/// read. The grid's URL carries `version` as a query string
+/// (`assets.ts`'s `thumbnailUrl`) so a card drawn after a regeneration fetches
+/// the new bytes under a new URL — `thumbnail_path` itself always answers the
+/// same `path` for a given id, and without something that changes when the
+/// file does, the browser's own cache would keep showing the old thumbnail.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ThumbnailRef {
+    pub path: String,
+    pub version: i64,
 }
 
 /// What `delete_forever` and `empty_trash` answer with (`trash` design D4,
