@@ -63,15 +63,19 @@ revert) answers a layout question in one round; it found `aspect-ratio: auto` on
   owns that point: it pressed the grid tile *behind* a modal dialog every time. Named
   buttons and tiles are AX elements and click fine; an empty region of a dialog is
   unreachable this way.
-- A JXA CGEvent click was not delivered (Accessibility trust for the calling process).
-  `cliclick` is not installed.
+- Real mouse events — right-click, hover, double-click, scroll — come from `mouse.swift`
+  beside this file: `swiftc -O mouse.swift -o /tmp/m` once, then `/tmp/m rclick X Y`,
+  `/tmp/m move X Y` (a hover that paints), `/tmp/m click X Y`, `/tmp/m dclick X Y`,
+  `/tmp/m scroll X Y -300`, in screen points. It posts CGEvents at the HID tap and the
+  terminal's own Accessibility trust carries them (2026-09-25 smoke run: right-click menus,
+  pill hover and the viewer were all driven this way). A JXA CGEvent click was not delivered
+  the same way; `cliclick` is not installed.
 - AX positions from an `entire contents of window 1` walk are in the same coordinate space
   as the page's `getBoundingClientRect` plus the window origin. Use them, not
   window-relative guesses, when a click must land on an element.
-- A hover state cannot be produced by warping the cursor (CGWarp delivers no mouse event
-  to the webview; `cliclick` and pyobjc are absent). Park the cursor over the element, then
-  nudge the window by 1 px through System Events (`set position of window 1 to …`): the
-  move delivers the mouse event and the hover paints.
+- Warping the cursor alone paints no hover (CGWarp delivers no mouse event); `mouse.swift
+  move` does, and so does parking the cursor and nudging the window by 1 px through System
+  Events.
 - The Import menu's native file dialog can be driven: click the pop-up, arrow + Enter,
   then Cmd+Shift+G, type a path, Enter, Enter.
 
