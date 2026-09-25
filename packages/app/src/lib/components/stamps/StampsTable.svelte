@@ -92,7 +92,7 @@
 {/if}
 
 <!--
-  A stamp deleted mid-review is not recoverable, so this asks — `RulesTable`'s
+  A stamp deleted mid-review is not recoverable, so this asks — `RuleList`'s
   own dialog, the same reason.
 -->
 <ConfirmDialog

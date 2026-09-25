@@ -11,7 +11,7 @@
 //
 // No `create`/`rename`/`delete` of its own: `CollectionNameDialog` and
 // `CollectionsSection` call the commands directly and then `refresh()`, the
-// way `RulesTable` re-reads its list after a write rather than the store
+// way `RuleList` re-reads its list after a write rather than the store
 // guessing at what its own write changed.
 
 import type { Collection } from '@boorubox/shared'

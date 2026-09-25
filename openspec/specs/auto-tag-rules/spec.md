@@ -209,7 +209,9 @@ of rules SHALL be refused with a reason, leaving the library's rules untouched.
 The app SHALL show the library's rules in its settings, listing for each its name, its
 pattern, whether the pattern is a regular expression, the tags it adds, whether it is enabled
 and whether it is invalid, and SHALL offer creating a rule, editing one, enabling or disabling
-one without editing it, and deleting one. A rule SHALL require a name and at least one tag. A
+one without editing it, and deleting one. The listing SHALL fit the settings page's width
+without a sideways scroll, one entry per rule with its fields stacked, so every control of a
+rule is on screen at once (owner, 2026-09-25). A rule SHALL require a name and at least one tag. A
 rule whose pattern is empty SHALL be shown as matching everything, because that is what it
 does. Deleting a rule SHALL NOT change any image.
 
@@ -232,3 +234,7 @@ does. Deleting a rule SHALL NOT change any image.
 #### Scenario: Deleting
 - **WHEN** the user deletes a rule that has tagged images
 - **THEN** the rule is gone and every image it tagged keeps its tags
+
+#### Scenario: Every control on screen
+- **WHEN** the settings page is at its narrowest width and a rule has a long pattern and ten tags
+- **THEN** its switch, edit and delete controls are visible without scrolling sideways, and the pattern and tags wrap

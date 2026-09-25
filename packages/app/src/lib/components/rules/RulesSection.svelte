@@ -20,7 +20,7 @@
   import { Button } from '$lib/components/ui/button'
   import { Progress } from '$lib/components/ui/progress'
   import RuleForm from './RuleForm.svelte'
-  import RulesTable from './RulesTable.svelte'
+  import RuleList from './RuleList.svelte'
 
   let entries = $state<RuleListEntry[]>([])
   /** Whether the form is open, and on which rule — `null` is a new one. */
@@ -207,7 +207,7 @@
     </div>
   {/if}
 
-  <RulesTable
+  <RuleList
     {entries}
     {newIds}
     onedit={(entry) => {

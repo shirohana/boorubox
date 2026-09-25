@@ -309,6 +309,14 @@ the legacy's layout, which the owner knows, rebuilt in the frame's components. N
 rules are marked in the list until the section is left, which is the legacy's `NEW` badge and
 the only way to see what an import of thirty rules actually added.
 
+2026-09-25 (`rules-panel-layout`): the legacy's table became a stacked list. The table was
+right when this design chose it: it was the legacy's own layout, and the owner already knew it.
+It stopped being right at 672px — a table with five columns (name, pattern, tags, on, actions)
+scrolled sideways at that width, hiding the switch and the edit and delete buttons behind the
+scroll — and fitting the settings column outranks the familiarity the table traded on. The
+section now renders one bordered entry per rule — a header line with the name, its badges, the
+switch and the buttons, then the pattern and tags as labelled rows under it.
+
 **D12. The run's progress is reported the way import's is.**
 
 A run over ten thousand images is the second long-running blocking job in the app, and Phase 1
