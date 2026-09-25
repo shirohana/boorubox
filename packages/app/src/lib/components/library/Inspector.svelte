@@ -25,6 +25,7 @@
   import { CATEGORY_TEXT_CLASS, searchMark, searchMarkClass, SEARCH_MARK_CLASS } from '$lib/components/tags/categories'
   import TagInput from '$lib/components/tags/TagInput.svelte'
   import CollectionPinMenuItem from '$lib/components/tags/CollectionPinMenuItem.svelte'
+  import RenameArtistDialog from '$lib/components/tags/RenameArtistDialog.svelte'
   import TagVocabularyMenuItems from '$lib/components/tags/TagVocabularyMenuItems.svelte'
   import { Badge } from '$lib/components/ui/badge'
   import { Button } from '$lib/components/ui/button'
@@ -129,6 +130,17 @@
      * the tag editor's own save and the "Add to…" menu use.
      */
     onedit?: (ids: string[], spec: TagEditSpec, label: string) => void
+    /**
+     * A rename retagged this image and, usually, others too (`artist-entries`
+     * design D6): the screen's own write pattern, `afterWrite` in
+     * `LibraryScreen.svelte` — vocabulary and search refresh, then
+     * `keepMatching()` prunes the selection and refocuses, since a rename can
+     * move a row out of the current search, the same reason every other
+     * selection-wide writer ends there. Absent inside the viewer, which shows
+     * one image and neither reads nor writes a selection — there, the
+     * dialog's own success handler falls back to `results.refresh()` alone.
+     */
+    onartistrenamed?: () => void
   }
 
   let {
@@ -141,6 +153,7 @@
     onrelease,
     onactivate,
     onedit,
+    onartistrenamed,
   }: Props = $props()
 
   /**
@@ -450,6 +463,21 @@
 
   /** Mounted outside the dropdown: a closed menu's content is unmounted. */
   let creatingCollection = $state(false)
+
+  /**
+   * The artist tag `RenameArtistDialog` is open for, and the image it reads
+   * its candidate URL from — `null` while none is open (`artist-entries`
+   * design D6). A snapshot taken when the menu item is chosen, not a guard on
+   * the tag plus the live `image` above: a capture landing while the dialog is
+   * up runs `results.refresh()`, which empties the results for a moment and
+   * turns `image` briefly `null`, and reading the live `image` instead would
+   * change what the open dialog reads out from under a rename in progress.
+   * `RenameArtistDialog` itself stays mounted (the `CollectionNameDialog`
+   * shape) and follows this via `open`/`from`/`image` props, so it is only
+   * this snapshot's own reassignment, not `results.refresh()`, that ever
+   * changes what it sees.
+   */
+  let renamingArtist = $state<{ tag: string, image: ImageRecord } | null>(null)
 
   async function removeFromCollection(collectionId: string): Promise<void> {
     if (!image) return
@@ -996,6 +1024,20 @@
                   <ContextMenu.Content portalProps={{ to: portalTo }}>
                     {@render tagSearchItems(tag)}
                     <ContextMenu.Separator />
+                    {#if vocabulary.categoryOf(tag) === 'artist'}
+                      <!--
+                        `artist-entries` design D6: only this menu offers it — the
+                        sidebar row and the pinned chip share `TagVocabularyMenuItems`
+                        below with no image in scope to read a profile URL from, so
+                        the item is kept here rather than inside that component,
+                        which must not gain it.
+                      -->
+                      <ContextMenu.Item onSelect={() => (renamingArtist = { tag, image })}>
+                        <PencilIcon />
+                        Rename artist…
+                      </ContextMenu.Item>
+                      <ContextMenu.Separator />
+                    {/if}
                     <TagVocabularyMenuItems name={tag} />
                     <ContextMenu.Separator />
                     <ContextMenu.Item variant="destructive" onSelect={() => remove(tag)}>
@@ -1341,5 +1383,35 @@
   onsaved={(collection) => {
     creatingCollection = false
     void addToCreated(collectionTarget, collection)
+  }}
+/>
+
+<!--
+  Outside the menu above, the same reason as `CollectionNameDialog`, and
+  mounted unconditionally like it: a bits-ui `Dialog` torn down while still
+  open (the old `{#if renamingArtist}`) keeps running its own close effects
+  against derived state that no longer exists (`derived_inert`). Reads
+  `renamingArtist`'s own snapshot, not `image` — see its doc comment above.
+-->
+<RenameArtistDialog
+  open={renamingArtist !== null}
+  from={renamingArtist?.tag ?? ''}
+  image={renamingArtist?.image ?? null}
+  {portalTo}
+  onclose={() => {
+    renamingArtist = null
+    onrelease?.()
+  }}
+  onrenamed={() => {
+    renamingArtist = null
+    // `artist-entries` design D6: the panel and the grid show the new name
+    // once these land — `vocabulary.refresh()` for the category and pin,
+    // then the screen's own write pattern where one is wired (`afterWrite`,
+    // `LibraryScreen.svelte`), or `results.refresh()` alone inside the
+    // viewer, which has no selection for that pattern to prune.
+    void vocabulary.refresh()
+    if (onartistrenamed) onartistrenamed()
+    else void results.refresh()
+    onrelease?.()
   }}
 />

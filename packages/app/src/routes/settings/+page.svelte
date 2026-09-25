@@ -24,6 +24,7 @@
     thumbsRegenerate,
     trash,
   } from '$lib/api'
+  import ArtistsSection from '$lib/components/artists/ArtistsSection.svelte'
   import BooruSection from '$lib/components/booru/BooruSection.svelte'
   import ConfirmDialog from '$lib/components/common/ConfirmDialog.svelte'
   import RebuildStatus from '$lib/components/common/RebuildStatus.svelte'
@@ -437,6 +438,14 @@
         </Button>
       </form>
     </section>
+
+    <!--
+      Slot Settings · Artists (`artist-entries` design D7): above Rules — an
+      entry is configuration of the library applied at capture, exactly what
+      Rules is, and the door for undoing it (the inspector's "Rename artist…")
+      lives on an image, not a route of its own.
+    -->
+    <ArtistsSection />
 
     <!--
       Slot Settings · Rules (`auto-tag-rules` design D11). Beside Capture rather

@@ -289,6 +289,58 @@ pub struct SiteAdapterRecord {
     pub fields: serde_json::Value,
 }
 
+/// An artist tag and the profile URLs it owns (`artist-entries` design D1):
+/// Danbooru's own shape for an artist's URLs. `artists::list` groups the
+/// `artist_urls` rows by tag, `urls` sorted by URL, and a rebuild restores
+/// this list verbatim from `library.json`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ArtistEntry {
+    pub tag: String,
+    pub urls: Vec<String>,
+}
+
+/// What `rename_artist_preview` takes: the image's own record
+/// (`artist-entries` design D5), so the one URL it answers with is exactly
+/// the profile URL a capture from this image would match against. `adapter`
+/// carries `null` rather than being omitted when there is none.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RenameArtistPreviewInput {
+    pub from: String,
+    pub adapter: Option<SiteAdapterRecord>,
+}
+
+/// What `rename_artist_preview` answers with: how many images carry `from`
+/// (trash included) and the candidate URLs a rename would prefill, each shown
+/// with a scheme (`artist-entries` design D5) — the webview never builds a
+/// profile URL itself, so what it shows is exactly what the match would read.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RenameArtistPreview {
+    pub carriers: i64,
+    pub urls: Vec<String>,
+}
+
+/// What `rename_artist` takes (`artist-entries` design D5).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RenameArtistInput {
+    pub from: String,
+    pub to: String,
+    pub urls: Vec<String>,
+}
+
+/// What `rename_artist` answers with: how many carriers were retagged, and
+/// whether `to` already existed as an artist tag the carriers merged into
+/// (`artist-entries` design D5).
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RenameArtistReport {
+    pub retagged: i64,
+    pub merged: bool,
+}
+
 /// The JSON part of a `POST /captures` multipart body, and the whole body of
 /// `POST /captures/pending`, where the extension announces the capture it is
 /// about to fetch bytes for (design D2). One shape for both: an announcement
@@ -1295,6 +1347,76 @@ mod tests {
                 category,
             );
         }
+    }
+
+    /// `artist-entries` task 1.3: the wire spelling a hand-mirrored rename
+    /// would silently break — camelCase keys throughout, and `adapter`
+    /// present as `null` rather than omitted when there is none.
+    #[test]
+    fn artist_entry_and_rename_types_cross_the_wire_in_camel_case() {
+        let entry = ArtistEntry {
+            tag: "metaljelly".to_string(),
+            urls: vec!["x.com/metaljelly0811".to_string()],
+        };
+        assert_eq!(
+            serde_json::to_value(&entry).unwrap(),
+            serde_json::json!({ "tag": "metaljelly", "urls": ["x.com/metaljelly0811"] }),
+        );
+
+        let preview_input = RenameArtistPreviewInput {
+            from: "metaljelly0811".to_string(),
+            adapter: Some(SiteAdapterRecord {
+                site: "x".to_string(),
+                fields: serde_json::json!({ "handle": "metaljelly0811" }),
+            }),
+        };
+        assert_eq!(
+            serde_json::to_value(&preview_input).unwrap(),
+            serde_json::json!({
+                "from": "metaljelly0811",
+                "adapter": { "site": "x", "fields": { "handle": "metaljelly0811" } },
+            }),
+        );
+        let no_adapter = RenameArtistPreviewInput {
+            from: "someone".to_string(),
+            adapter: None,
+        };
+        assert_eq!(
+            serde_json::to_value(&no_adapter).unwrap(),
+            serde_json::json!({ "from": "someone", "adapter": null }),
+        );
+
+        let preview = RenameArtistPreview {
+            carriers: 120,
+            urls: vec!["https://x.com/metaljelly0811".to_string()],
+        };
+        assert_eq!(
+            serde_json::to_value(&preview).unwrap(),
+            serde_json::json!({ "carriers": 120, "urls": ["https://x.com/metaljelly0811"] }),
+        );
+
+        let rename_input = RenameArtistInput {
+            from: "metaljelly0811".to_string(),
+            to: "metaljelly".to_string(),
+            urls: vec!["https://x.com/metaljelly0811".to_string()],
+        };
+        assert_eq!(
+            serde_json::to_value(&rename_input).unwrap(),
+            serde_json::json!({
+                "from": "metaljelly0811",
+                "to": "metaljelly",
+                "urls": ["https://x.com/metaljelly0811"],
+            }),
+        );
+
+        let report = RenameArtistReport {
+            retagged: 120,
+            merged: false,
+        };
+        assert_eq!(
+            serde_json::to_value(report).unwrap(),
+            serde_json::json!({ "retagged": 120, "merged": false }),
+        );
     }
 
     /// `pinned-tag-groups` task 1.2, design D2: a `library.json` written

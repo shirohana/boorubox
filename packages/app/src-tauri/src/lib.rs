@@ -1,3 +1,4 @@
+pub mod artists;
 pub mod booru;
 pub mod bundle;
 pub mod collections;
@@ -252,6 +253,11 @@ pub fn run() {
             commands::booru_site_delete,
             commands::booru_site_test,
             commands::booru_upload,
+            commands::artists_list,
+            commands::artists_upsert,
+            commands::artists_delete,
+            commands::rename_artist_preview,
+            commands::rename_artist,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

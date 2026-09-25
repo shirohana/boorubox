@@ -173,9 +173,15 @@ its `id` could be read SHALL settle nothing.
 - **THEN** nothing is told to the window
 
 ### Requirement: A capture is stored with its author as an artist tag
-An image entering the library with an adapter record SHALL be stored carrying one artist tag
-named after the author the record names: for a record from `x`, its `handle`; for a record
-from `pixiv`, its `artist` (the display name). The name SHALL be spelled the way every tag is:
+An image entering the library with an adapter record SHALL be stored carrying one artist tag.
+When an artist entry (`artist-entries`) owns the author's profile URL the record names (for
+`x`, `https://x.com/<handle>`; for `pixiv`, `https://www.pixiv.net/users/<userId>`), the tag
+SHALL be that entry's; among several owning entries the one with the longest URL SHALL win. The
+page URL and the post URL SHALL NOT be consulted: the page URL is the tab's address, which on X
+is often the timeline or another user's page. An entry whose tag exists under a category other
+than artist SHALL be ignored for this purpose. Otherwise the tag SHALL be named after the
+author the record names: for a record from `x`, its `handle`; for a record from `pixiv`, its
+`artist` (the display name). The name SHALL be spelled the way every tag is:
 lower-cased, surrounding whitespace dropped, and every run of whitespace inside it read as one
 `_`. A record from any other site, a record without that field, or a field that is not text or
 is empty once spelled, SHALL add no artist tag.
@@ -239,3 +245,23 @@ a delivery whose `id` is already stored SHALL NOT gain one.
 #### Scenario: The answer never waits on the tag
 - **WHEN** a capture arrives from X whose handle names an existing general tag
 - **THEN** the response is 201 with the stored record, exactly as it would be with no adapter record
+
+#### Scenario: An entry owns the handle's profile URL
+- **WHEN** the artist `metaljelly` owns `https://x.com/metaljelly0811` and a capture arrives with the record `{ site: "x", fields: { handle: "metaljelly0811", postUrl: "https://x.com/metaljelly0811/status/1" } }`
+- **THEN** the stored image carries `metaljelly`, an artist tag, and not `metaljelly0811`
+
+#### Scenario: An entry owns the Pixiv user
+- **WHEN** the artist `kani_beam` owns `https://www.pixiv.net/users/3439325` and a capture arrives with the record `{ site: "pixiv", fields: { artist: "かにビーム", userId: "3439325" } }`
+- **THEN** the stored image carries `kani_beam` and not `かにビーム`
+
+#### Scenario: The page URL names nobody
+- **WHEN** the artist `bob` owns `https://x.com/bob` and a capture of alice's post arrives from bob's profile page with the record `{ site: "x", fields: { handle: "alice" } }` and page URL `https://x.com/bob`
+- **THEN** the stored image carries `alice`
+
+#### Scenario: A neighbouring handle is not owned
+- **WHEN** the artist `metaljelly` owns `https://x.com/metaljelly0811` and a capture arrives from X with the handle `metaljelly08110`
+- **THEN** the stored image carries `metaljelly08110`
+
+#### Scenario: An old Pixiv record without the user id
+- **WHEN** the artist `kani_beam` owns `https://www.pixiv.net/users/3439325` and a capture arrives with the record `{ site: "pixiv", fields: { artist: "かにビーム" } }`
+- **THEN** the stored image carries `かにビーム`, since nothing in the record names the user

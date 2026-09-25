@@ -877,7 +877,7 @@ const X_RESERVED: [&str; 6] = [
 /// in `grouping.ts`) for as long as it grouped its own results; its URL table is
 /// the `x_account` tests below.
 pub(crate) fn x_account(url: &str) -> Option<&str> {
-    let (host, path) = host_and_path(url)?;
+    let (host, path) = crate::artists::host_and_path(url)?;
     if !X_HOSTS.contains(&host.to_lowercase().as_str()) {
         return None;
     }
@@ -886,28 +886,6 @@ pub(crate) fn x_account(url: &str) -> Option<&str> {
         return None;
     }
     Some(segment)
-}
-
-/// The two pieces of `new URL(...)` that rule reads: `hostname` (no userinfo,
-/// no port, lower-cased by the caller) and `pathname`. `None` wherever the JS
-/// constructor would throw and `getXAccountFromUrl` returns null — chiefly a
-/// string with no scheme.
-///
-/// This is a splitter, not a URL parser: it does not resolve `..` segments or
-/// re-encode anything, so a path the JS constructor would normalise is left as
-/// written. X status URLs have neither.
-fn host_and_path(url: &str) -> Option<(&str, &str)> {
-    let after_scheme = url.split_once("://")?.1;
-    let authority_end = after_scheme
-        .find(['/', '?', '#'])
-        .unwrap_or(after_scheme.len());
-    let (authority, rest) = after_scheme.split_at(authority_end);
-    let host = authority
-        .rsplit_once('@')
-        .map_or(authority, |(_userinfo, host)| host);
-    let host = host.split_once(':').map_or(host, |(name, _port)| name);
-    let path = rest.split(['?', '#']).next().unwrap_or("");
-    Some((host, path))
 }
 
 /// Mark `id` deleted the way a trash view eventually will. Phase 1 ships no

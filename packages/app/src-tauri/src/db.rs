@@ -356,6 +356,23 @@ const SCHEMA_V11: &str = r"
 ALTER TABLE tags RENAME COLUMN pinned TO pinned_group;
 ";
 
+/// Schema v12 (`artist-entries` design D1): an artist tag's owned profile
+/// URLs. One row per URL rather than a separate `artists` table: an artist
+/// with no URL matches nothing, and a tag's category already lives in `tags`.
+/// `url` is stored normalised (`artists::normalized`), so the primary key is
+/// also the uniqueness rule "one owner per URL" — a write naming a URL another
+/// artist already owns is refused in Rust before it would ever hit this
+/// constraint. `tag` is stored canonical (`tags::underscored`); the index on
+/// it is what `artists::list` groups rows by.
+const SCHEMA_V12: &str = r"
+CREATE TABLE artist_urls (
+    url TEXT PRIMARY KEY,
+    tag TEXT NOT NULL
+);
+
+CREATE INDEX artist_urls_by_tag ON artist_urls (tag);
+";
+
 /// One schema version's step: plain SQL for every version but the one
 /// `merge_case_duplicates` is (its own doc comment says why that one has to be
 /// Rust).
@@ -378,6 +395,7 @@ const MIGRATIONS: &[Migration] = &[
     Migration::Rust(merge_case_duplicates),
     Migration::Sql(SCHEMA_V10),
     Migration::Sql(SCHEMA_V11),
+    Migration::Sql(SCHEMA_V12),
 ];
 
 /// Open (creating if needed) the library database with the pragmas D2 fixes,
@@ -913,6 +931,39 @@ mod tests {
             .unwrap();
         assert_eq!(cat_group, 1, "an already pinned tag reads group 1");
         assert_eq!(dog_group, 0, "an unpinned tag reads 0");
+        assert_eq!(fts_matches(&conn, "kyoto"), vec!["a".to_string()]);
+    }
+
+    /// A library written after `pinned-tag-groups` shipped (v11, no
+    /// `artist_urls` table) has to reach v12 with its rows intact and the new
+    /// table present (`artist-entries` task 1.2).
+    #[test]
+    fn a_v11_library_migrates_gaining_the_artist_urls_table() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("library.sqlite");
+
+        let conn = Connection::open(&path).unwrap();
+        conn.execute_batch(SCHEMA_V1).unwrap();
+        conn.execute_batch(SCHEMA_V2).unwrap();
+        conn.execute_batch(SCHEMA_V3).unwrap();
+        conn.execute_batch(SCHEMA_V4).unwrap();
+        conn.execute_batch(SCHEMA_V5).unwrap();
+        conn.execute_batch(SCHEMA_V6).unwrap();
+        conn.execute_batch(SCHEMA_V7).unwrap();
+        conn.execute_batch(SCHEMA_V8).unwrap();
+        conn.execute_batch(SCHEMA_V10).unwrap();
+        conn.execute_batch(SCHEMA_V11).unwrap();
+        conn.pragma_update(None, "user_version", 11i64).unwrap();
+        insert_bare_image(&conn, "a", "sunset over kyoto");
+        drop(conn);
+
+        let conn = open(&path).unwrap();
+
+        let version: i64 = conn
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, MIGRATIONS.len() as i64);
+        assert!(table_names(&conn).contains(&"artist_urls".to_string()));
         assert_eq!(fts_matches(&conn, "kyoto"), vec!["a".to_string()]);
     }
 

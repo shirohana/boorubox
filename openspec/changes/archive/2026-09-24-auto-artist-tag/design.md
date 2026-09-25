@@ -117,6 +117,16 @@ Pixiv adapter does not extract a user id today, and adding it would be an extens
 this change does not make. X's handle can be renamed too; the same answer covers it, and the
 handle is what `account:` already matches.
 
+**Amended 2026-09-25 (`artist-entries`):** the manual bulk retag above was right for the case
+that existed then — a renamed artist corrected once, by hand, over images already stored — but
+it left every *future* capture from the renamed handle wrong again, since nothing remembered
+the correction. `artist-entries` keeps this paragraph's reasoning (the tag stays the readable
+name; a stable id is still not the tag) and adds what was missing: the correction is now an app
+action (`artists::rename`) that also records the source — the URL with the id — as an entry, so
+the next capture matches it before falling back to the field this D4 derives. The Pixiv adapter
+now does extract a user id (`site-adapters` `artist-entries` delta), specifically so that URL
+survives a display-name change the way X's handle already did.
+
 ### D5. Nothing here can fail a capture that would otherwise succeed
 
 `artist_tag` is total (every odd shape is `None`); `Skip` never errors; the only error left is

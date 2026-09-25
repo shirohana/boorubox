@@ -715,7 +715,12 @@ fn link_one_tag(
     Ok(created_categorised)
 }
 
-fn existing_tag_category(conn: &Connection, tag: &str) -> Result<Option<TagCategory>> {
+/// The category a tag named `tag` already has, or `None` when there is no
+/// such row — the read [`link_one_tag`] settles a category prefix against,
+/// and `artists::rename` reuses to refuse renaming an artist onto a name a
+/// non-artist category already owns, with [`category_conflict`]'s own
+/// wording.
+pub(crate) fn existing_tag_category(conn: &Connection, tag: &str) -> Result<Option<TagCategory>> {
     match conn.query_row("SELECT category FROM tags WHERE name = ?1", [tag], |row| {
         row.get(0)
     }) {
@@ -725,10 +730,25 @@ fn existing_tag_category(conn: &Connection, tag: &str) -> Result<Option<TagCateg
     }
 }
 
+/// The internal row id of the tag named `name`, or `None` when there is no
+/// such row — what `artists::rename` reads to tell a fresh rename (`to` has no
+/// row yet) from a merge (it does), and to move `image_tags` links by id
+/// rather than by name.
+pub(crate) fn existing_tag_id(conn: &Connection, name: &str) -> Result<Option<i64>> {
+    match conn.query_row("SELECT id FROM tags WHERE name = ?1", [name], |row| {
+        row.get(0)
+    }) {
+        Ok(id) => Ok(Some(id)),
+        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+        Err(error) => Err(error.into()),
+    }
+}
+
 /// The one message `Conflict::Refuse` answers with (`tag-vocabulary` design
-/// D4): names the tag and both categories, so the editor, the bulk dialog and
-/// a later stamp apply all read the same reason for the same conflict.
-fn category_conflict(tag: &str, existing: TagCategory, wanted: TagCategory) -> AppError {
+/// D4): names the tag and both categories, so the editor, the bulk dialog, a
+/// later stamp apply and `artists::rename` all read the same reason for the
+/// same conflict.
+pub(crate) fn category_conflict(tag: &str, existing: TagCategory, wanted: TagCategory) -> AppError {
     AppError::BadRequest(format!(
         "{tag:?} is {} and cannot become {}; use another name, e.g. {tag}_({})",
         described(existing),

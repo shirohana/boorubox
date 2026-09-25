@@ -46,26 +46,6 @@ pub fn haystacks(title: Option<&str>, adapter: Option<&SiteAdapterRecord>) -> Ve
     out
 }
 
-/// The adapter field an artist tag is derived from, by site (`auto-artist-tag`
-/// design D1): the next adapter with an author field the app reads is one
-/// more row here.
-const ARTIST_FIELDS: [(&str, &str); 2] = [("x", "handle"), ("pixiv", "artist")];
-
-/// The artist name `adapter` names, spelled as [`tags::underscored`] spells
-/// every tag (`auto-artist-tag` design D1) — `None` for a site with no author
-/// field the app reads (see [`ARTIST_FIELDS`]), a missing or non-text field,
-/// or a field that spells to nothing. Pure and total: every odd shape is
-/// `None` rather than an error, so nothing a capture could carry makes the
-/// caller's answer anything but what it would be without this.
-pub fn artist_tag(adapter: &SiteAdapterRecord) -> Option<String> {
-    let field = ARTIST_FIELDS
-        .iter()
-        .find_map(|(site, field)| (*site == adapter.site).then_some(*field))?;
-    let text = adapter.fields.get(field)?.as_str()?;
-    let spelled = tags::underscored(text);
-    (!spelled.is_empty()).then_some(spelled)
-}
-
 fn push_field_strings(fields: &serde_json::Value, out: &mut Vec<String>) {
     let serde_json::Value::Object(map) = fields else {
         return;
@@ -1060,58 +1040,6 @@ mod tests {
         let record = adapter("x", serde_json::json!({ "handle": "alice" }));
         let seen = haystacks(Some("a title"), Some(&record));
         assert!(!seen.iter().any(|text| text.contains("://")));
-    }
-
-    // ---- artist_tag (`auto-artist-tag` task 1.3) ----
-
-    #[test]
-    fn an_x_record_derives_its_handle_as_the_artist_name() {
-        let record = adapter(
-            "x",
-            serde_json::json!({ "handle": "Alice_Art", "displayName": "Alice ✿" }),
-        );
-
-        assert_eq!(artist_tag(&record), Some("alice_art".to_string()));
-    }
-
-    #[test]
-    fn a_pixiv_record_derives_its_display_name_spelled_as_a_tag() {
-        let record = adapter("pixiv", serde_json::json!({ "artist": "Some  Artist" }));
-
-        assert_eq!(artist_tag(&record), Some("some_artist".to_string()));
-    }
-
-    #[test]
-    fn a_record_from_another_site_derives_no_artist() {
-        let record = adapter("danbooru", serde_json::json!({ "artist": "someone" }));
-
-        assert_eq!(artist_tag(&record), None);
-    }
-
-    #[test]
-    fn a_record_missing_the_field_derives_no_artist() {
-        let record = adapter("pixiv", serde_json::json!({ "workId": "123" }));
-
-        assert_eq!(artist_tag(&record), None);
-    }
-
-    #[test]
-    fn a_non_text_or_blank_field_derives_no_artist() {
-        assert_eq!(
-            artist_tag(&adapter(
-                "pixiv",
-                serde_json::json!({ "artist": ["a", "b"] })
-            )),
-            None
-        );
-        assert_eq!(
-            artist_tag(&adapter("pixiv", serde_json::json!({ "artist": 123 }))),
-            None
-        );
-        assert_eq!(
-            artist_tag(&adapter("pixiv", serde_json::json!({ "artist": "   " }))),
-            None
-        );
     }
 
     // ---- import/export (task 4.1) ----

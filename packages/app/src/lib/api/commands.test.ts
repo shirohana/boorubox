@@ -3,6 +3,7 @@
 
 import type {
   AppSettings,
+  ArtistEntry,
   BundlePlan,
   Collection,
   CollectionCount,
@@ -11,6 +12,10 @@ import type {
   Note,
   PinTarget,
   RebuildReport,
+  RenameArtistInput,
+  RenameArtistPreview,
+  RenameArtistPreviewInput,
+  RenameArtistReport,
   RuleInput,
   RuleListEntry,
   RulesImportReport,
@@ -35,6 +40,9 @@ import { afterEach, expect, it, vi } from 'vitest'
 import {
   applyEdit,
   appSettings,
+  artistsDelete,
+  artistsList,
+  artistsUpsert,
   bulkSetRating,
   bundlePlan,
   closeLibrary,
@@ -57,6 +65,8 @@ import {
   recentLibraries,
   rebuildLibrary,
   regenerateThumbnails,
+  renameArtist,
+  renameArtistPreview,
   restoreImages,
   revealLibrary,
   rulesDelete,
@@ -691,6 +701,55 @@ it('note_set passes the content and returns the note as stored', async () => {
   const calls = spyIPC(note)
   await expect(noteSet('still to sort')).resolves.toEqual(note)
   expect(calls).toHaveBeenCalledWith('note_set', { content: 'still to sort' })
+})
+
+const artistEntry: ArtistEntry = {
+  tag: 'metaljelly',
+  urls: ['x.com/metaljelly0811'],
+}
+
+it('artists_list takes no arguments and returns the entries', async () => {
+  const calls = spyIPC([artistEntry])
+  await expect(artistsList()).resolves.toEqual([artistEntry])
+  expect(calls).toHaveBeenCalledWith('artists_list', {})
+})
+
+it('artists_upsert passes the entry and returns the entries as they now stand', async () => {
+  const calls = spyIPC([artistEntry])
+  await expect(artistsUpsert(artistEntry)).resolves.toEqual([artistEntry])
+  expect(calls).toHaveBeenCalledWith('artists_upsert', { entry: artistEntry })
+})
+
+it('artists_delete passes the tag and returns the entries as they now stand', async () => {
+  const calls = spyIPC([])
+  await expect(artistsDelete('metaljelly')).resolves.toEqual([])
+  expect(calls).toHaveBeenCalledWith('artists_delete', { tag: 'metaljelly' })
+})
+
+it('rename_artist_preview passes the input and returns the preview', async () => {
+  const input: RenameArtistPreviewInput = {
+    from: 'metaljelly0811',
+    adapter: null,
+  }
+  const preview: RenameArtistPreview = {
+    carriers: 120,
+    urls: ['https://x.com/metaljelly0811'],
+  }
+  const calls = spyIPC(preview)
+  await expect(renameArtistPreview(input)).resolves.toEqual(preview)
+  expect(calls).toHaveBeenCalledWith('rename_artist_preview', { input })
+})
+
+it('rename_artist passes the input and returns the report', async () => {
+  const input: RenameArtistInput = {
+    from: 'metaljelly0811',
+    to: 'metaljelly',
+    urls: ['https://x.com/metaljelly0811'],
+  }
+  const report: RenameArtistReport = { retagged: 120, merged: false }
+  const calls = spyIPC(report)
+  await expect(renameArtist(input)).resolves.toEqual(report)
+  expect(calls).toHaveBeenCalledWith('rename_artist', { input })
 })
 
 it('a rejected command reaches the caller', async () => {

@@ -14,7 +14,7 @@ use crate::db;
 use crate::error::{AppError, Result};
 use crate::library::LibraryPaths;
 use crate::model::{
-    BooruSite, Collection, Note, RebuildFailure, RebuildReport, Rule, Stamp, TagEntry,
+    ArtistEntry, BooruSite, Collection, Note, RebuildFailure, RebuildReport, Rule, Stamp, TagEntry,
 };
 use crate::sidecar;
 use crate::tags;
@@ -145,6 +145,16 @@ pub fn rebuild(
             // other library-level exceptions list already is.
             if let Some(stamps) = &file.stamps {
                 insert_stamps(&tx, stamps)?;
+            }
+            // The artist entries, restored the same way and for the same
+            // reason as the vocabulary above (`artist-entries` design D2): a
+            // `None` file says nothing about them, and `Some` — empty
+            // included — replaces the table wholesale rather than being
+            // upserted onto rows a sidecar pass might have created, since no
+            // sidecar carries ownership of a URL.
+            if let Some(artists) = &file.artists {
+                tx.execute("DELETE FROM artist_urls", [])?;
+                insert_artists(&tx, artists)?;
             }
             tx.commit()?;
             (rules, sites)
@@ -306,6 +316,25 @@ fn insert_stamps(conn: &Connection, stamps: &[Stamp]) -> Result<()> {
                 stamp.updated_at
             ],
         )?;
+    }
+    Ok(())
+}
+
+/// The artist entries, restored verbatim (`artist-entries` design D2): each
+/// URL under its tag, exactly as `library.json` lists it — a rebuild never
+/// re-derives ownership, since the file already answers "who owns this URL".
+/// `INSERT OR IGNORE`, not a plain insert: `url` is a primary key, and a
+/// hand-edited file can list the same URL under two artists — the first
+/// entry to name it, in file order, keeps it, and a rebuild must still
+/// succeed rather than aborting over a row `upsert` would have refused.
+fn insert_artists(conn: &Connection, entries: &[ArtistEntry]) -> Result<()> {
+    for entry in entries {
+        for url in &entry.urls {
+            conn.execute(
+                "INSERT OR IGNORE INTO artist_urls (url, tag) VALUES (?1, ?2)",
+                params![url, entry.tag],
+            )?;
+        }
     }
     Ok(())
 }
@@ -978,6 +1007,90 @@ mod tests {
         assert_eq!(
             crate::stamps::list(&rebuilt.conn).unwrap(),
             vec![cat, reviewed],
+        );
+    }
+
+    /// Spec `artist-entries`, "Entries survive a rebuild": an artist's two
+    /// owned URLs come back exactly as they were, restored from
+    /// `library.json` verbatim (design D2).
+    #[test]
+    fn rebuild_restores_two_artist_urls() {
+        let (_dir, library) = library();
+        crate::artists::upsert(
+            &library,
+            &ArtistEntry {
+                tag: "metaljelly".to_string(),
+                urls: vec![
+                    "https://x.com/metaljelly0811".to_string(),
+                    "https://www.pixiv.net/users/12345".to_string(),
+                ],
+            },
+        )
+        .unwrap();
+        let paths = library.paths.clone();
+        drop(library);
+
+        let report = rebuild(&paths, &mut |_, _| {}).unwrap();
+
+        assert!(report.failures.is_empty(), "{:?}", report.failures);
+        let rebuilt = Library::open_existing(paths.root.as_path()).unwrap();
+        let entries = crate::artists::list(&rebuilt.conn).unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].tag, "metaljelly");
+        assert_eq!(
+            entries[0].urls,
+            vec![
+                "pixiv.net/users/12345".to_string(),
+                "x.com/metaljelly0811".to_string(),
+            ]
+        );
+    }
+
+    /// A hand-edited `library.json` can list the same URL under two artists —
+    /// `upsert` would refuse that, but nothing stops a text editor. The
+    /// rebuild must still succeed: the first entry in the file to name the
+    /// URL keeps it (`insert_artists`' own `INSERT OR IGNORE`), rather than
+    /// the whole rebuild aborting over a primary-key collision the file
+    /// itself never should have had.
+    #[test]
+    fn a_rebuild_survives_a_hand_edited_url_shared_by_two_artists() {
+        let (_dir, library) = library();
+        crate::artists::upsert(
+            &library,
+            &ArtistEntry {
+                tag: "alice".to_string(),
+                urls: vec!["https://x.com/alice_art".to_string()],
+            },
+        )
+        .unwrap();
+        let paths = library.paths.clone();
+
+        let library_file = sidecar::library_path(&paths);
+        let mut file = sidecar::read_library(&library_file).unwrap();
+        file.artists = Some(vec![
+            ArtistEntry {
+                tag: "alice".to_string(),
+                urls: vec!["x.com/alice_art".to_string()],
+            },
+            ArtistEntry {
+                tag: "bob".to_string(),
+                urls: vec!["x.com/alice_art".to_string()],
+            },
+        ]);
+        fs::write(&library_file, serde_json::to_vec_pretty(&file).unwrap()).unwrap();
+        drop(library);
+
+        let report = rebuild(&paths, &mut |_, _| {}).unwrap();
+
+        assert!(report.failures.is_empty(), "{:?}", report.failures);
+        let rebuilt = Library::open_existing(paths.root.as_path()).unwrap();
+        assert_eq!(
+            crate::artists::list(&rebuilt.conn).unwrap(),
+            vec![ArtistEntry {
+                tag: "alice".to_string(),
+                urls: vec!["x.com/alice_art".to_string()],
+            }],
+            "alice is listed first in the file and keeps the URL; bob's entry owns nothing"
         );
     }
 

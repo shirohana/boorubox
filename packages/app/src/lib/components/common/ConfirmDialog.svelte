@@ -2,17 +2,22 @@
   // The one confirmation in the app: permanent deletion of images (`trash`
   // design D7), deleting a rule, removing a booru site, moving two or more
   // images to the trash (design D12, amended), rebuilding the library index
-  // (`library-sidecars` design D12), and setting a rating across two or more
-  // selected images (`bulk-confirm` design D1). They ask the same question in
-  // the same shape — a dialog per caller would be that sentence six times.
-  // The bar for adding a seventh is still high: a confirmation on an act the
-  // user can undo in one click teaches them to dismiss confirmations, and the
-  // trash one clears it only on its scale — the count is what a `Cmd A` away
-  // from the whole library does not otherwise say. The rebuild clears it on
-  // the same ground the spec does: it moves the user's database aside, and
-  // they are told it is kept before they are asked. The rating write clears it
-  // on the trash's own ground, amplified: it is a `Cmd A` away the same way,
-  // but what it overwrites has no Restore to undo it with.
+  // (`library-sidecars` design D12), setting a rating across two or more
+  // selected images (`bulk-confirm` design D1), and deleting an artist entry
+  // (`artist-entries` design D7). They ask the same question in the same
+  // shape — a dialog per caller would be that sentence seven times. The bar
+  // for adding an eighth is still high: a confirmation on an act the user can
+  // undo in one click teaches them to dismiss confirmations, and the trash
+  // one clears it only on its scale — the count is what a `Cmd A` away from
+  // the whole library does not otherwise say. The rebuild clears it on the
+  // same ground the spec does: it moves the user's database aside, and they
+  // are told it is kept before they are asked. The rating write clears it on
+  // the trash's own ground, amplified: it is a `Cmd A` away the same way, but
+  // what it overwrites has no Restore to undo it with. The artist-entry
+  // delete clears it on its own ground: no image changes, but the deleted
+  // entry is what the next matching capture is silently filed under instead —
+  // undoing a mistaken delete means retyping the URLs from memory, not one
+  // click.
   import { Button } from '$lib/components/ui/button'
   import * as Dialog from '$lib/components/ui/dialog'
 

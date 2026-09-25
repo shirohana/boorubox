@@ -388,6 +388,58 @@ export interface TagEditSpec {
 }
 
 /**
+ * An artist tag and the profile URLs it owns (`artist-entries` design D1):
+ * Danbooru's own shape for an artist's URLs. What `artistsList` groups the
+ * library's owned URLs into, and what a rebuild restores from `library.json`
+ * verbatim.
+ */
+export interface ArtistEntry {
+  tag: string
+  urls: string[]
+}
+
+/**
+ * What `renameArtistPreview` takes: the image's own record, read fresh so the
+ * profile URL it answers with (or none) is exactly what a capture from this
+ * image would match against (`artist-entries` design D4, D5). `adapter` is
+ * `null` rather than omitted when there is none.
+ */
+export interface RenameArtistPreviewInput {
+  from: string
+  adapter: SiteAdapterRecord | null
+}
+
+/**
+ * What `renameArtistPreview` answers with: how many images carry `from`
+ * (trash included) and the profile URL the rename would prefill, as an array
+ * of zero or one — never more, since the entry match reads the record's one
+ * profile URL alone — shown with a scheme (`artist-entries` design D4, D5):
+ * the webview never builds a profile URL itself, so what it shows is exactly
+ * what the match would read.
+ */
+export interface RenameArtistPreview {
+  carriers: number
+  urls: string[]
+}
+
+/** What `renameArtist` takes (`artist-entries` design D5). */
+export interface RenameArtistInput {
+  from: string
+  to: string
+  urls: string[]
+}
+
+/**
+ * What `renameArtist` answers with: how many carriers were retagged, and
+ * whether `to` already existed as an artist tag the carriers merged into
+ * (`artist-entries` design D5).
+ */
+export interface RenameArtistReport {
+  retagged: number
+  merged: boolean
+}
+
+/**
  * What `exportZip` answers with (`selection-and-bulk` design D11): how many of
  * the selection made it into the archive, and which ids did not because their
  * file was gone from `images/` by the time it was copied.

@@ -18,19 +18,20 @@ use crate::booru::credentials::Credentials;
 use crate::error::{AppError, Result};
 use crate::library::{self, Library, SharedLibrary, with_library, with_library_if_open};
 use crate::model::{
-    AppSettings, BooruConnectionTest, BooruSite, BooruUploadForm, BooruUploadOutcome, BundlePlan,
-    CLICK_ZOOM_CEILING_MAX, CLICK_ZOOM_CEILING_MIN, Collection, CollectionCount, DeleteReport,
-    ExportProgress, ExportReport, FactsEdit, GRID_TILE_MAX, GRID_TILE_MIN, ImageCounts,
-    ImageRecord, ImportReport, LibraryStatus, ListenerStatus, Note, PinTarget, PostRef,
-    RebuildProgress, RebuildReport, RecentLibrary, Rule, RuleInput, RuleListEntry,
+    AppSettings, ArtistEntry, BooruConnectionTest, BooruSite, BooruUploadForm, BooruUploadOutcome,
+    BundlePlan, CLICK_ZOOM_CEILING_MAX, CLICK_ZOOM_CEILING_MIN, Collection, CollectionCount,
+    DeleteReport, ExportProgress, ExportReport, FactsEdit, GRID_TILE_MAX, GRID_TILE_MIN,
+    ImageCounts, ImageRecord, ImportReport, LibraryStatus, ListenerStatus, Note, PinTarget,
+    PostRef, RebuildProgress, RebuildReport, RecentLibrary, RenameArtistInput, RenameArtistPreview,
+    RenameArtistPreviewInput, RenameArtistReport, Rule, RuleInput, RuleListEntry,
     RulesImportReport, RulesRunReport, SearchRequest, SearchResult, SidecarsProgress, Stamp,
     StampInput, TagCategory, TagCount, TagCounts, TagEditSpec, TagEntry, Theme, ThumbnailRef,
     ThumbsProgress, ThumbsReport,
 };
 use crate::settings::Settings;
 use crate::{
-    AppState, OpenFailureKind, VERSION, booru, collections, db, export, facts, from_tauri, http,
-    import, ingest, lock, maintenance, notes, query, recover, rules, settings, stamps, tags,
+    AppState, OpenFailureKind, VERSION, artists, booru, collections, db, export, facts, from_tauri,
+    http, import, ingest, lock, maintenance, notes, query, recover, rules, settings, stamps, tags,
     thumbs, trash,
 };
 
@@ -1113,6 +1114,66 @@ pub async fn booru_upload(
     .await?;
 
     Ok(BooruUploadOutcome::Posted { post, commentary })
+}
+
+/// The library's artist entries, grouped by tag (`artist-entries` design D1).
+#[tauri::command]
+pub async fn artists_list(state: State<'_, AppState>) -> Result<Vec<ArtistEntry>> {
+    with_library_off_main_thread(&state.library, |library| artists::list(&library.conn)).await
+}
+
+/// Replace `entry.tag`'s whole URL set; refused with the reason for an empty
+/// tag, an empty URL list, a URL that does not normalise, or a URL another
+/// artist already owns (`artist-entries` design D1, D5). Answers with the
+/// entries as they now stand.
+#[tauri::command]
+pub async fn artists_upsert(
+    entry: ArtistEntry,
+    state: State<'_, AppState>,
+) -> Result<Vec<ArtistEntry>> {
+    with_library_off_main_thread(&state.library, move |library| {
+        artists::upsert(library, &entry)
+    })
+    .await
+}
+
+/// Delete an artist entry; idempotent, and no image changes — future captures
+/// from its URLs fall back to the handle or display name (`artist-entries`
+/// design D7).
+#[tauri::command]
+pub async fn artists_delete(tag: String, state: State<'_, AppState>) -> Result<Vec<ArtistEntry>> {
+    with_library_off_main_thread(&state.library, move |library| {
+        artists::delete(library, &tag)
+    })
+    .await
+}
+
+/// The carrier count (trash included) and the candidate URLs a rename from
+/// this image would prefill, answered before anything is written
+/// (`artist-entries` design D5).
+#[tauri::command]
+pub async fn rename_artist_preview(
+    input: RenameArtistPreviewInput,
+    state: State<'_, AppState>,
+) -> Result<RenameArtistPreview> {
+    with_library_off_main_thread(&state.library, move |library| {
+        artists::rename_preview(&library.conn, &input)
+    })
+    .await
+}
+
+/// Record `to` as the owner of `input.urls`, moving any the old name owned,
+/// and retag every carrier of `from` to it — trash included — merging into an
+/// existing artist tag if one already exists (`artist-entries` design D5).
+#[tauri::command]
+pub async fn rename_artist(
+    input: RenameArtistInput,
+    state: State<'_, AppState>,
+) -> Result<RenameArtistReport> {
+    with_library_off_main_thread(&state.library, move |library| {
+        artists::rename(library, &input)
+    })
+    .await
 }
 
 /// Absolute path and the file's version (`one-level-buckets` design D6): the
@@ -3147,6 +3208,51 @@ mod tests {
         .unwrap_err();
 
         assert!(matches!(error, AppError::NotFound(_)), "{error:?}");
+    }
+
+    #[test]
+    fn artists_upsert_rename_artist_and_rename_artist_preview_reach_the_open_library_through_the_commands()
+     {
+        let (_library, app) = app_with_library();
+        import(&app, &folder_of_images(1));
+        let ids = ids_in_library(&app);
+        tag(&app, &ids[0], &["artist:metaljelly0811"]);
+
+        let entries = now(artists_upsert(
+            ArtistEntry {
+                tag: "metaljelly".to_string(),
+                urls: vec!["https://x.com/metaljelly0811".to_string()],
+            },
+            app.state(),
+        ))
+        .unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(now(artists_list(app.state())).unwrap(), entries);
+
+        let preview = now(rename_artist_preview(
+            RenameArtistPreviewInput {
+                from: "metaljelly0811".to_string(),
+                adapter: None,
+            },
+            app.state(),
+        ))
+        .unwrap();
+        assert_eq!(preview.carriers, 1);
+
+        let report = now(rename_artist(
+            RenameArtistInput {
+                from: "metaljelly0811".to_string(),
+                to: "metaljelly".to_string(),
+                urls: vec![],
+            },
+            app.state(),
+        ))
+        .unwrap();
+        assert_eq!(report.retagged, 1);
+        assert!(!report.merged);
+
+        let entries = now(artists_delete("metaljelly".to_string(), app.state())).unwrap();
+        assert!(entries.is_empty());
     }
 
     #[test]

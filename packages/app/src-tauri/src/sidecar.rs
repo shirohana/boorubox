@@ -11,14 +11,15 @@ use std::path::{Path, PathBuf};
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 
+use crate::artists;
 use crate::booru::sites;
 use crate::collections;
 use crate::error::{AppError, Result};
 use crate::ingest;
 use crate::library::LibraryPaths;
 use crate::model::{
-    BooruSite, Collection, ImageRecord, ImageSource, Note, PostRef, Rule, SiteAdapterRecord, Stamp,
-    TagEntry,
+    ArtistEntry, BooruSite, Collection, ImageRecord, ImageSource, Note, PostRef, Rule,
+    SiteAdapterRecord, Stamp, TagEntry,
 };
 use crate::notes;
 use crate::rules;
@@ -159,6 +160,13 @@ pub struct LibraryFile {
     /// writes `Some`.
     #[serde(default)]
     pub stamps: Option<Vec<Stamp>>,
+    /// The artist entries (`artist-entries` design D1, D2): every artist
+    /// tag's owned profile URLs. The same `Option` reasoning as `collections`,
+    /// `tags` and `stamps` above: `None` is a file written before this
+    /// change, and `Some` — empty included — is restored onto `artist_urls`
+    /// verbatim; this build always writes `Some`.
+    #[serde(default)]
+    pub artists: Option<Vec<ArtistEntry>>,
 }
 
 /// Where `id`'s sidecar lives: the same bucket as its image, through
@@ -303,6 +311,7 @@ pub fn write_library(paths: &LibraryPaths, conn: &Connection) -> Result<()> {
         collections: Some(collections::list(conn)?),
         tags: Some(tags::vocabulary(conn)?),
         stamps: Some(stamps::list(conn)?),
+        artists: Some(artists::list(conn)?),
     };
     let bytes = serde_json::to_vec_pretty(&file).map_err(|error| {
         AppError::BadRequest(format!("library file cannot be encoded: {error}"))
@@ -794,6 +803,28 @@ mod tests {
         let read_back = read_library(&file).unwrap();
 
         assert_eq!(read_back.stamps, None);
+    }
+
+    /// `artist-entries` design D2: the same additive rule as `stamps`,
+    /// `tags` and `collections` above — a `library.json` written before this
+    /// change has no `artists` key at all and reads as `None` rather than
+    /// failing to parse, so a rebuild of such a folder restores no entries
+    /// (spec `artist-entries`, "a describing file written before entries
+    /// existed SHALL restore none").
+    #[test]
+    fn a_library_file_from_before_artist_entries_with_no_artists_key_reads_as_none() {
+        let (_dir, library) = library();
+
+        write_library(&library.paths, &library.conn).unwrap();
+        let file = library_path(&library.paths);
+        let mut json: serde_json::Value =
+            serde_json::from_slice(&fs::read(&file).unwrap()).unwrap();
+        json.as_object_mut().unwrap().remove("artists");
+        fs::write(&file, serde_json::to_vec_pretty(&json).unwrap()).unwrap();
+
+        let read_back = read_library(&file).unwrap();
+
+        assert_eq!(read_back.artists, None);
     }
 
     #[test]

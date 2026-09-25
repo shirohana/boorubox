@@ -8,6 +8,7 @@
 
 import type {
   AppSettings,
+  ArtistEntry,
   BundlePlan,
   Collection,
   CollectionCount,
@@ -24,6 +25,10 @@ import type {
   Rating,
   RebuildReport,
   RecentLibrary,
+  RenameArtistInput,
+  RenameArtistPreview,
+  RenameArtistPreviewInput,
+  RenameArtistReport,
   Rule,
   RuleInput,
   RuleListEntry,
@@ -562,4 +567,46 @@ export function noteGet(): Promise<Note> {
 /** Writes the note and answers with it as stored, stamp included. */
 export function noteSet(content: string): Promise<Note> {
   return invoke('note_set', { content })
+}
+
+/** The library's artist entries, grouped by tag (`artist-entries` design D1). */
+export function artistsList(): Promise<ArtistEntry[]> {
+  return invoke('artists_list')
+}
+
+/**
+ * Replaces `entry.tag`'s whole URL set; refused with the reason for an empty
+ * tag, an empty URL list, a URL that does not normalise, or a URL another
+ * artist already owns (`artist-entries` design D1, D5). Answers with the
+ * entries as they now stand.
+ */
+export function artistsUpsert(entry: ArtistEntry): Promise<ArtistEntry[]> {
+  return invoke('artists_upsert', { entry })
+}
+
+/**
+ * Deletes an artist entry; idempotent, and no image changes — future
+ * captures from its URLs fall back to the handle or display name
+ * (`artist-entries` design D7).
+ */
+export function artistsDelete(tag: string): Promise<ArtistEntry[]> {
+  return invoke('artists_delete', { tag })
+}
+
+/**
+ * The carrier count (trash included) and the candidate URLs a rename from
+ * this image would prefill, answered before anything is written
+ * (`artist-entries` design D5).
+ */
+export function renameArtistPreview(input: RenameArtistPreviewInput): Promise<RenameArtistPreview> {
+  return invoke('rename_artist_preview', { input })
+}
+
+/**
+ * Records `to` as the owner of `input.urls`, moving any the old name owned,
+ * and retags every carrier of `from` to it — trash included — merging into
+ * an existing artist tag if one already exists (`artist-entries` design D5).
+ */
+export function renameArtist(input: RenameArtistInput): Promise<RenameArtistReport> {
+  return invoke('rename_artist', { input })
 }

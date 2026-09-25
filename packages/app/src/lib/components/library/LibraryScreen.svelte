@@ -986,6 +986,18 @@
 
   {#if browseSession.inspectorOpen}
     <aside class="w-80 shrink-0 border-s border-border">
+      <!--
+        `onartistrenamed` (`artist-entries` design D5): the retag also walks
+        the trash, so a rename made here can change carriers `afterWrite`
+        never touches — this screen's own `results` is only the library's or
+        only the trash's, never both. Not refreshed here on purpose: the
+        other view's `SearchResults` instance is kept for the app's run
+        (`browse-feedback` design D1), but this screen still calls
+        `results.run(results.inputs)` unconditionally on mount (below), so
+        leaving for that route and coming back re-queries it fresh — the same
+        reason a capture that lands on the view not on screen only needs to
+        be seen the next time that view is opened.
+      -->
       <Inspector
         bind:this={inspector}
         image={focused}
@@ -1005,6 +1017,7 @@
         }}
         onactivate={openViewer}
         onedit={editSelection}
+        onartistrenamed={afterWrite}
       />
     </aside>
   {/if}

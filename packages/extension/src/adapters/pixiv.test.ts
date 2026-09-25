@@ -25,6 +25,7 @@ function extract(imageUrl: string, document: Document = fixture()) {
 it('reads the artist, the work, its title and the original', () => {
   expect(extract(ORIGINAL)).toEqual({
     artist: 'かにビーム',
+    userId: '3439325',
     workId: '117090067',
     title: '春の袴アロナ',
     originalUrl: ORIGINAL,
@@ -63,7 +64,12 @@ it('sends the fields that survive when the title is gone', () => {
 
   expect(record).toEqual({
     site: 'pixiv',
-    fields: { artist: 'かにビーム', workId: '117090067', originalUrl: ORIGINAL },
+    fields: {
+      artist: 'かにビーム',
+      userId: '3439325',
+      workId: '117090067',
+      originalUrl: ORIGINAL,
+    },
   })
 })
 
@@ -72,10 +78,34 @@ it('still names the work when only the address is left', () => {
 
   expect(extract(ORIGINAL, document)).toEqual({
     artist: undefined,
+    userId: undefined,
     workId: '117090067',
     title: undefined,
     originalUrl: ORIGINAL,
   })
+})
+
+it('falls back to the avatar anchor for the id when the h2 name anchor is gone', () => {
+  // The h2's own `/users/` anchor is gone entirely, so the primary selector
+  // (`main h2 a[href^="/users/"]`) finds nothing; the avatar anchor lives
+  // outside the h2 (as it does in the recommendations strip the module doc
+  // warns about), so only the `:has()` fallback can find it.
+  const document = new DOMParser().parseFromString(
+    '<main><h2></h2><a href="/users/3439325">'
+    + '<img src="https://i.pximg.net/user-profile/img/x.jpg"></a></main>',
+    'text/html',
+  )
+
+  expect(extract(ORIGINAL, document).userId).toBe('3439325')
+})
+
+it('yields no userId when every users anchor is gone', () => {
+  const document = fixture()
+  for (const anchor of document.querySelectorAll('a[href^="/users/"]')) {
+    anchor.remove()
+  }
+
+  expect(extract(ORIGINAL, document).userId).toBeUndefined()
 })
 
 it('recognises pixiv.net and its subdomains', () => {

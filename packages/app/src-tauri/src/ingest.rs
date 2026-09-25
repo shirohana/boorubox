@@ -10,6 +10,7 @@ use std::path::Path;
 
 use rusqlite::{Connection, Row, params, params_from_iter};
 
+use crate::artists;
 use crate::db;
 use crate::error::{AppError, Result};
 use crate::library::Library;
@@ -266,22 +267,31 @@ struct ResolvedTags {
 
 /// What actually gets stored: `input.tags` unioned with the enabled rules'
 /// matches against the title and the adapter record (`auto-tag-rules` design
-/// D5, D7), beside the artist tag the adapter record names (`auto-artist-tag`
-/// design D1, D3) — both exempt for `LegacyBundle` — `legacy-bundle-import`
-/// records "whatever the bundle carries is what is stored", and re-deriving
-/// tags for images that already carry the old library's would fight that and
-/// double-apply a rule that has since changed. The combined list then goes
-/// through `tags::read_metatags` unconditionally, the same reader the tag
-/// editor uses (design D8, `tag-vocabulary` design D4): a `rating:e` a rule
-/// names — or one a caller simply hands in through `input.tags` — never
-/// becomes a literal tag either way, and an `artist:` prefix a rule names
-/// creates the tag under that category the same way the editor's does. The
-/// artist name goes through the same reader, alone, with an `artist:` prefix
-/// of its own — `read_metatags` rather than a hand-built `TagText`, since it
-/// is the one reader that already turns a token into a name and a category.
-/// `insert_rows` merges `input.rating`, what the source itself supplied, over
-/// whatever this extracted (design D8's "a rule SHALL NOT overwrite a rating
-/// the source supplied").
+/// D5, D7), beside the artist tag the record names (`auto-artist-tag` design
+/// D1, D3; `artist-entries` design D4) — both exempt for `LegacyBundle` —
+/// `legacy-bundle-import` records "whatever the bundle carries is what is
+/// stored", and re-deriving tags for images that already carry the old
+/// library's would fight that and double-apply a rule that has since changed.
+/// The combined list then goes through `tags::read_metatags` unconditionally,
+/// the same reader the tag editor uses (design D8, `tag-vocabulary` design
+/// D4): a `rating:e` a rule names — or one a caller simply hands in through
+/// `input.tags` — never becomes a literal tag either way, and an `artist:`
+/// prefix a rule names creates the tag under that category the same way the
+/// editor's does. The artist name goes through the same reader, alone, with
+/// an `artist:` prefix of its own — `read_metatags` rather than a hand-built
+/// `TagText`, since it is the one reader that already turns a token into a
+/// name and a category.
+///
+/// The artist entries are read first (`artists::list`), and the name is
+/// `artists::derive`'s answer rather than the record's raw field
+/// (`artist-entries` design D4): a corrected artist's tag survives a handle
+/// change or a display name with a stray suffix, which the field alone never
+/// would, and `derive` itself falls back to the field when no entry owns the
+/// record's own profile URL — so an uncorrected artist is exactly what it
+/// always was. The page the capture came from is never consulted (D4): it is
+/// the tab's address, not the author's. `insert_rows` merges `input.rating`,
+/// what the source itself supplied, over whatever this extracted (design
+/// D8's "a rule SHALL NOT overwrite a rating the source supplied").
 fn resolve_tag_text(conn: &Connection, input: &IngestInput) -> Result<ResolvedTags> {
     let mut candidate: Vec<String> = input.tags.to_vec();
     let mut artist = None;
@@ -294,10 +304,12 @@ fn resolve_tag_text(conn: &Connection, input: &IngestInput) -> Result<ResolvedTa
         // source's position, without a second dedupe spelling it here.
         candidate.extend(rules::auto_tags(&enabled, &haystacks));
 
-        artist = input
-            .adapter
-            .and_then(rules::artist_tag)
-            .map(|name| tags::read_metatags(&[format!("artist:{name}")]));
+        let entries = artists::list(conn)?;
+        artist = match input.adapter {
+            Some(adapter) => artists::derive(conn, adapter, &entries)?
+                .map(|name| tags::read_metatags(&[format!("artist:{name}")])),
+            None => None,
+        };
     }
     Ok(ResolvedTags {
         text: tags::read_metatags(&candidate),
@@ -1469,6 +1481,172 @@ mod tests {
         .unwrap();
 
         assert!(matches!(ingested, Ingested::Existing(_)));
+        assert!(ingested.record().tags.is_empty());
+    }
+
+    // -- `artist-entries` task 1.5: the entry-derived artist tag ----------------
+
+    fn upsert_artist(library: &Library, tag: &str, urls: &[&str]) {
+        crate::artists::upsert(
+            library,
+            &crate::model::ArtistEntry {
+                tag: tag.to_string(),
+                urls: urls.iter().map(|url| (*url).to_string()).collect(),
+            },
+        )
+        .unwrap();
+    }
+
+    /// Spec `capture-ingest`, "An entry owns the handle's profile URL".
+    #[test]
+    fn an_entry_owning_the_handle_names_the_artist_tag_over_the_handle_itself() {
+        let (_dir, library) = library();
+        upsert_artist(&library, "metaljelly", &["https://x.com/metaljelly0811"]);
+        let bytes = png_bytes(2, 2);
+        let adapter = adapter_record(
+            "x",
+            serde_json::json!({
+                "handle": "metaljelly0811",
+                "postUrl": "https://x.com/metaljelly0811/status/1",
+            }),
+        );
+
+        let ingested = store_image(
+            &library,
+            IngestInput {
+                adapter: Some(&adapter),
+                tags: &[],
+                ..input("id-1", &bytes, &[])
+            },
+        )
+        .unwrap();
+
+        assert_eq!(ingested.record().tags, vec!["metaljelly".to_string()]);
+        assert_eq!(category_of(&library, "metaljelly"), TagCategory::Artist);
+    }
+
+    /// Spec `capture-ingest`, "An entry owns the Pixiv user".
+    #[test]
+    fn an_entry_owning_the_pixiv_user_id_names_the_artist_tag_over_the_display_name() {
+        let (_dir, library) = library();
+        upsert_artist(
+            &library,
+            "kani_beam",
+            &["https://www.pixiv.net/users/3439325"],
+        );
+        let bytes = png_bytes(2, 2);
+        let adapter = adapter_record(
+            "pixiv",
+            serde_json::json!({ "artist": "かにビーム", "userId": "3439325" }),
+        );
+
+        let ingested = store_image(
+            &library,
+            IngestInput {
+                adapter: Some(&adapter),
+                tags: &[],
+                ..input("id-1", &bytes, &[])
+            },
+        )
+        .unwrap();
+
+        assert_eq!(ingested.record().tags, vec!["kani_beam".to_string()]);
+    }
+
+    /// Spec `capture-ingest`, "A neighbouring handle is not owned".
+    #[test]
+    fn a_neighbouring_handle_the_entry_does_not_own_falls_back_to_itself() {
+        let (_dir, library) = library();
+        upsert_artist(&library, "metaljelly", &["https://x.com/metaljelly0811"]);
+        let bytes = png_bytes(2, 2);
+        let adapter = adapter_record("x", serde_json::json!({ "handle": "metaljelly08110" }));
+
+        let ingested = store_image(
+            &library,
+            IngestInput {
+                adapter: Some(&adapter),
+                tags: &[],
+                ..input("id-1", &bytes, &[])
+            },
+        )
+        .unwrap();
+
+        assert_eq!(ingested.record().tags, vec!["metaljelly08110".to_string()]);
+    }
+
+    /// Spec `capture-ingest`, "An old Pixiv record without the user id":
+    /// nothing in the record names the user, so the entry cannot own it and
+    /// the display name is stored, exactly as it would be with no entry at
+    /// all.
+    #[test]
+    fn an_old_pixiv_record_with_no_user_id_falls_back_to_the_display_name() {
+        let (_dir, library) = library();
+        upsert_artist(
+            &library,
+            "kani_beam",
+            &["https://www.pixiv.net/users/3439325"],
+        );
+        let bytes = png_bytes(2, 2);
+        let adapter = adapter_record("pixiv", serde_json::json!({ "artist": "かにビーム" }));
+
+        let ingested = store_image(
+            &library,
+            IngestInput {
+                adapter: Some(&adapter),
+                tags: &[],
+                ..input("id-1", &bytes, &[])
+            },
+        )
+        .unwrap();
+
+        assert_eq!(ingested.record().tags, vec!["かにビーム".to_string()]);
+    }
+
+    /// Spec `capture-ingest`, "The page URL names nobody": bob's own profile
+    /// page is where alice's post was captured from, but the page URL is
+    /// never a candidate (design D4), so bob's entry never sees it.
+    #[test]
+    fn the_page_url_of_the_capturing_tab_is_never_consulted() {
+        let (_dir, library) = library();
+        upsert_artist(&library, "bob", &["https://x.com/bob"]);
+        let bytes = png_bytes(2, 2);
+        let adapter = adapter_record("x", serde_json::json!({ "handle": "alice" }));
+
+        let ingested = store_image(
+            &library,
+            IngestInput {
+                adapter: Some(&adapter),
+                page_url: Some("https://x.com/bob"),
+                tags: &[],
+                ..input("id-1", &bytes, &[])
+            },
+        )
+        .unwrap();
+
+        assert_eq!(ingested.record().tags, vec!["alice".to_string()]);
+    }
+
+    /// A site the app reads no author field for gains no artist tag even
+    /// when an entry owns the page the capture came from — the page was
+    /// never a candidate to begin with (design D4).
+    #[test]
+    fn a_danbooru_capture_gains_no_artist_tag_even_when_an_entry_owns_its_page_url() {
+        let (_dir, library) = library();
+        upsert_artist(&library, "bob", &["https://x.com/bob"]);
+        let bytes = png_bytes(2, 2);
+        let adapter = adapter_record("danbooru", serde_json::json!({ "artist": "someone" }));
+
+        let ingested = store_image(
+            &library,
+            IngestInput {
+                adapter: Some(&adapter),
+                page_url: Some("https://x.com/bob"),
+                tags: &[],
+                ..input("id-1", &bytes, &[])
+            },
+        )
+        .unwrap();
+
         assert!(ingested.record().tags.is_empty());
     }
 

@@ -18,6 +18,7 @@ export const pixiv: SiteAdapter = {
   extract({ document, imageUrl, pageUrl }: ExtractContext) {
     return {
       artist: readArtist(document),
+      userId: readUserId(document),
       workId: readWorkId(document, pageUrl),
       title: readTitle(document),
       originalUrl: originalIllustUrl(document, imageUrl),
@@ -56,6 +57,19 @@ function readArtist(document: Document): string | undefined {
     ?? document.querySelector('main a[href^="/users/"] img[src*="/user-profile/"]')
       ?.getAttribute('alt')
       ?? undefined
+}
+
+/**
+ * The digits of the artist's `/users/<id>` path — the one fact about the
+ * artist that survives a rename (`artist-entries` design D8), read off the
+ * same anchors `readArtist` reads the name from so the id can never name
+ * someone other than the artist above.
+ */
+function readUserId(document: Document): string | undefined {
+  const href = document.querySelector('main h2 a[href^="/users/"]')?.getAttribute('href')
+    ?? document.querySelector('main a[href^="/users/"]:has(img[src*="/user-profile/"])')
+      ?.getAttribute('href')
+  return href ? /^\/users\/(\d+)/.exec(href)?.[1] : undefined
 }
 
 /**
