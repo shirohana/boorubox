@@ -697,17 +697,49 @@
 {#snippet pinnedTagRows(fill: (tag: string) => FillState, onactivate: (tag: string) => void)}
   <!--
     One `<ul>` per group, a hairline between rows from the second on
-    (`pinned-tag-groups` design D5): no label, no number — the owner wants
-    bands, not names, and the number exists only in the menu. Shared by both
-    strips so a category or group change cannot leave one placement's rows
-    out of step with the other's.
+    (`pinned-tag-groups` design D5): bands, not names — no label, ever. Past
+    one group each row also carries a small dim `#n` at its right edge, the
+    number "Move to #n" already uses, so a target row can be found without
+    counting from the top (`menu-polish` design D1). With one group there is
+    nothing to move to, so no hint is drawn and no width is reserved for one.
+    The hint's span is a sibling of the `<ul>`, not a child of it — a `<span>`
+    directly inside a `<ul>` is invalid, and Preflight's `list-style: none`
+    then makes WebKit drop the list role, taking the `aria-label` with it — so
+    each group is wrapped in a `<div>` that carries the positioning and the
+    two are aligned with the same padding instead. `aria-hidden` on the span
+    and `aria-label` on the list keep the two in step for assistive tech.
+    Shared by both strips so a category or group change cannot leave one
+    placement's rows out of step with the other's.
   -->
   {#each vocabulary.pinnedGroups as group, index (index)}
-    <ul class="flex flex-wrap gap-1 {index > 0 ? 'mt-1.5 border-t border-border pt-1.5' : ''}">
-      {#each group as tag (tag)}
-        {@render pinnedChip({ kind: 'tag', tag }, fill(tag), () => onactivate(tag))}
-      {/each}
-    </ul>
+    <div
+      class="
+        relative
+        {vocabulary.pinnedGroups.length > 1 ? 'pr-6' : ''}
+        {index > 0 ? 'mt-1.5 border-t border-border pt-1.5' : ''}
+      "
+    >
+      {#if vocabulary.pinnedGroups.length > 1}
+        <span
+          aria-hidden="true"
+          class="
+            absolute top-0 right-0 text-[10px] text-muted-foreground tabular-nums
+            {index > 0 ? 'mt-1.5' : ''}
+          "
+        >
+          #{index + 1}
+        </span>
+      {/if}
+      <ul
+        role="list"
+        class="flex flex-wrap gap-1"
+        aria-label={vocabulary.pinnedGroups.length > 1 ? `Pinned group ${index + 1}` : undefined}
+      >
+        {#each group as tag (tag)}
+          {@render pinnedChip({ kind: 'tag', tag }, fill(tag), () => onactivate(tag))}
+        {/each}
+      </ul>
+    </div>
   {/each}
 {/snippet}
 
@@ -964,11 +996,11 @@
                   <ContextMenu.Content portalProps={{ to: portalTo }}>
                     {@render tagSearchItems(tag)}
                     <ContextMenu.Separator />
+                    <TagVocabularyMenuItems name={tag} />
+                    <ContextMenu.Separator />
                     <ContextMenu.Item variant="destructive" onSelect={() => remove(tag)}>
                       Remove from this image
                     </ContextMenu.Item>
-                    <ContextMenu.Separator />
-                    <TagVocabularyMenuItems name={tag} />
                   </ContextMenu.Content>
                 </ContextMenu.Root>
               </li>

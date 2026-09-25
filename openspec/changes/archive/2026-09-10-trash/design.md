@@ -324,6 +324,15 @@ confirms (D12, amended), and it leaves the selection alone; it does make its til
 because importing into the trash is meaningless and an action row with one dead control is worse
 than one with the action the screen actually has.
 
+**Amended 2026-09-25 (`menu-polish` design D6): "Move to trash" is red now, same as "Delete
+forever…".** Why the old reading was right at the time: colour marked the one act that cannot
+be undone, and that reading held while colour was the only mark in the menu — a plain "Move to
+trash" beside a red "Delete forever…" read as the deliberate pair it was. Why it changed: the
+owner (2026-09-25) wants colour to read as the action's identity, not as a warning, in a list of
+items that are otherwise uniform. What still marks the irreversible act: the ellipsis and the
+confirmation stay on "Delete forever…" alone — "Move to trash" is still one click, still
+unconfirmed for one image (D12, amended), and still the reversible act; only its colour changed.
+
 **D14. A capture whose id is already in the trash stays idempotent and stays trashed.**
 
 `POST /captures` is idempotent by the extension's UUID (§5, Phase 1 D4: `ON CONFLICT(id) DO

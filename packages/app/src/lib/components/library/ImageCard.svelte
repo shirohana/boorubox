@@ -4,11 +4,12 @@
   import BookmarkIcon from '@lucide/svelte/icons/bookmark'
   import CloudUploadIcon from '@lucide/svelte/icons/cloud-upload'
   import Trash2Icon from '@lucide/svelte/icons/trash-2'
+  import Undo2Icon from '@lucide/svelte/icons/undo-2'
   import type { ClickModifiers, Selection } from '$lib/api'
   import { booruSites, collections, vocabulary } from '$lib/api'
   import { postedNames } from '$lib/components/booru/posted'
   import { CATEGORY_TEXT_CLASS } from '$lib/components/tags/categories'
-  import { RATING_COLOUR, RATINGS } from '$lib/components/tags/ratings'
+  import { RATING_COLOUR, RATING_COLOUR_DIM, RATINGS } from '$lib/components/tags/ratings'
   import { Button } from '$lib/components/ui/button'
   import { Checkbox } from '$lib/components/ui/checkbox'
   import * as ContextMenu from '$lib/components/ui/context-menu'
@@ -650,18 +651,47 @@
     <!--
       `ContextMenu.GroupHeading` reads a `Menu.Group` context and throws
       without one (bits-ui 2.19) — the group is what makes the heading, and so
-      this whole menu, openable at all.
+      this whole menu, openable at all. The choices below are pills, not a
+      list (`menu-polish` design D5), but they stay real menu items: Enter
+      still picks and closes, and bits-ui's arrow keys still step them in DOM
+      order.
     -->
     <ContextMenu.Group>
       <ContextMenu.GroupHeading>Rating</ContextMenu.GroupHeading>
-      {#each RATINGS as rating (rating)}
-        <ContextMenu.Item disabled={!image} onSelect={() => onrate(rating)}>
-          {rating} · {ratingLabel(rating)}
+      <div class="flex gap-1 px-1.5 py-1">
+        {#each RATINGS as rating (rating)}
+          <ContextMenu.Item
+            disabled={!image}
+            onSelect={() => onrate(rating)}
+            aria-label={ratingLabel(rating)}
+            title={ratingLabel(rating)}
+            class="
+              justify-center rounded-md border px-1.5 py-0.5! text-xs font-semibold uppercase
+              focus:ring-1 focus:ring-ring
+              {image?.rating === rating
+                ? `border-transparent ${RATING_COLOUR[rating]}`
+                : `${RATING_COLOUR_DIM[rating]} focus:bg-transparent!`}
+            "
+          >
+            {rating}
+          </ContextMenu.Item>
+        {/each}
+        <ContextMenu.Item
+          disabled={!image}
+          onSelect={() => onrate(null)}
+          aria-label={ratingLabel(null)}
+          title={ratingLabel(null)}
+          class="
+            justify-center rounded-md border px-1.5 py-0.5! text-xs font-semibold
+            focus:ring-1 focus:ring-ring
+            {!image?.rating
+              ? 'border-transparent bg-secondary! text-secondary-foreground!'
+              : 'border-border text-muted-foreground! focus:bg-transparent!'}
+          "
+        >
+          none
         </ContextMenu.Item>
-      {/each}
-      <ContextMenu.Item disabled={!image} onSelect={() => onrate(null)}>
-        none · unrated
-      </ContextMenu.Item>
+      </div>
     </ContextMenu.Group>
 
     <!-- The collection submenu (`collections` design D8). -->
@@ -690,8 +720,9 @@
 
     <!--
       Slot Grid · tile (`trash` design D13), added to the menu that is already
-      here rather than as a second one. The reversible action is plain; the
-      irreversible one is marked, named with an ellipsis and confirmed.
+      here rather than as a second one. Both acts are red, for the identity a
+      colour gives a list that is otherwise uniform (`menu-polish` design D6);
+      only the irreversible one is still named with an ellipsis and confirmed.
     -->
     <ContextMenu.Separator />
     {#if view === 'trash'}
@@ -701,6 +732,7 @@
           if (image) actions.restore([image.id])
         }}
       >
+        <Undo2Icon />
         Restore
       </ContextMenu.Item>
       <ContextMenu.Item
@@ -710,15 +742,18 @@
           if (image) actions.deleteForever([image.id])
         }}
       >
+        <Trash2Icon />
         Delete forever…
       </ContextMenu.Item>
     {:else}
       <ContextMenu.Item
+        variant="destructive"
         disabled={!image}
         onSelect={() => {
           if (image) actions.trash([image.id])
         }}
       >
+        <Trash2Icon />
         Move to trash
       </ContextMenu.Item>
     {/if}

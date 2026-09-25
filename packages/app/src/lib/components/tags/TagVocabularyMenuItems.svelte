@@ -1,10 +1,10 @@
 <script lang="ts">
-  // The tag context menu's vocabulary items — pin/unpin, a pinned tag's own
-  // group moves, and the category group — mounted wherever a tag's context
-  // menu opens (`tag-vocabulary` design D9): the sidebar row, the inspector
-  // badge's menu, and the pinned chip's own menu. A chip's tag is pinned by
-  // definition, so its menu shows Unpin and the group moves without this
-  // component needing a flag to suppress Pin.
+  // The tag context menu's vocabulary items — a Danbooru look-up, pin/unpin,
+  // a pinned tag's own group moves, and the category group — mounted
+  // wherever a tag's context menu opens (`tag-vocabulary` design D9): the
+  // sidebar row, the inspector badge's menu, and the pinned chip's own menu.
+  // A chip's tag is pinned by definition, so its menu shows Unpin and the
+  // group moves without this component needing a flag to suppress Pin.
   //
   // The group moves live here rather than on the chip itself
   // (`pinned-tag-groups` design D6) so a pinned tag offers the same moves
@@ -13,9 +13,14 @@
   // Snippet-free, unlike `CollectionMenuItems`: every mount point here is a
   // `ContextMenu.Root` (never a dropdown), so this renders `ContextMenu.*`
   // primitives directly rather than taking them as snippets.
-  import { vocabulary } from '$lib/api'
+  import ExternalLinkIcon from '@lucide/svelte/icons/external-link'
+  import PinIcon from '@lucide/svelte/icons/pin'
+  import PinOffIcon from '@lucide/svelte/icons/pin-off'
+  import { openExternal, vocabulary } from '$lib/api'
   import * as ContextMenu from '$lib/components/ui/context-menu'
   import { CATEGORY_ORDER, categoryLabel } from '$lib/domain/tag-categories'
+  import { danbooruLookup } from '$lib/domain/danbooru'
+  import { CATEGORY_ICON } from './categories'
 
   interface Props {
     name: string
@@ -26,6 +31,7 @@
   const group = $derived(vocabulary.groupOf(name))
   const pinned = $derived(group !== null)
   const category = $derived(vocabulary.categoryOf(name))
+  const lookup = $derived(danbooruLookup(name, category))
 
   /**
    * Every group but the tag's own, in order — the "Move to #x" items. A
@@ -43,7 +49,26 @@
   const alone = $derived(group !== null && vocabulary.pinnedGroups[group - 1]?.length === 1)
 </script>
 
+<ContextMenu.Item
+  onSelect={() => {
+    // FIXME(menu-polish D2): the failure is dropped rather than shown — a
+    // menu that has closed has no row to show it in, and the URL built here
+    // is always `https:`, never one of `ExternalLink`'s two named failures
+    // (a `file:` address, a malformed one). Wants a shared transient-notice
+    // surface the frame does not have yet.
+    void openExternal(lookup.url)
+  }}
+>
+  <ExternalLinkIcon />
+  {lookup.label}
+</ContextMenu.Item>
+<ContextMenu.Separator />
 <ContextMenu.Item onSelect={() => void vocabulary.place(name, pinned ? 'unpin' : { group: 1 })}>
+  {#if pinned}
+    <PinOffIcon />
+  {:else}
+    <PinIcon />
+  {/if}
   {pinned ? 'Unpin' : 'Pin'}
 </ContextMenu.Item>
 {#if group !== null}
@@ -86,6 +111,8 @@
         void vocabulary.setCategory(name, option)
       }}
     >
+      {@const Icon = CATEGORY_ICON[option]}
+      <Icon />
       {categoryLabel(option)}
     </ContextMenu.CheckboxItem>
   {/each}

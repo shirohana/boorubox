@@ -77,6 +77,13 @@ the owner wants bands, not names; the number exists only in the menu. The recomm
 "rows with a separator" over "a wider gap"; the owner judges on screen and the alternative is
 one class change.
 
+Amended by `menu-polish` D1, 2026-09-25: "no number" was right at three groups, where the
+bands were self-evident on screen and a number would have been noise; it stopped being right
+at eight, where finding the target row for "Move to #6" meant counting from the top (owner,
+2026-09-25). The fix adds a small dim `#n` at each row's right edge, shown only past one
+group — the number is the menu's own "Move to #n", not a new name for the group, so the
+"bands, not names" half of this decision stands.
+
 **D6. The menu lives in `TagVocabularyMenuItems`, shown wherever the tag is pinned.** After
 Unpin and before the category group, for a pinned tag: "New group above", "New group below"
 (only while the tag shares its group — alone, `NewGroupAt` plus compaction lands back where

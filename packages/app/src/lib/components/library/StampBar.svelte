@@ -5,6 +5,8 @@
   // it current on every library switch, so the bar only ever needs to read
   // `stamps.list`, the same shortcut `StampsSection` takes.
   import type { Stamp, TagEditSpec } from '@boorubox/shared'
+  import PencilIcon from '@lucide/svelte/icons/pencil'
+  import Trash2Icon from '@lucide/svelte/icons/trash-2'
   import { errorText, stamps, stampsDelete } from '$lib/api'
   import ConfirmDialog from '$lib/components/common/ConfirmDialog.svelte'
   import TagInput from '$lib/components/tags/TagInput.svelte'
@@ -151,8 +153,12 @@
             {/snippet}
           </ContextMenu.Trigger>
           <ContextMenu.Content>
-            <ContextMenu.Item onSelect={() => (editing = stamp)}>Edit…</ContextMenu.Item>
+            <ContextMenu.Item onSelect={() => (editing = stamp)}>
+              <PencilIcon />
+              Edit…
+            </ContextMenu.Item>
             <ContextMenu.Item variant="destructive" onSelect={() => (deleting = stamp)}>
+              <Trash2Icon />
               Delete…
             </ContextMenu.Item>
           </ContextMenu.Content>

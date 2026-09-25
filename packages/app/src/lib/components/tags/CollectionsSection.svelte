@@ -16,7 +16,9 @@
   // (`sidebar-inspector-polish` design D8).
   import type { Collection, CollectionCount } from '@boorubox/shared'
   import ChevronDownIcon from '@lucide/svelte/icons/chevron-down'
+  import PencilIcon from '@lucide/svelte/icons/pencil'
   import PlusIcon from '@lucide/svelte/icons/plus'
+  import Trash2Icon from '@lucide/svelte/icons/trash-2'
   import { collectionDelete, collections, errorText, settings } from '$lib/api'
   import CollectionNameDialog from '$lib/components/common/CollectionNameDialog.svelte'
   import ConfirmDialog from '$lib/components/common/ConfirmDialog.svelte'
@@ -208,9 +210,11 @@
                 <CollectionPinMenuItem {collection} />
                 <ContextMenu.Separator />
                 <ContextMenu.Item onSelect={() => (renaming = collection)}>
+                  <PencilIcon />
                   Rename…
                 </ContextMenu.Item>
                 <ContextMenu.Item variant="destructive" onSelect={() => (deleting = collection)}>
+                  <Trash2Icon />
                   Delete…
                 </ContextMenu.Item>
               {/snippet}

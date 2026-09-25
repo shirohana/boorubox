@@ -38,7 +38,7 @@
           flex items-center justify-between gap-1 rounded-md border px-1.5 py-0.5 text-xs
           {asked.has(rating)
             ? `border-transparent ${RATING_COLOUR[rating]}`
-            : `${RATING_COLOUR_DIM[rating]} hover:text-foreground`}
+            : RATING_COLOUR_DIM[rating]}
         "
         onclick={() => onquery(toggleRatingInQuery(tagQuery, rating))}
       >
