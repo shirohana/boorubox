@@ -10,6 +10,7 @@
   import type { TagCount } from '@boorubox/shared'
   import { settings, vocabulary } from '$lib/api'
   import { CATEGORY_ORDER, categoryLabel, sidebarRows } from '$lib/domain/tag-categories'
+  import { danbooruLookup } from '$lib/domain/danbooru'
   import {
     activeTerms,
     addTagToQuery,
@@ -17,6 +18,7 @@
     toggleTagInQuery,
   } from '$lib/domain/tag-utils'
   import { CATEGORY_ICON, CATEGORY_TEXT_CLASS, searchMark } from './categories'
+  import { openDanbooruLookup } from './danbooru-open'
   import FilterRow from './FilterRow.svelte'
   import TagVocabularyMenuItems from './TagVocabularyMenuItems.svelte'
 
@@ -61,6 +63,16 @@
         hidden,
       ),
   )
+
+  /**
+   * The row's `?` (`tag-row-and-inspector-fixes` design D2): the category read fresh per
+   * render, the same way `nameClass` beside it already does (`tag-vocabulary` design D5), so
+   * a category change never leaves the look-up pointed at the tag's old destination.
+   */
+  function tagLookup(name: string): { label: string, open: () => void } {
+    const lookup = danbooruLookup(name, vocabulary.categoryOf(name))
+    return { label: lookup.label, open: () => openDanbooruLookup(lookup) }
+  }
 </script>
 
 <!--
@@ -130,6 +142,7 @@
           {count}
           mark={searchMark(name, included, excluded)}
           nameClass={CATEGORY_TEXT_CLASS[vocabulary.categoryOf(name)]}
+          lookup={tagLookup(name)}
           oninclude={() => onquery(addTagToQuery(tagQuery, name))}
           onexclude={() => onquery(excludeTagFromQuery(tagQuery, name))}
           ontoggle={() => onquery(toggleTagInQuery(tagQuery, name))}

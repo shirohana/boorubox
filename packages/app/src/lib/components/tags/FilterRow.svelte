@@ -2,9 +2,11 @@
   // One row, shared by the tag list and the collection list
   // (`sidebar-inspector-polish` design D7): the two were the same markup
   // twice, drifting a little further apart each time one of them changed.
-  // No behaviour lives here — include, exclude and toggle stay the caller's;
-  // this only draws them, so a name, a count, a search mark and a context
-  // menu are all either component ever needs to supply.
+  // No behaviour lives here — include, exclude, toggle and the look-up stay
+  // the caller's; this only draws them, so a name, a count, a search mark and
+  // a context menu are all either component ever needs to supply. `lookup` is
+  // optional because a collection has no Danbooru page to open
+  // (`tag-row-and-inspector-fixes` design D2).
   import type { Snippet } from 'svelte'
   import MinusIcon from '@lucide/svelte/icons/minus'
   import PlusIcon from '@lucide/svelte/icons/plus'
@@ -19,13 +21,25 @@
     mark: SearchMark
     /** The tag list's category colour; the collection list passes nothing. */
     nameClass?: string
+    /** Absent for a collection row; present, the `?` renders first in the button group. */
+    lookup?: { label: string, open: () => void }
     oninclude: () => void
     onexclude: () => void
     ontoggle: () => void
     menu: Snippet
   }
 
-  let { name, count, mark, nameClass = '', oninclude, onexclude, ontoggle, menu }: Props = $props()
+  let {
+    name,
+    count,
+    mark,
+    nameClass = '',
+    lookup,
+    oninclude,
+    onexclude,
+    ontoggle,
+    menu,
+  }: Props = $props()
 </script>
 
 <li>
@@ -39,24 +53,43 @@
             {searchMarkClass(mark, 'hover:bg-sidebar-accent')}
           "
         >
-          <button
-            type="button"
-            class="shrink-0 rounded-sm p-0.5 text-muted-foreground hover:text-foreground"
-            aria-label="Include {name}"
-            title="Include {name}"
-            onclick={oninclude}
-          >
-            <PlusIcon class="size-3" />
-          </button>
-          <button
-            type="button"
-            class="shrink-0 rounded-sm p-0.5 text-muted-foreground hover:text-foreground"
-            aria-label="Exclude {name}"
-            title="Exclude {name}"
-            onclick={onexclude}
-          >
-            <MinusIcon class="size-3" />
-          </button>
+          <!--
+            The look-up, include and exclude controls read as one group
+            (`tag-row-and-inspector-fixes` design D1).
+          -->
+          <span class="flex shrink-0 items-center gap-0">
+            {#if lookup}
+              <button
+                type="button"
+                class="shrink-0 rounded-sm p-0.5 text-muted-foreground hover:text-foreground"
+                aria-label="{lookup.label}: {name}"
+                title={lookup.label}
+                onclick={lookup.open}
+              >
+                <span class="
+                  flex size-3 items-center justify-center text-xs leading-none font-medium
+                ">?</span>
+              </button>
+            {/if}
+            <button
+              type="button"
+              class="shrink-0 rounded-sm p-0.5 text-muted-foreground hover:text-foreground"
+              aria-label="Include {name}"
+              title="Include {name}"
+              onclick={oninclude}
+            >
+              <PlusIcon class="size-3" />
+            </button>
+            <button
+              type="button"
+              class="shrink-0 rounded-sm p-0.5 text-muted-foreground hover:text-foreground"
+              aria-label="Exclude {name}"
+              title="Exclude {name}"
+              onclick={onexclude}
+            >
+              <MinusIcon class="size-3" />
+            </button>
+          </span>
           <!-- Clicking an active row takes it out again (spec "Filter from the list"). -->
           <button
             type="button"

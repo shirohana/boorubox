@@ -16,11 +16,12 @@
   import ExternalLinkIcon from '@lucide/svelte/icons/external-link'
   import PinIcon from '@lucide/svelte/icons/pin'
   import PinOffIcon from '@lucide/svelte/icons/pin-off'
-  import { openExternal, vocabulary } from '$lib/api'
+  import { vocabulary } from '$lib/api'
   import * as ContextMenu from '$lib/components/ui/context-menu'
   import { CATEGORY_ORDER, categoryLabel } from '$lib/domain/tag-categories'
   import { danbooruLookup } from '$lib/domain/danbooru'
   import { CATEGORY_ICON } from './categories'
+  import { openDanbooruLookup } from './danbooru-open'
 
   interface Props {
     name: string
@@ -49,16 +50,7 @@
   const alone = $derived(group !== null && vocabulary.pinnedGroups[group - 1]?.length === 1)
 </script>
 
-<ContextMenu.Item
-  onSelect={() => {
-    // FIXME(menu-polish D2): the failure is dropped rather than shown — a
-    // menu that has closed has no row to show it in, and the URL built here
-    // is always `https:`, never one of `ExternalLink`'s two named failures
-    // (a `file:` address, a malformed one). Wants a shared transient-notice
-    // surface the frame does not have yet.
-    void openExternal(lookup.url)
-  }}
->
+<ContextMenu.Item onSelect={() => openDanbooruLookup(lookup)}>
   <ExternalLinkIcon />
   {lookup.label}
 </ContextMenu.Item>

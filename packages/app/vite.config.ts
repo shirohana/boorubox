@@ -10,6 +10,10 @@ const host = process.env.TAURI_DEV_HOST
 // process.cwd(), so a runner started at the workspace root would scan every package.
 export default defineConfig(() => ({
   plugins: [tailwindcss(), sveltekit()],
+  // Svelte's own recipe for mounting a component under Vitest (design D7 of
+  // `tag-row-and-inspector-fixes`): unguarded, `svelte` resolves its server
+  // build here, where `mount` throws rather than rendering.
+  resolve: process.env.VITEST ? { conditions: ['browser'] } : undefined,
   // prevent Vite from obscuring rust errors
   clearScreen: false,
   // tauri expects a fixed port, fail if that port is not available

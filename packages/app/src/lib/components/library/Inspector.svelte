@@ -313,15 +313,31 @@
   let factsSaving = $state(false)
   let factsError = $state<string | null>(null)
 
-  // Changing the described image discards the facts draft (`editable-info` design D3): the
-  // image it was for is gone from the panel. Keyed on the id alone, not
-  // `updatedAt` — a save's own record replacement must not blow away the
-  // "leave editing mode" that just happened, and no other write touches facts.
-  let shownFactsId: string | undefined
+  /**
+   * Both editors belong to the image they were opened for (spec `tag-editing`,
+   * `app-frame`): changing the described image closes the tag editor and the
+   * facts form and discards their drafts, since a save from either would
+   * otherwise land on the image that replaced it (`tag-row-and-inspector-fixes`
+   * design D6). Keyed on `imageId` alone, not `updatedAt` — a write to the
+   * same image (this editor's own save, a rating, a facts save, a capture
+   * refreshing the record) must not close an editor that is open for it. The
+   * first run after mount only records the id: `e` opens the tag editor
+   * through a `tick()` right after the panel mounts, and a first run that
+   * reset would race it closed.
+   */
+  const imageId = $derived(image?.id)
+  let lastImageId: string | undefined
+  let sawFirstImageId = false
   $effect(() => {
-    const id = image?.id
-    if (id === shownFactsId) return
-    shownFactsId = id
+    if (!sawFirstImageId) {
+      sawFirstImageId = true
+      lastImageId = imageId
+      return
+    }
+    if (imageId === lastImageId) return
+    lastImageId = imageId
+    editingTags = false
+    error = null
     editingFacts = false
     factsError = null
   })
@@ -1192,141 +1208,165 @@
       />
     {/if}
 
-    <dl class="
-      grid grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-1.5 border-t border-border px-4 py-3 text-xs
-    ">
-      <!--
-        The header falls back to the image URL and then the id so it is never
-        blank; this row is the stored page title itself, which is often absent.
-      -->
-      <dt class="text-muted-foreground">Title</dt>
-      {#if editingFacts}
-        <dd>
-          <Input
-            bind:value={draftTitle}
-            class="h-6 px-1.5 text-xs"
-            aria-label="Title"
-            onkeydown={onFactsKeydown}
-          />
-        </dd>
-      {:else}
-        <dd class="wrap-break-word">{image.pageTitle ?? '—'}</dd>
-      {/if}
-
-      <dt class="text-muted-foreground">Source</dt>
-      <dd class="wrap-break-word">{origin}</dd>
-
-      {#if image.account}
-        {@const account = image.account}
-        <!--
-          Spec `tag-editing`, "An X account on screen is a search term": a
-          fact of the page address, beside Page, not among the tags —
-          `account:` searches the address, not the tags, and the handle
-          reaches the tags only as the derived artist tag a capture creates
-          from it (`auto-artist-tag`, spec `capture-ingest` "A capture is
-          stored with its author as an artist tag"); this row never writes
-          one. Read the same in both `editingFacts` states: the address
-          being edited is the draft, but the account is derived from the
-          stored one, so this row does not flip with the form. No colour of
-          its own (blue is general's now, design D2) — the padded,
-          hoverable box and the pointer cursor are what say it is a control,
-          not a fact to merely read (owner, 2026-09-23: the row did not look
-          clickable). `searchMarkClass` (design D3, amended again
-          2026-09-23) supplies `hover:bg-accent` only while the row carries
-          no tint, so hovering an active account keeps its mark instead of
-          losing it to a competing neutral hover.
-        -->
-        <dt class="text-muted-foreground">Account</dt>
-        <dd>
-          <button
+    <!--
+      A second edit action beside the block it opens (`tag-row-and-inspector-fixes` design D5):
+      the title row's own pencil is a screen away, past a tag list that is
+      often long. "Details" because the block has no name on screen otherwise —
+      every other section here opens the same way, Tags' own pencil sitting in
+      exactly this spot.
+    -->
+    <section class="border-t border-border px-4 py-3">
+      <div class="flex items-center justify-between gap-2">
+        <h3 class="text-xs font-medium text-muted-foreground">Details</h3>
+        {#if !editingFacts}
+          <Button
             type="button"
-            class="
-              cursor-pointer rounded-md px-1 py-0.5 text-foreground
-              {searchMarkClass(searchMark(account, terms.accounts, terms.excludedAccounts), 'hover:bg-accent')}
-            "
-            title="Search for this account"
-            onclick={() => query(toggleAccountInQuery(tagQuery, account))}
+            size="icon-xs"
+            variant="ghost"
+            class="shrink-0"
+            aria-label="Edit title and addresses"
+            title="Edit title and addresses"
+            onclick={startEditFacts}
           >
-            @{account}
-          </button>
-        </dd>
-      {/if}
-
-      <dt class="text-muted-foreground">Page</dt>
-      {#if editingFacts}
-        <dd>
-          <Input
-            bind:value={draftPageUrl}
-            class="h-6 px-1.5 text-xs"
-            aria-label="Page address"
-            placeholder="https://…"
-            onkeydown={onFactsKeydown}
-          />
-        </dd>
-      {:else}
-        <!-- Wrapping, so `ExternalLink`'s failure line gets a row of its own. -->
-        <dd class="flex flex-wrap items-start gap-1 wrap-break-word">
-          <span class="min-w-0 flex-1 wrap-break-word">{image.pageUrl ?? '—'}</span>
-          <ExternalLink url={image.pageUrl} />
-        </dd>
-      {/if}
-
-      <dt class="text-muted-foreground">Image</dt>
-      {#if editingFacts}
-        <dd>
-          <Input
-            bind:value={draftImageUrl}
-            class="h-6 px-1.5 text-xs"
-            aria-label="Image address"
-            placeholder="https://…"
-            onkeydown={onFactsKeydown}
-          />
-        </dd>
-      {:else}
-        <dd class="flex flex-wrap items-start gap-1 wrap-break-word">
-          <span class="min-w-0 flex-1 wrap-break-word">{image.imageUrl ?? '—'}</span>
-          <ExternalLink url={image.imageUrl} />
-        </dd>
-      {/if}
-
-      {#if editingFacts}
-        <div class="col-span-2 flex items-center justify-end gap-2 pt-0.5">
-          <Button size="xs" variant="outline" disabled={factsSaving} onclick={cancelEditFacts}>
-            Cancel
+            <PencilIcon class="size-3" />
           </Button>
-          <Button size="xs" disabled={factsSaving} onclick={saveFacts}>Save</Button>
-        </div>
-        {#if factsError}
-          <p class="col-span-2 text-destructive">{factsError}</p>
         {/if}
-      {/if}
+      </div>
 
-      <dt class="text-muted-foreground">Dimensions</dt>
-      <dd>{image.width} × {image.height}</dd>
+      <dl class="mt-2 grid grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-1.5 text-xs">
+        <!--
+          The header falls back to the image URL and then the id so it is never
+          blank; this row is the stored page title itself, which is often absent.
+        -->
+        <dt class="text-muted-foreground">Title</dt>
+        {#if editingFacts}
+          <dd>
+            <Input
+              bind:value={draftTitle}
+              class="h-6 px-1.5 text-xs"
+              aria-label="Title"
+              onkeydown={onFactsKeydown}
+            />
+          </dd>
+        {:else}
+          <dd class="wrap-break-word">{image.pageTitle ?? '—'}</dd>
+        {/if}
 
-      <dt class="text-muted-foreground">Size</dt>
-      <dd>{formatBytes(image.size)}</dd>
+        <dt class="text-muted-foreground">Source</dt>
+        <dd class="wrap-break-word">{origin}</dd>
 
-      <dt class="text-muted-foreground">Type</dt>
-      <dd>{image.mime}</dd>
+        {#if image.account}
+          {@const account = image.account}
+          <!--
+            Spec `tag-editing`, "An X account on screen is a search term": a
+            fact of the page address, beside Page, not among the tags —
+            `account:` searches the address, not the tags, and the handle
+            reaches the tags only as the derived artist tag a capture creates
+            from it (`auto-artist-tag`, spec `capture-ingest` "A capture is
+            stored with its author as an artist tag"); this row never writes
+            one. Read the same in both `editingFacts` states: the address
+            being edited is the draft, but the account is derived from the
+            stored one, so this row does not flip with the form. No colour of
+            its own (blue is general's now, design D2) — the padded,
+            hoverable box and the pointer cursor are what say it is a control,
+            not a fact to merely read (owner, 2026-09-23: the row did not look
+            clickable). `searchMarkClass` (design D3, amended again
+            2026-09-23) supplies `hover:bg-accent` only while the row carries
+            no tint, so hovering an active account keeps its mark instead of
+            losing it to a competing neutral hover.
+          -->
+          <dt class="text-muted-foreground">Account</dt>
+          <dd>
+            <button
+              type="button"
+              class="
+                cursor-pointer rounded-md px-1 py-0.5 text-foreground
+                {searchMarkClass(searchMark(account, terms.accounts, terms.excludedAccounts), 'hover:bg-accent')}
+              "
+              title="Search for this account"
+              onclick={() => query(toggleAccountInQuery(tagQuery, account))}
+            >
+              @{account}
+            </button>
+          </dd>
+        {/if}
 
-      <dt class="text-muted-foreground">Captured</dt>
-      <dd>{formatTimestamp(image.capturedAt)}</dd>
+        <dt class="text-muted-foreground">Page</dt>
+        {#if editingFacts}
+          <dd>
+            <Input
+              bind:value={draftPageUrl}
+              class="h-6 px-1.5 text-xs"
+              aria-label="Page address"
+              placeholder="https://…"
+              onkeydown={onFactsKeydown}
+            />
+          </dd>
+        {:else}
+          <!-- Wrapping, so `ExternalLink`'s failure line gets a row of its own. -->
+          <dd class="flex flex-wrap items-start gap-1 wrap-break-word">
+            <span class="min-w-0 flex-1 wrap-break-word">{image.pageUrl ?? '—'}</span>
+            <ExternalLink url={image.pageUrl} />
+          </dd>
+        {/if}
 
-      <dt class="text-muted-foreground">Imported</dt>
-      <dd>{formatTimestamp(image.createdAt)}</dd>
+        <dt class="text-muted-foreground">Image</dt>
+        {#if editingFacts}
+          <dd>
+            <Input
+              bind:value={draftImageUrl}
+              class="h-6 px-1.5 text-xs"
+              aria-label="Image address"
+              placeholder="https://…"
+              onkeydown={onFactsKeydown}
+            />
+          </dd>
+        {:else}
+          <dd class="flex flex-wrap items-start gap-1 wrap-break-word">
+            <span class="min-w-0 flex-1 wrap-break-word">{image.imageUrl ?? '—'}</span>
+            <ExternalLink url={image.imageUrl} />
+          </dd>
+        {/if}
 
-      <!--
-        `formatTimestamp` already reads a non-finite number as `—`; passing
-        `NaN` for an image with no file behind it reuses that fallback instead
-        of a second one written here (design D11).
-      -->
-      <dt class="text-muted-foreground">File modified</dt>
-      <dd>{formatTimestamp(image.fileModifiedAt ?? Number.NaN)}</dd>
+        {#if editingFacts}
+          <div class="col-span-2 flex items-center justify-end gap-2 pt-0.5">
+            <Button size="xs" variant="outline" disabled={factsSaving} onclick={cancelEditFacts}>
+              Cancel
+            </Button>
+            <Button size="xs" disabled={factsSaving} onclick={saveFacts}>Save</Button>
+          </div>
+          {#if factsError}
+            <p class="col-span-2 text-destructive">{factsError}</p>
+          {/if}
+        {/if}
 
-      <dt class="text-muted-foreground">ID</dt>
-      <dd class="font-mono wrap-break-word">{image.id}</dd>
-    </dl>
+        <dt class="text-muted-foreground">Dimensions</dt>
+        <dd>{image.width} × {image.height}</dd>
+
+        <dt class="text-muted-foreground">Size</dt>
+        <dd>{formatBytes(image.size)}</dd>
+
+        <dt class="text-muted-foreground">Type</dt>
+        <dd>{image.mime}</dd>
+
+        <dt class="text-muted-foreground">Captured</dt>
+        <dd>{formatTimestamp(image.capturedAt)}</dd>
+
+        <dt class="text-muted-foreground">Imported</dt>
+        <dd>{formatTimestamp(image.createdAt)}</dd>
+
+        <!--
+          `formatTimestamp` already reads a non-finite number as `—`; passing
+          `NaN` for an image with no file behind it reuses that fallback instead
+          of a second one written here (design D11).
+        -->
+        <dt class="text-muted-foreground">File modified</dt>
+        <dd>{formatTimestamp(image.fileModifiedAt ?? Number.NaN)}</dd>
+
+        <dt class="text-muted-foreground">ID</dt>
+        <dd class="font-mono wrap-break-word">{image.id}</dd>
+      </dl>
+    </section>
 
     <!--
       `posted-label`: absent, not an empty placeholder, for an image that has
