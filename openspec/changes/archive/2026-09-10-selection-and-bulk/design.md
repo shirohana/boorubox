@@ -143,6 +143,17 @@ anchor and focus would index into a different order.
 Alternative — keep the range and re-resolve it against the new result — rejected: it silently
 re-points the selection at different images, which is the failure this decision exists to prevent.
 
+*Amended 2026-09-28 (`selection-by-id` design D9).* Both arguments above stand for an action: it
+resolves before it writes, so the ids it holds were read in the order the user picked from. A
+refresh the user did not start — a capture stored, an import finished — arrives after its write
+has committed, so it cannot resolve first: resolving the range then reads the new order and
+re-points the selection by the rows that arrived (the owner's repro: a capture above a
+three-tile range moved the selection up one image). The store therefore pins across every
+re-read of the same search from the rows the webview has loaded, which are the one record of the
+old order, and carries the focus and the anchor by the images their rows held. A range that
+reaches past the loaded rows is kept across a capture, but moved by the capture's known row, not
+re-resolved blind — which is what the rejected alternative above was, and it stays rejected.
+
 **D5. The new keys ride the grid's existing keydown handler and its existing guard.**
 
 `Shift`+arrows, `Shift`+`Home`/`End`, the select-all shortcut and `Esc` are added to the handler

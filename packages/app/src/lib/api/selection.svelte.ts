@@ -7,6 +7,11 @@
 // every gesture is a function of both — a shift-arrow moves the focus AND
 // rewrites the range from the anchor — and split across two owners each of
 // those rules would have to be written twice.
+//
+// The focus, the anchor and a range are row indices, which are right between
+// re-reads and wrong across one: a capture or a write moves rows under them.
+// `pin` and `repin` carry them across a re-read of the same search by the
+// images their rows held (`selection-by-id` design D1).
 
 import { SvelteSet } from 'svelte/reactivity'
 
@@ -14,7 +19,10 @@ import { SvelteSet } from 'svelte/reactivity'
  * The selection is only ever one of these (design D2). A set of ids is what a
  * click builds, because the tile it hit is drawn and its id is in hand; a range
  * is what "from here to there" means over a result the app has not loaded, so
- * it is indices into the current result order.
+ * it is indices into the current result order — re-pinned across a re-read of
+ * the same search, to ids from the loaded rows or shifted past a capture's row
+ * (`selection-by-id` design D2, D4), because the indices alone would name
+ * whatever moved into those rows.
  */
 export type SelectionState
   = | { kind: 'ids', ids: SvelteSet<string> }
@@ -52,6 +60,66 @@ export type IdResolver = (offset: number, limit: number) => Promise<string[]>
  */
 export type MatchResolver = (ids: string[]) => Promise<string[]>
 
+/** What a store needs of the loaded rows — `SearchResults` fits as is. */
+export interface LoadedRows {
+  total: number
+  at: (index: number) => { id: string } | undefined
+}
+
+/**
+ * The row `id` holds in the current request, or `null` when the request does
+ * not match it — `searchPosition` in the app, a stub in the tests.
+ */
+export type PositionResolver = (id: string) => Promise<number | null>
+
+/** An index and the image its row held when it was pinned, if that row was loaded. */
+export interface Pinned { index: number, id: string | undefined }
+
+/** Everything `repin` needs to put the store back on its images after a re-read. */
+export interface SelectionPin { focus: Pinned, anchor: Pinned, state: SelectionState }
+
+/**
+ * An old row's index once rows were inserted at `positions` (new rows, sorted
+ * ascending): each insertion at or before it pushes it down one. A capture
+ * only inserts, so every old row keeps its order relative to the others
+ * (`selection-by-id` design D4).
+ */
+export function shiftPast(index: number, positions: number[]): number {
+  let shifted = index
+  for (const position of positions) {
+    if (position <= shifted) shifted++
+  }
+  return shifted
+}
+
+/** The row holding `id` among the loaded rows, or `-1` when none does. */
+export function rowOf(rows: LoadedRows, id: string): number {
+  for (let index = 0; index < rows.total; index++) {
+    if (rows.at(index)?.id === id) return index
+  }
+  return -1
+}
+
+/**
+ * Where a pinned image sits after a re-read (`selection-by-id` design D3):
+ * among the loaded rows first, then by asking the search; a pin with no id
+ * moves by the insertions `shiftBy` names. An image that left the result, and
+ * every case with nothing to go by, keeps its index.
+ */
+export async function relocate(
+  pinned: Pinned,
+  rows: LoadedRows,
+  position: PositionResolver,
+  shiftBy: number[] = [],
+): Promise<number> {
+  if (pinned.index < 0) return pinned.index
+  if (pinned.id === undefined) return shiftPast(pinned.index, shiftBy)
+
+  const loaded = rowOf(rows, pinned.id)
+  if (loaded >= 0) return loaded
+  return (await position(pinned.id)) ?? pinned.index
+}
+
 function noSelection(): SelectionState {
   return { kind: 'ids', ids: new SvelteSet<string>() }
 }
@@ -77,8 +145,11 @@ export class Selection {
   #state = $state<SelectionState>(noSelection())
   /** The id state `ids()` last moved a range into: an edit tells that write from a gesture's. */
   #promoted: SelectionState | null = null
+  /** The range `#shiftRange` last moved a range to: an edit re-resolves it, never yields. */
+  #shifted: SelectionState | null = null
   readonly #resolve: IdResolver
   readonly #matches: MatchResolver
+  readonly #position: PositionResolver
 
   /**
    * Bumped by every `#state` reassignment (`#setState` below) — a cheap,
@@ -89,9 +160,10 @@ export class Selection {
    */
   generation = $state(0)
 
-  constructor(resolve: IdResolver, matches: MatchResolver) {
+  constructor(resolve: IdResolver, matches: MatchResolver, position: PositionResolver) {
     this.#resolve = resolve
     this.#matches = matches
+    this.#position = position
   }
 
   /** The one place `#state` is written, so `generation` cannot drift from it. */
@@ -263,8 +335,14 @@ export class Selection {
    * wins).
    */
   async #editIds(edit: (ids: SvelteSet<string>) => void | Promise<void>): Promise<void> {
-    const before = this.#state
-    const resolved = await this.ids()
+    let before = this.#state
+    let resolved = await this.ids()
+    // A capture's re-read moved the range under the resolve: its old rows now
+    // name other images, and the moved range is still the user's selection.
+    while (this.#state !== before && this.#state === this.#shifted) {
+      before = this.#state
+      resolved = await this.ids()
+    }
     const ids = new SvelteSet(resolved)
     await edit(ids)
     // An `Esc` or a new query during the resolve or the edit owns the
@@ -286,6 +364,96 @@ export class Selection {
     this.focus = -1
     this.anchor = -1
     this.clear()
+  }
+
+  /**
+   * Before a re-read of the same search: which images the focus, the anchor
+   * and the selection are on, read off the rows loaded now — the one record
+   * of the order the indices were taken in, since the database already
+   * answers in the new one (`selection-by-id` design D3). No round trip: a
+   * range whose rows are all loaded becomes their ids here, and one that
+   * reaches past them stays a range for `repin` to move.
+   */
+  pin(rows: LoadedRows): SelectionPin {
+    const pinned = (index: number): Pinned => ({
+      index,
+      id: index >= 0 ? rows.at(index)?.id : undefined,
+    })
+    this.#promoteLoaded(rows)
+    // Read back after the promotion, never the literal (the proxy rule in
+    // `ids()`): `repin` compares it against `#state`.
+    return { focus: pinned(this.focus), anchor: pinned(this.anchor), state: this.#state }
+  }
+
+  /**
+   * After the re-read: each pinned index goes to its image's new row, unless a
+   * gesture made during the re-read already moved it. `inserted` names the
+   * captures the re-read picked up; a range `pin` could not promote follows
+   * their rows (`selection-by-id` design D4). Returns their positions in the
+   * new result, sorted, so the caller can move its own pins by the same shift.
+   */
+  async repin(pin: SelectionPin, rows: LoadedRows, inserted?: string[]): Promise<number[]> {
+    const positions = inserted ? await this.#positionsOf(inserted) : []
+    const [focus, anchor] = await Promise.all([
+      relocate(pin.focus, rows, this.#position, positions),
+      relocate(pin.anchor, rows, this.#position, positions),
+    ])
+    if (this.focus === pin.focus.index) this.focus = focus
+    if (this.anchor === pin.anchor.index) this.anchor = anchor
+    if (inserted) await this.#shiftRange(pin.state, positions, inserted)
+    return positions
+  }
+
+  /** A range whose every row is loaded, as ids — the same promotion `ids()` makes. */
+  #promoteLoaded(rows: LoadedRows): void {
+    const state = this.#state
+    if (state.kind !== 'range') return
+
+    const ids: string[] = []
+    for (let index = state.start; index < state.end; index++) {
+      const id = rows.at(index)?.id
+      if (id === undefined) return
+      ids.push(id)
+    }
+    this.#setState({ kind: 'ids', ids: new SvelteSet(ids) })
+    this.#promoted = this.#state
+  }
+
+  /** The rows `ids` landed on in the current request, sorted; ids it does not match drop out. */
+  async #positionsOf(ids: string[]): Promise<number[]> {
+    const positions = await Promise.all(ids.map((id) => this.#position(id)))
+    return positions
+      .filter((position): position is number => position !== null)
+      .sort((a, b) => a - b)
+  }
+
+  /**
+   * A range over rows that were not loaded, across captures at `positions`:
+   * shifted with no round trip when none landed inside it, so a select-all
+   * stays two numbers; resolved minus the captures when one did.
+   */
+  async #shiftRange(state: SelectionState, positions: number[], inserted: string[]): Promise<void> {
+    if (state.kind !== 'range' || this.#state !== state || positions.length === 0) return
+
+    const start = shiftPast(state.start, positions)
+    const last = shiftPast(state.end - 1, positions)
+    if (!positions.some((position) => position >= start && position <= last)) {
+      this.#setState({ kind: 'range', start, end: last + 1 })
+      this.#shifted = this.#state
+      return
+    }
+
+    const resolved = await this.#resolve(start, last - start + 1)
+    // A gesture during the round trip owns the selection now, as in `ids()`.
+    if (this.#state !== state) return
+    /* eslint-disable-next-line svelte/prefer-svelte-reactivity --
+       A local index for the filter below, dropped with this call. */
+    const captures = new Set(inserted)
+    this.#setState({
+      kind: 'ids',
+      ids: new SvelteSet(resolved.filter((id) => !captures.has(id))),
+    })
+    this.#promoted = this.#state
   }
 
   /**

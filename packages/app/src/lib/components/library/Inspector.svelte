@@ -10,6 +10,7 @@
     collectionRemove,
     collections,
     errorText,
+    rowOf,
     selectionCollectionCounts,
     selectionTagCounts,
     vocabulary,
@@ -136,11 +137,11 @@
      * `LibraryScreen.svelte` — vocabulary and search refresh, then
      * `keepMatching()` prunes the selection and refocuses, since a rename can
      * move a row out of the current search, the same reason every other
-     * selection-wide writer ends there. Absent inside the viewer, which shows
-     * one image and neither reads nor writes a selection — there, the
-     * dialog's own success handler falls back to `results.refresh()` alone.
+     * selection-wide writer ends there. Required in both placements: inside
+     * the viewer too the re-read has to keep the viewer on its image, which a
+     * bare `results.refresh()` does not (`selection-by-id` design D7).
      */
-    onartistrenamed?: () => void
+    onartistrenamed: () => void
   }
 
   let {
@@ -179,24 +180,8 @@
       : undefined,
   )
   const image = $derived(
-    only === undefined || only === focused?.id ? focused : results.at(rowWithId(only)) ?? null,
+    only === undefined || only === focused?.id ? focused : results.at(rowOf(results, only)) ?? null,
   )
-
-  /**
-   * `SearchResults` answers by row, so a record is found by the same walk its
-   * own `replace` does; `-1` is a row whose page has not been loaded. It stops
-   * at the selected row, and that row is one whose tile was drawn — the walk is
-   * short in the gestures that reach here.
-   *
-   * The row and not the record, because both callers want the index: the panel
-   * to read the record back, the strip to open the viewer at it.
-   */
-  function rowWithId(id: string): number {
-    for (let index = 0; index < results.total; index++) {
-      if (results.at(index)?.id === id) return index
-    }
-    return -1
-  }
 
   /**
    * A thumbnail in the strip is a control, not a picture (`selection-and-bulk` design D7, amended):
@@ -205,7 +190,7 @@
    * viewer opens at a row.
    */
   function openThumb(id: string) {
-    const index = rowWithId(id)
+    const index = rowOf(results, id)
     if (index >= 0) onactivate?.(index)
   }
 
@@ -1446,12 +1431,9 @@
     renamingArtist = null
     // `artist-entries` design D6: the panel and the grid show the new name
     // once these land — `vocabulary.refresh()` for the category and pin,
-    // then the screen's own write pattern where one is wired (`afterWrite`,
-    // `LibraryScreen.svelte`), or `results.refresh()` alone inside the
-    // viewer, which has no selection for that pattern to prune.
+    // then the screen's own write pattern (`afterWrite`, `LibraryScreen.svelte`).
     void vocabulary.refresh()
-    if (onartistrenamed) onartistrenamed()
-    else void results.refresh()
+    onartistrenamed()
     onrelease?.()
   }}
 />

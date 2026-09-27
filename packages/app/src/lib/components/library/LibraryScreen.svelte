@@ -39,7 +39,7 @@
     vocabulary,
     type SearchInputs,
   } from '$lib/api'
-  import { Selection } from '$lib/api'
+  import { relocate, Selection } from '$lib/api'
   import ConfirmDialog from '$lib/components/common/ConfirmDialog.svelte'
   import { frame } from '$lib/components/frame/frame.svelte'
   import CollectionsSection from '$lib/components/tags/CollectionsSection.svelte'
@@ -105,13 +105,18 @@
    * the selection and row *n* of the grid have to be the same image. Its match
    * resolver is the same request over `limit`/`offset` of zero — `matchingIds`
    * ignores both (`browse-fixes` design D1) — so a write's prune reads the
-   * same search the grid is showing, never a stale one.
+   * same search the grid is showing, never a stale one. Its position
+   * resolver finds a pinned image's row after a re-read (`selection-by-id`
+   * design D1), and the viewer's pin uses the same one.
    */
   const currentView = () => ({ sort: results.sort, group: results.group, view: results.view })
+  const positionOf = (id: string) =>
+    searchPosition(buildSearchRequest(results.inputs, currentView(), 0), id)
   const selection = new Selection(
     (offset, limit) =>
       searchIds(buildSearchRequest(results.inputs, currentView(), offset, limit)),
     (ids) => matchingIds(buildSearchRequest(results.inputs, currentView(), 0, 0), ids),
+    positionOf,
   )
 
   // The query lives here, not in the search bar: the sidebar, the rating pills
@@ -252,19 +257,114 @@
   }
 
   /**
-   * The refreshes nobody on this screen asked for. A capture lands at row 0 and
-   * an import moves rows too, so a `kind: 'range'` selection that outlived one
-   * of them would name images the user never picked (design D2). Pinning it by
-   * id first is what an action does anyway, and it leaves the store in id mode
-   * (design D4): never re-run the search under a live range.
+   * The refreshes nobody on this screen asked for: a capture stored (`inserted`
+   * is its id) or an import finished. Both arrive after their rows committed,
+   * so the database already answers in the new order and only the rows loaded
+   * now still say which image each index meant — which is why `rereadNow`
+   * pins before the refresh and never resolves a pin against the search
+   * (`selection-by-id` design D3).
    */
-  async function refreshResults() {
+  function refreshResults(inserted?: string[]): Promise<void> {
     // `tag-vocabulary` design D5: a capture or an import can land through a
     // rule that creates an artist, and neither path writes through
     // `results.saveTags`, so this refresh is the only hook that sees it.
     void vocabulary.refresh()
-    await selection.ids()
-    await results.refresh()
+    return rereadKeeping(inserted)
+  }
+
+  /** The tail of the re-read chain: one re-read at a time (`selection-by-id` design D6). */
+  let rereads: Promise<void> = Promise.resolve()
+  /** The queued capture re-read, still open to more ids: it takes them all in one refresh. */
+  let batchedCaptures: { ids: string[], generation: number } | null = null
+  /** The generation the chain's latest refresh started, told apart from a run's by `rereadNow`. */
+  let chainGeneration = -1
+
+  /**
+   * Every re-read of the current search that must leave the focus, the
+   * anchor, the selection and the open viewer on their images. Serialised: a
+   * re-read pins from the loaded rows, and one running beside it would have
+   * emptied them. Captures stored while one runs join the next one as a batch.
+   */
+  function rereadKeeping(inserted?: string[]): Promise<void> {
+    if (inserted && batchedCaptures) {
+      batchedCaptures.ids.push(...inserted)
+      batchedCaptures.generation = results.generation
+      return rereads
+    }
+    if (inserted) {
+      const batch = { ids: [...inserted], generation: results.generation }
+      batchedCaptures = batch
+      rereads = rereads.then(() => {
+        if (batchedCaptures === batch) batchedCaptures = null
+        return rereadNow(batch.generation, batch.ids)
+      })
+      return rereads
+    }
+    const generation = results.generation
+    rereads = rereads.then(() => rereadNow(generation))
+    return rereads
+  }
+
+  /**
+   * One re-read. It never scrolls the grid or moves the DOM focus: a capture is
+   * not the user's gesture. Its errors land in the banner rather than the
+   * chain, so one failed re-read does not stop every later one.
+   */
+  async function rereadNow(requested: number, inserted?: string[]) {
+    // A run started since this re-read was asked for (`searchKeeping`, a typed
+    // search, a sort) read the rows after the capture or write, so they are
+    // already current — and refreshing now would bump the generation under
+    // that run and make `searchKeeping` drop the image it is keeping. The
+    // previous re-read's own refresh is not such a run: this one still owes
+    // its `inserted` shift.
+    if (results.generation !== requested && results.generation !== chainGeneration) return
+    try {
+      const pin = selection.pin(results)
+      const viewer = lightboxOpen
+        ? { index: lightboxIndex, id: results.at(lightboxIndex)?.id }
+        : null
+      if (!inserted) {
+        // FIXME: this resolves after the write, in the new order, for the two
+        // writers that do not resolve the selection first (the sidebar's
+        // collection change, the artist rename); `pin` above already covers a
+        // range on screen. Right shape: those writers resolve before they
+        // write, as `write()` does (`selection-by-id` design, Risks).
+        await selection.ids()
+      }
+      const refreshing = results.refresh()
+      // Read after `refresh` has started, as `searchKeeping` does: a newer run
+      // owns the rows, and these pins describe a result nobody is looking at.
+      const generation = results.generation
+      chainGeneration = generation
+      await refreshing
+      if (results.generation !== generation) return
+
+      const positions = await selection.repin(pin, results, inserted)
+      if (results.generation !== generation) return
+      if (selection.focus >= 0) results.ensureRange(selection.focus, selection.focus + 1)
+      if (viewer) await keepViewer(viewer, positions, generation)
+    } catch (error) {
+      actionError = errorText(error)
+    }
+  }
+
+  /**
+   * The open viewer back on its image after a re-read (`selection-by-id` design
+   * D7), unless the user moved it or closed it meanwhile.
+   */
+  async function keepViewer(
+    viewer: { index: number, id: string | undefined },
+    positions: number[],
+    generation: number,
+  ) {
+    if (!lightboxOpen || lightboxIndex !== viewer.index) return
+    const row = await relocate(viewer, results, positionOf, positions)
+    if (results.generation !== generation) return
+    if (!lightboxOpen || lightboxIndex !== viewer.index) return
+    lightboxIndex = row
+    // Usually off page 0, which is all the refresh loaded; the viewer reads
+    // `results.at(index)` and would sit on "Loading…" otherwise.
+    results.ensureRange(row, row + 1)
   }
 
   /**
@@ -306,7 +406,7 @@
     // *proxy* of what was assigned, so it never compares equal to the object
     // this call passed in and the guard below would fire on every click.
     const generation = results.generation
-    const [, row] = await Promise.all([
+    const keeping = Promise.all([
       running,
       // A position that cannot be answered is not a row: nobody awaits this
       // call, and an escaping rejection would leave the viewer open on an index
@@ -316,6 +416,14 @@
         return null
       }),
     ])
+    // A re-read asked for while this runs waits for it: its refresh would bump
+    // the generation below and drop the image this call is keeping, and it
+    // then pins the focus and the viewer this call set. The open capture batch
+    // closes here, so a capture stored from now on lands in that later re-read
+    // rather than one queued before this run, which skips its refresh.
+    batchedCaptures = null
+    rereads = rereads.then(() => keeping.then(() => undefined, () => undefined))
+    const [, row] = await keeping
 
     // A second click, a typed search or a refresh started a newer run while
     // this one waited on the position: the row it found is a row of a result
@@ -358,10 +466,13 @@
    * way to know which of a bulk tag edit's ids left the result.
    *
    * A live range has to be resolved to ids before the write moves the rows
-   * out from under it, and every writer that takes ids does so itself; the
-   * resolve here is the backstop for a caller that writes without them (the
-   * sidebar's collection change), because pruning a range against rows that
-   * now name different images would drop or keep the wrong ones.
+   * out from under it, and every writer that takes ids does so itself;
+   * `rereadNow` pins a range on screen from its loaded rows before the
+   * refresh and keeps the resolve as the backstop for a caller that writes
+   * without ids (the sidebar's collection change), because pruning a range
+   * against rows that now name different images would drop or keep the wrong
+   * ones. Under the `updated` sort a write reorders the result, so the focus
+   * and the open viewer are pinned to their images across the refresh too.
    *
    * The refresh replaces every row, so the focused card — and the element the
    * focus was on — leaves the DOM and the focus falls to `<body>`, where the
@@ -376,8 +487,7 @@
     // edit, a rule run and every other writer that ends up here may have
     // created or emptied a categorised tag.
     void vocabulary.refresh()
-    await selection.ids()
-    await results.refresh()
+    await rereadKeeping()
     await selection.keepMatching()
     if (selection.focus >= 0 && results.total > 0) {
       grid?.focusCard(Math.min(selection.focus, results.total - 1))
@@ -583,7 +693,7 @@
   // it last searched, and the image only appears once something else re-runs the
   // search — leaving and coming back to the route, for instance.
   $effect(() => {
-    const subscription = onCaptureStored(() => void refreshResults())
+    const subscription = onCaptureStored((image) => void refreshResults([image.id]))
     subscription.catch((cause) => (actionError = errorText(cause)))
     return () => {
       void subscription.then((unlisten) => unlisten()).catch(() => {})
@@ -592,6 +702,12 @@
 
   // The runs outlive this route (design D9), so what they change is told to
   // whoever is on screen rather than to whoever started them.
+  //
+  // FIXME: an import passes no inserted ids, so a range reaching past the
+  // loaded rows is resolved after the import committed, off by the rows it
+  // added above (`selection-by-id` design D5). Right shape: the run reports
+  // its created ids and this passes them like a capture does; not built
+  // because `onfinished` carries no report today.
   $effect(() => imports.onfinished(() => void refreshResults()))
 
   // Design D8: the subscription is the route's, not the Import menu's. A menu is
@@ -1032,6 +1148,7 @@
     {clickZoomCeiling}
     {tagQuery}
     onquery={searchKeeping}
+    onartistrenamed={afterWrite}
     bind:mode={browseSession.lightboxMode}
     bind:index={lightboxIndex}
     onmove={(index) => grid?.scrollIntoView(index)}

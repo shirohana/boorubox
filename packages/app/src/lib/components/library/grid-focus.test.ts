@@ -129,6 +129,7 @@ describe('shift-arrow selection', () => {
     const selection = new Selection(
       () => Promise.resolve([]),
       () => Promise.resolve([]),
+      () => Promise.resolve(null),
     )
 
     selection.focusAt(total - 1)
@@ -150,6 +151,7 @@ describe('shift-arrow selection', () => {
     const selection = new Selection(
       () => Promise.resolve([]),
       () => Promise.resolve([]),
+      () => Promise.resolve(null),
     )
     selection.focusAt(total - 3)
 
