@@ -18,6 +18,7 @@
     trash,
     vocabulary,
   } from '$lib/api'
+  import { isCurrentPath } from '$lib/components/frame/current-path'
   import LibraryMenu from '$lib/components/frame/LibraryMenu.svelte'
   import { libraryName } from '$lib/components/frame/library-name'
   import NotesPanel from '$lib/components/notes/NotesPanel.svelte'
@@ -153,7 +154,7 @@
       {#each nav as item (item.href)}
         {@const count = item.count?.() ?? 0}
         <Sidebar.MenuItem>
-          <Sidebar.MenuButton isActive={page.url.pathname === item.href}>
+          <Sidebar.MenuButton isActive={isCurrentPath(page.url.pathname, item.href)}>
             {#snippet child({ props })}
               <a href={item.href} {...props}>
                 <item.icon />

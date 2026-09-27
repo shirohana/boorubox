@@ -317,6 +317,13 @@ scroll — and fitting the settings column outranks the familiarity the table tr
 section now renders one bordered entry per rule — a header line with the name, its badges, the
 switch and the buttons, then the pattern and tags as labelled rows under it.
 
+*Amended (settings-pages, 2026-09-28):* "not a route" held while Settings was the one
+column this design found it in: a route was a door in the app's own nav, and every
+section here — Rules included — shared that one column instead. `settings-pages` gives
+Settings a nav of its own, inside that single door, so a settings page is a route under
+`/settings` without being a second door in the app's nav — the paragraph's argument
+against a `Sidebar · nav` item stands unchanged, and only "not a route" is reversed.
+
 **D12. The run's progress is reported the way import's is.**
 
 A run over ten thousand images is the second long-running blocking job in the app, and Phase 1

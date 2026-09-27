@@ -187,6 +187,15 @@ above the image and below the checkbox — a cursor and a wash said a click does
 never what, and the owner's review asked for the answer to be readable before the click, not
 only after it.
 
+*Amended (settings-pages, 2026-09-28):* "on `/settings` after the Booru section" held
+while Settings was one scroll column and a stamp's neighbour was whatever section the
+owner placed below it — after Booru rather than beside Rules: a stamp writes through the
+bulk-tag door, not a pattern on an arriving image. `settings-pages` gives every section its
+own page behind a nav, so order is the nav's order, not a section's position in a column,
+and adjacency no longer carries that argument: a nav lists doors, it does not say one
+section is a kind of another. The owner now places Stamps before Booru (2026-09-28), and
+"the rules trio with a matcher-less form" is what the Stamps page still holds.
+
 ## Risks / Trade-offs
 
 - [A click meant to focus lands as a stamp] → the mode is loud: the toggle is pressed, the bar

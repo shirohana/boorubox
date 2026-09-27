@@ -8,11 +8,11 @@ changing the software under someone mid-task.
 ## Requirements
 
 ### Requirement: The running version is visible
-Settings SHALL show the version the app is running. The string shown SHALL be the same one
+The About page of Settings SHALL show the version the app is running. The string shown SHALL be the same one
 the app reports over its status endpoint, so a user reading it aloud and a log agree.
 
 #### Scenario: Reading the version
-- **WHEN** the user opens Settings
+- **WHEN** the user opens the About page of Settings
 - **THEN** the running version is shown as text they can read and repeat
 
 #### Scenario: One version, not two
@@ -20,8 +20,8 @@ the app reports over its status endpoint, so a user reading it aloud and a log a
 - **THEN** they are the same string
 
 ### Requirement: The app checks for a newer version
-The app SHALL check for a newer version at launch and SHALL offer an explicit check in
-Settings. A check SHALL compare against the published version and SHALL treat only a strictly
+The app SHALL check for a newer version at launch and SHALL offer an explicit check on
+the About page of Settings. A check SHALL compare against the published version and SHALL treat only a strictly
 greater version as an update.
 
 A check that fails — no network, an unreachable or malformed manifest — SHALL be reported as

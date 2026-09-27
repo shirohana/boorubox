@@ -1,8 +1,8 @@
 <script lang="ts">
   // Slot Settings · Rules (`auto-tag-rules` design D11): the whole section —
-  // Import, Export and Run above, the form, then the table. Not a route and not
-  // a nav item: rules are configuration of the library, which is what /settings
-  // is, and filling both would put one screen behind two doors.
+  // Import, Export and Run above, the form, then the table. Not a nav item:
+  // rules are configuration of the library, which is what /settings is, and
+  // a sidebar entry too would put one screen behind two doors.
   import type { ExportProgress, Rule, RuleListEntry, RulesRunReport } from '@boorubox/shared'
   import PlusIcon from '@lucide/svelte/icons/plus'
   import {

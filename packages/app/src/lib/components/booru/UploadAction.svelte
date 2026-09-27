@@ -119,7 +119,7 @@
   <section class="border-t border-border px-4 py-3">
     <p class="text-xs text-muted-foreground">
       No booru configured.
-      <a href={resolve('/settings')} class="underline underline-offset-2">
+      <a href={resolve('/settings/booru')} class="underline underline-offset-2">
         Add one in Settings · Booru
       </a>.
     </p>

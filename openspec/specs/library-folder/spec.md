@@ -27,7 +27,7 @@ actions SHALL be picking a folder and opening one the app has opened before.
 ### Requirement: Remembered library opens on launch
 The app SHALL reopen the last library on launch without asking, unless the user closed it
 deliberately, in which case there is no library to reopen, or unless the user has turned the
-automatic open off in settings, in which case the start screen is shown with the recent
+automatic open off on the General page of Settings, in which case the start screen is shown with the recent
 libraries and nothing is opened until one is chosen. The remembered path SHALL be kept in
 both cases.
 
@@ -56,7 +56,7 @@ with the reason, once it settles.
 - **THEN** the start screen is shown with the recent libraries, nothing is opened, nothing is reported as missing, and choosing one opens it
 
 #### Scenario: The setting is where the other settings are
-- **WHEN** the user opens the settings screen
+- **WHEN** the user opens the General page of Settings
 - **THEN** "Open the last library at launch" is offered as a switch, on unless turned off, and changing it takes effect at the next launch
 
 ### Requirement: Layout is stable and self-contained

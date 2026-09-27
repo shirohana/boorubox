@@ -1,11 +1,9 @@
 <script lang="ts">
-  // Slot Settings · Artists (`artist-entries` design D7): above Rules — an
-  // entry is configuration of the library applied as an image enters it, the
-  // same reasoning `RulesSection`'s own placement gives, not a route of its
-  // own. This file draws the list and the delete confirm and mounts the form;
-  // the form itself is `ArtistForm.svelte`, the two fields shared between
-  // Add and Edit (`artists_upsert`'s own refusals decide what a valid entry
-  // is either way) — unlike Rules' three-way split, there is no separate list
+  // Slot Settings · Artists (`artist-entries` design D7): this file draws the
+  // list and the delete confirm and mounts the form; the form itself is
+  // `ArtistForm.svelte`, the two fields shared between Add and Edit
+  // (`artists_upsert`'s own refusals decide what a valid entry is either
+  // way) — unlike Rules' three-way split, there is no separate list
   // component here, since the list is only a handful of rows drawn inline.
   import type { ArtistEntry } from '@boorubox/shared'
   import PencilIcon from '@lucide/svelte/icons/pencil'
@@ -15,6 +13,8 @@
   import ConfirmDialog from '$lib/components/common/ConfirmDialog.svelte'
   import { CATEGORY_TEXT_CLASS } from '$lib/components/tags/categories'
   import { Button } from '$lib/components/ui/button'
+  import { Input } from '$lib/components/ui/input'
+  import { filterArtists } from './artist-filter'
   import ArtistForm from './ArtistForm.svelte'
 
   let entries = $state<ArtistEntry[]>([])
@@ -23,6 +23,10 @@
   let editing = $state<ArtistEntry | null>(null)
   let confirming = $state<ArtistEntry | null>(null)
   let error = $state<string | null>(null)
+  // Not remembered and not cleared by a save (`settings-pages` design D8): the field is the
+  // user's own filter at work, not view state worth persisting.
+  let query = $state('')
+  const shown = $derived(filterArtists(entries, query))
 
   // Re-read when the open library changes: `RulesSection`'s own reasoning —
   // the switch menu on this screen can swap the library out from under the
@@ -100,13 +104,24 @@
     </div>
   {/if}
 
+  {#if entries.length > 0}
+    <Input
+      type="search"
+      placeholder="Filter by tag or URL"
+      aria-label="Filter artists"
+      bind:value={query}
+    />
+  {/if}
+
   {#if entries.length === 0}
     <p class="text-sm text-muted-foreground">
       No artist entries yet. Renaming an artist from its tag in the inspector creates one too.
     </p>
+  {:else if shown.length === 0}
+    <p class="text-sm text-muted-foreground">No artist matches “{query}”.</p>
   {:else}
     <ul class="flex flex-col gap-2">
-      {#each entries as entry (entry.tag)}
+      {#each shown as entry (entry.tag)}
         <li class="rounded-lg border border-border p-3">
           <div class="flex flex-wrap items-center gap-2">
             <span
