@@ -59,8 +59,8 @@
     /** Forwarded to the inspector, which edits here exactly as it does beside the grid. */
     tagQuery: string
     onquery: (next: string, id: string | undefined) => void
-    /** Forwarded to the inspector: a rename from the viewer is a write like any other. */
-    onartistrenamed: () => void
+    /** Forwarded to the inspector: an artist save from the viewer is a write like any other. */
+    onartistsaved: () => void
     /**
      * Every image this viewer moves to. The grid behind it scrolls that index
      * into view, so closing does not jump to a row the user never saw it reach
@@ -81,7 +81,7 @@
     clickZoomCeiling,
     tagQuery,
     onquery,
-    onartistrenamed,
+    onartistsaved,
     onmove,
     onclose,
   }: Props = $props()
@@ -505,7 +505,7 @@
           {actions}
           {tagQuery}
           {onquery}
-          {onartistrenamed}
+          {onartistsaved}
           onrelease={() => surface?.focus()}
         />
       </aside>

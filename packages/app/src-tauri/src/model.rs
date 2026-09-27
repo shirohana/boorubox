@@ -1416,10 +1416,10 @@ mod tests {
         }
     }
 
-    /// `artist-entries` task 1.3, extended by `artist-workflow` task 1.5: the
-    /// wire spelling a hand-mirrored type would silently break — camelCase
-    /// keys throughout, and `adapter` present as `null` rather than omitted
-    /// when there is none.
+    /// The wire spelling a hand-mirrored type would silently break —
+    /// camelCase keys throughout, `adapter` present as `null` rather than
+    /// omitted when there is none, and a round trip through `from_value` for
+    /// the input types the webview actually sends.
     #[test]
     fn artist_types_cross_the_wire_in_camel_case() {
         let entry = ArtistEntry {
@@ -1445,6 +1445,15 @@ mod tests {
                 "adapter": { "site": "x", "fields": { "handle": "metaljelly0811" } },
             }),
         );
+        assert_eq!(
+            serde_json::from_value::<ArtistPreviewInput>(serde_json::json!({
+                "tag": "metaljelly0811",
+                "adapter": { "site": "x", "fields": { "handle": "metaljelly0811" } },
+            }))
+            .unwrap(),
+            preview_input,
+            "the webview sends this shape, not just receives it",
+        );
         let no_adapter = ArtistPreviewInput {
             tag: "someone".to_string(),
             adapter: None,
@@ -1452,6 +1461,13 @@ mod tests {
         assert_eq!(
             serde_json::to_value(&no_adapter).unwrap(),
             serde_json::json!({ "tag": "someone", "adapter": null }),
+        );
+        assert_eq!(
+            serde_json::from_value::<ArtistPreviewInput>(serde_json::json!({
+                "tag": "someone", "adapter": null,
+            }))
+            .unwrap(),
+            no_adapter,
         );
 
         let preview = ArtistPreview {
@@ -1480,6 +1496,21 @@ mod tests {
                 "owner": "metaljelly",
                 "derived": "metaljelly0811",
             }),
+        );
+
+        let unmatched = ArtistMatch {
+            url: "https://x.com/alice_art".to_string(),
+            owner: None,
+            derived: None,
+        };
+        assert_eq!(
+            serde_json::to_value(&unmatched).unwrap(),
+            serde_json::json!({
+                "url": "https://x.com/alice_art",
+                "owner": null,
+                "derived": null,
+            }),
+            "no owner and no derived tag still serialise, not omit, both fields",
         );
 
         let apply_preview = ArtistApplyPreview {

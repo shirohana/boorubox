@@ -227,17 +227,19 @@ screen fall back to no current image.
 ### Requirement: An X account on screen is a search term
 For an image whose page address names an X account, the inspector SHALL show that account's
 handle as a row of the image's facts, labelled Account, above the Page row — a fact of the
-page, beside the page's other facts. The row SHALL show the handle as a button reading
-`@handle`, padded and hover-highlighted so it looks clickable like the account bar it is, not
-a plain fact to merely read (owner, 2026-09-23: the row did not look clickable). Acting on it
-SHALL add `account:<handle>` to the tag search, and acting on it while the search already
-names that account SHALL take the term out again; it SHALL show whether the search includes
-or excludes it in the marking a tag uses. The handle shown SHALL be the one the search
-matches: derived by the same rule from the same page address, so the entry never names an
-account the search cannot find. The row SHALL be absent for an image whose page address names
-no X account. The row SHALL NOT add or remove a tag: the handle reaches the image's tags only
-as the artist tag a capture derives from its adapter record (`capture-ingest`, "A capture is
-stored with its author as an artist tag").
+page, beside the page's other facts — and below the Artist row when that row is shown
+(`artist-entries`, "The inspector names the artist who owns the author"). The row SHALL show
+the handle as a button reading `@handle`, padded and hover-highlighted so it looks clickable
+like the account bar it is, not a plain fact to merely read (owner, 2026-09-23: the row did
+not look clickable). Acting on it SHALL add `account:<handle>` to the tag search, and acting
+on it while the search already names that account SHALL take the term out again; it SHALL
+show whether the search includes or excludes it in the marking a tag uses. The handle shown
+SHALL be the one the search matches: derived by the same rule from the same page address, so
+the entry never names an account the search cannot find. The row SHALL be absent for an image
+whose page address names no X account. The row SHALL NOT add or remove a tag: the handle
+reaches the image's tags only as the artist tag a capture derives from its adapter record
+(`capture-ingest`, "A capture is stored with its author as an artist tag"), or as the entry's
+tag when the user applies an artist entry (`artist-entries`).
 
 Until 2026-09-23 this requirement kept the handle out of the tags altogether: with artist tags
 in the vocabulary, a handle among the tags read as a second artist beside the one the owner
@@ -246,7 +248,10 @@ handle tag was a second name for the same person. It stopped being right when ca
 deriving the artist tag from the handle itself (`auto-artist-tag`): the handle among the tags
 is then the one artist, not a second. The Account row keeps its place for its own reasons —
 it is a fact of the page address, `account:` searches the address and not the tags, and it
-is there for images captured before the derivation or whose artist tag was left off.
+is there for images captured before the derivation or whose artist tag was left off. The
+Artist row above it is a different fact — who the library says the author is, read from the
+adapter record and the artist entries — and does not replace it (owner, 2026-09-28: `account:`
+and this row stay exactly as they are).
 
 #### Scenario: Finding the same artist
 - **WHEN** the panel shows an image captured from `https://x.com/alice/status/1` and the user acts on the Account row
@@ -257,8 +262,8 @@ is there for images captured before the derivation or whose artist tag was left 
 - **THEN** the search reads `cat`
 
 #### Scenario: Where it sits
-- **WHEN** the panel shows an image captured from `https://x.com/alice/status/1`
-- **THEN** the facts list reads Title, Source, Account, Page, Image in that order
+- **WHEN** the panel shows an image captured from `https://x.com/alice/status/1` whose adapter record names the handle `alice`
+- **THEN** the facts list reads Title, Source, Artist, Account, Page, Image in that order
 
 #### Scenario: The account and the artist tag side by side
 - **WHEN** the panel shows an image captured from `https://x.com/Alice/status/1` whose adapter record names the handle `Alice`, and whose artist tag `alice` was created at capture

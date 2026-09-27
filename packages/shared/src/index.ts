@@ -402,27 +402,62 @@ export interface ArtistEntry {
 }
 
 /**
- * What `renameArtistPreview` takes: the image's own record, read fresh so the
- * profile URL it answers with (or none) is exactly what a capture from this
- * image would match against (`artist-entries` design D4, D5). `adapter` is
- * `null` rather than omitted when there is none.
+ * What `artistPreview` takes: the tag being edited and, when the dialog was
+ * opened from an image, that image's own record (`artist-workflow` design
+ * D3). `adapter` is `null` rather than omitted when there is none — the
+ * sidebar row and the pinned chip have no image in scope to read one from.
  */
-export interface RenameArtistPreviewInput {
-  from: string
+export interface ArtistPreviewInput {
+  tag: string
   adapter: SiteAdapterRecord | null
 }
 
 /**
- * What `renameArtistPreview` answers with: how many images carry `from`
- * (trash included) and the profile URL the rename would prefill, as an array
- * of zero or one — never more, since the entry match reads the record's one
- * profile URL alone — shown with a scheme (`artist-entries` design D4, D5):
- * the webview never builds a profile URL itself, so what it shows is exactly
- * what the match would read.
+ * What `artistPreview` answers with (`artist-workflow` design D3): `carriers`
+ * is the tag's carrier count (trash included); `urls` is the tag's entry's
+ * stored URLs, each shown with a scheme, empty for a tag with no entry;
+ * `candidate` is the image's own profile URL, shown with a scheme, or `null`
+ * when there is no adapter, no profile URL, or any entry — this one or
+ * another — already owns it.
  */
-export interface RenameArtistPreview {
+export interface ArtistPreview {
   carriers: number
   urls: string[]
+  candidate: string | null
+}
+
+/**
+ * What `artistMatch` answers with (`artist-workflow` design D5): `url` is the
+ * image's own profile URL, shown with a scheme; `owner` is the tag of the
+ * entry that owns it, `null` for nobody yet; `derived` is the artist tag a
+ * capture from this record derives regardless of any entry. `artistMatch`
+ * itself answers `null` — not this type — for a record with no profile URL
+ * at all.
+ */
+export interface ArtistMatch {
+  url: string
+  owner: string | null
+  derived: string | null
+}
+
+/**
+ * What `artistsApplyPreview` answers with (`artist-workflow` design D6): how
+ * many stored images (trash excluded) come from the given URLs, and how many
+ * of them carry no artist tag at all.
+ */
+export interface ArtistApplyPreview {
+  images: number
+  untagged: number
+}
+
+/**
+ * What `artistsApply` answers with (`artist-workflow` design D6): how many
+ * images it tagged, and how many it left because they already carried the
+ * tag.
+ */
+export interface ArtistApplyReport {
+  tagged: number
+  skipped: number
 }
 
 /** What `renameArtist` takes (`artist-entries` design D5). */

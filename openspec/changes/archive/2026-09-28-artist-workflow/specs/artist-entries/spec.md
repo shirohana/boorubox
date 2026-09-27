@@ -1,35 +1,9 @@
-# artist-entries Specification
+## RENAMED Requirements
 
-## Purpose
-Artist entries, as Danbooru keeps them: an artist tag that owns profile URLs, so a capture
-from a known artist carries the tag the owner chose rather than the handle or display name
-the site shows, and a wrong artist tag is corrected once, where it is seen, for every image
-and every later capture.
+- FROM: `### Requirement: An artist is renamed from the image that shows the wrong name`
+- TO: `### Requirement: An artist is edited from any of its tags`
 
-## Requirements
-
-### Requirement: An artist entry is a tag that owns profile URLs
-The library SHALL keep artist entries: an artist tag and the list of URLs it owns, as Danbooru
-keeps an artist's URLs. A URL SHALL have one owner; giving a URL another artist owns SHALL be
-refused naming that artist. URLs SHALL be compared normalised — scheme ignored, host
-lower-cased with a leading `www.`, `mobile.` or `m.` dropped and `twitter.com` read as `x.com`,
-query and fragment dropped, trailing slashes dropped, path lower-cased — and an entry's URL
-SHALL own a URL that equals it or continues it past a `/`. A URL with no host, a host without a dot, or no path SHALL be
-refused, and an entry naming a tag that exists under a category other than artist SHALL be
-refused. Entries SHALL be stored with the library, carried in its describing file, and
-restored on rebuild; a describing file written before entries existed SHALL restore none.
-
-#### Scenario: A prefix owns the post
-- **WHEN** `metaljelly` owns `https://x.com/metaljelly0811`
-- **THEN** it owns `https://twitter.com/MetalJelly0811/status/123?s=20` and `http://www.x.com/metaljelly0811/` and not `https://x.com/metaljelly08110`
-
-#### Scenario: One owner per URL
-- **WHEN** `alice` owns `https://x.com/alice_art` and the user gives that URL to `bob`
-- **THEN** the write is refused naming `alice`, and both entries are unchanged
-
-#### Scenario: Entries survive a rebuild
-- **WHEN** `metaljelly` owns two URLs and the library is rebuilt from its folder
-- **THEN** `metaljelly` owns the same two URLs afterwards
+## MODIFIED Requirements
 
 ### Requirement: An artist is edited from any of its tags
 Every context menu of a tag of the artist category — the sidebar's row, the pinned chip and
@@ -133,19 +107,7 @@ unfiltered. It is not remembered: the page shows every entry when it is opened a
 - **WHEN** the user empties the filter field
 - **THEN** every entry is listed again
 
-### Requirement: An entry shows its tag's note
-The Artists list in Settings SHALL show an artist tag's note, when it carries one, under the
-tag and above its URLs, muted and wrapped as written. An entry whose tag carries no note SHALL
-show nothing there. The note is edited from the tag's own context menu, not from this list
-(owner, 2026-09-28: the note records which Danbooru artist tag a handle was confirmed as).
-
-#### Scenario: A confirmed artist
-- **WHEN** `metaljelly` owns `x.com/metaljelly0811` and carries the note `danbooru: metaljelly (confirmed)`
-- **THEN** its entry reads `metaljelly`, then the note, then `x.com/metaljelly0811`
-
-#### Scenario: No note
-- **WHEN** `alice` owns a URL and carries no note
-- **THEN** its entry reads `alice`, then its URLs, with nothing between
+## ADDED Requirements
 
 ### Requirement: The inspector names the artist who owns the author
 For an image whose adapter record yields a profile URL — an X record's handle, a Pixiv

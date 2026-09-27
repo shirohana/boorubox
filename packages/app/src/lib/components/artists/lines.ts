@@ -1,5 +1,5 @@
 // One splitter for the "one per line" textareas an artist entry uses
-// (`RenameArtistDialog.svelte`'s URLs field, `ArtistForm.svelte`'s URLs
+// (`ArtistDialog.svelte`'s URLs field, `ArtistForm.svelte`'s URLs
 // field): both trimmed the same way and dropped the same blanks, so this is
 // the one definition of what a line is rather than two copies drifting apart.
 

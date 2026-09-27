@@ -37,9 +37,10 @@
           the Tab order too: bits-ui defaults the trigger's tabindex to 0,
           which would otherwise both add a stop `tag-notes` design D8 never
           asked for (hover only) and nest a focusable element inside the host
-          button.
+          button. `shrink-0`: in a host's flex row the glyph keeps its width
+          rather than squeezing under the tag name.
         -->
-        <span {...props}>
+        <span {...props} class="inline-flex shrink-0">
           <StickyNoteIcon class="size-3 shrink-0 text-muted-foreground" aria-label="Tag note" />
         </span>
       {/snippet}

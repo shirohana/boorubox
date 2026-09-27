@@ -8,7 +8,12 @@
 
 import type {
   AppSettings,
+  ArtistApplyPreview,
+  ArtistApplyReport,
   ArtistEntry,
+  ArtistMatch,
+  ArtistPreview,
+  ArtistPreviewInput,
   BundlePlan,
   Collection,
   CollectionCount,
@@ -26,8 +31,6 @@ import type {
   RebuildReport,
   RecentLibrary,
   RenameArtistInput,
-  RenameArtistPreview,
-  RenameArtistPreviewInput,
   RenameArtistReport,
   Rule,
   RuleInput,
@@ -36,6 +39,7 @@ import type {
   RulesRunReport,
   SearchRequest,
   SearchResult,
+  SiteAdapterRecord,
   Stamp,
   StampInput,
   TagCategory,
@@ -603,12 +607,39 @@ export function artistsDelete(tag: string): Promise<ArtistEntry[]> {
 }
 
 /**
- * The carrier count (trash included) and the candidate URLs a rename from
- * this image would prefill, answered before anything is written
- * (`artist-entries` design D5).
+ * The entry's own URLs, the carrier count and the image's own candidate
+ * line, answered before anything is written — replacing `renameArtistPreview`
+ * (`artist-workflow` design D3, D8).
  */
-export function renameArtistPreview(input: RenameArtistPreviewInput): Promise<RenameArtistPreview> {
-  return invoke('rename_artist_preview', { input })
+export function artistPreview(input: ArtistPreviewInput): Promise<ArtistPreview> {
+  return invoke('artist_preview', { input })
+}
+
+/**
+ * The image's own profile URL, the entry that owns it (if any), and the
+ * artist tag a capture from this record derives — `null` for a record with
+ * no profile URL at all (`artist-workflow` design D5, D8).
+ */
+export function artistMatch(adapter: SiteAdapterRecord): Promise<ArtistMatch | null> {
+  return invoke('artist_match', { adapter })
+}
+
+/**
+ * How many stored images come from `urls` and how many of them carry no
+ * artist tag at all, answered before anything is written (`artist-workflow`
+ * design D6, D8).
+ */
+export function artistsApplyPreview(urls: string[]): Promise<ArtistApplyPreview> {
+  return invoke('artists_apply_preview', { urls })
+}
+
+/**
+ * Adds `tag` — an existing artist entry's tag — to every stored image its
+ * URLs own, unless it carries the tag already (`artist-workflow` design D6,
+ * D8).
+ */
+export function artistsApply(tag: string): Promise<ArtistApplyReport> {
+  return invoke('artists_apply', { tag })
 }
 
 /**

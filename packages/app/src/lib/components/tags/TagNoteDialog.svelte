@@ -2,7 +2,7 @@
   // A tag's note, edited from its context menu (`tag-notes` design D10, D11):
   // mounted unconditionally by each host (`TagSidebar.svelte`, one;
   // `Inspector.svelte`, one for the chips of both strips and the badges), the
-  // `CollectionNameDialog`/`RenameArtistDialog` shape — a bits-ui `Dialog`
+  // `CollectionNameDialog`/`ArtistDialog` shape — a bits-ui `Dialog`
   // torn down while still open logs `derived_inert` against derived state
   // that no longer exists. Reads the store directly rather than taking the
   // note as a prop: unlike a collection's name or an artist's URLs, there is

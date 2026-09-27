@@ -3,18 +3,23 @@
   // and the lightbox's inspect mode. Both edit — the tag editor and the rating
   // control are the same instances in both, which is the point of there being
   // one component (slots Inspector · tags and Inspector · rating, design D17).
-  import type { Collection, CollectionCount, ImageRecord, Rating, TagCount, TagEditSpec } from '@boorubox/shared'
+  import type { ArtistMatch, Collection, CollectionCount, ImageRecord, Rating, TagCount, TagEditSpec } from '@boorubox/shared'
   import type { SearchResults, Selection } from '$lib/api'
-  import { tick } from 'svelte'
+  import { tick, untrack } from 'svelte'
   import {
+    artistMatch as fetchArtistMatch,
+    artistRevision,
     collectionRemove,
     collections,
     errorText,
+    latestOnly,
     rowOf,
     selectionCollectionCounts,
     selectionTagCounts,
     vocabulary,
   } from '$lib/api'
+  import type { ArtistDialogRequest } from '$lib/components/artists/artist-dialog'
+  import ArtistDialog from '$lib/components/artists/ArtistDialog.svelte'
   import PostedLabel from '$lib/components/booru/PostedLabel.svelte'
   import UploadAction from '$lib/components/booru/UploadAction.svelte'
   import BookmarkIcon from '@lucide/svelte/icons/bookmark'
@@ -26,7 +31,6 @@
   import { CATEGORY_TEXT_CLASS, searchMark, searchMarkClass, SEARCH_MARK_CLASS } from '$lib/components/tags/categories'
   import TagInput from '$lib/components/tags/TagInput.svelte'
   import CollectionPinMenuItem from '$lib/components/tags/CollectionPinMenuItem.svelte'
-  import RenameArtistDialog from '$lib/components/tags/RenameArtistDialog.svelte'
   import TagNoteDialog from '$lib/components/tags/TagNoteDialog.svelte'
   import TagNoteIndicator from '$lib/components/tags/TagNoteIndicator.svelte'
   import TagVocabularyMenuItems from '$lib/components/tags/TagVocabularyMenuItems.svelte'
@@ -52,6 +56,7 @@
   import type { CollectionTarget } from './collection-actions'
   import { addToCreated, toggleCollection } from './collection-actions'
   import CollectionMenuItems from './CollectionMenuItems.svelte'
+  import { isOrphanedFocus } from './focus-handback'
   import { fillOf, fillState, type FillState, toggledSelection, toggledTag } from './pinned-state'
   import SelectionThumbs from './SelectionThumbs.svelte'
   import type { TrashActions } from './trash-actions'
@@ -134,16 +139,17 @@
      */
     onedit?: (ids: string[], spec: TagEditSpec, label: string) => void
     /**
-     * A rename retagged this image and, usually, others too (`artist-entries`
-     * design D6): the screen's own write pattern, `afterWrite` in
-     * `LibraryScreen.svelte` — vocabulary and search refresh, then
-     * `keepMatching()` prunes the selection and refocuses, since a rename can
-     * move a row out of the current search, the same reason every other
+     * An artist entry was saved — a rename, a create, or an edit's own
+     * "Apply to existing images" (`artist-workflow` design D4): usually
+     * retags other images too, so the screen's own write pattern runs,
+     * `afterWrite` in `LibraryScreen.svelte` — vocabulary and search refresh,
+     * then `keepMatching()` prunes the selection and refocuses, since a save
+     * can move a row out of the current search, the same reason every other
      * selection-wide writer ends there. Required in both placements: inside
      * the viewer too the re-read has to keep the viewer on its image, which a
      * bare `results.refresh()` does not (`selection-by-id` design D7).
      */
-    onartistrenamed: () => void
+    onartistsaved: () => void
   }
 
   let {
@@ -156,7 +162,7 @@
     onrelease,
     onactivate,
     onedit,
-    onartistrenamed,
+    onartistsaved,
   }: Props = $props()
 
   /**
@@ -311,6 +317,12 @@
    * first run after mount only records the id: `e` opens the tag editor
    * through a `tick()` right after the panel mounts, and a first run that
    * reset would race it closed.
+   *
+   * An editor closed here while it held the focus hands it back through
+   * `onrelease`: in the viewer `→` can change the image with the focus on the
+   * editor's Cancel, and the unmounted button drops the focus to `<body>`,
+   * where the viewer's own `keydown` never hears the next `←`/`→`. Not when
+   * the panel loses its image: there is no image to hand the focus back to.
    */
   const imageId = $derived(image?.id)
   let lastImageId: string | undefined
@@ -323,10 +335,66 @@
     }
     if (imageId === lastImageId) return
     lastImageId = imageId
+    const editorHeldFocus = untrack(
+      () => (editingTags || editingFacts) && isOrphanedFocus(document.activeElement, root),
+    )
     editingTags = false
     error = null
     editingFacts = false
     factsError = null
+    if (imageId !== undefined && editorHeldFocus) onrelease?.()
+  })
+
+  /**
+   * The Artist row (`artist-workflow` design D5): who the library says the
+   * image's author is, read once per image rather than carried on
+   * `ImageRecord` — a per-row field would read the entries for every image
+   * of every search page to draw a row only the inspector shows.
+   *
+   * `inspectedId` reuses {@link imageId} rather than a second `image?.id`
+   * derivation, and the effect below is keyed on it and on
+   * {@link artistEntriesRevision}, not on `image` or `adapter` directly:
+   * `image` is reassigned wholesale on every refresh (CLAUDE.md's `$effect`
+   * rule), so an effect that read `image.adapter` as a tracked dependency
+   * would refetch on a capture landing mid-view even though the id on screen
+   * has not moved. `adapter` is read through `untrack` inside the effect for
+   * the same reason.
+   */
+  const inspectedId = $derived(imageId ?? null)
+  const inspectedAdapter = $derived(image?.adapter ?? null)
+
+  /**
+   * Moves on every artist entry write, from any host — this panel's dialog,
+   * the sidebar's, Settings → Artists — so the row re-reads for the same image.
+   */
+  const artistEntriesRevision = $derived(artistRevision.current)
+  let artistMatchAnswer = $state<ArtistMatch | null>(null)
+  let artistMatchError = $state<string | null>(null)
+  const artistMatchTicket = latestOnly<ArtistMatch | null>()
+
+  $effect(() => {
+    const id = inspectedId
+    void artistEntriesRevision
+    // Cleared before the fetch starts, not left holding the previous image's
+    // answer: design D5's "the row is absent rather than a placeholder"
+    // while pending reads the same as "no profile URL at all" — both hide
+    // the row until an answer names one.
+    artistMatchAnswer = null
+    artistMatchError = null
+    if (id === null) return
+    const adapter = untrack(() => inspectedAdapter)
+    if (!adapter) return
+    void (async () => {
+      try {
+        const result = await artistMatchTicket(fetchArtistMatch(adapter))
+        if (result.current) {
+          artistMatchAnswer = result.value
+          artistMatchError = null
+        }
+      } catch (cause) {
+        if (id === inspectedId) artistMatchError = errorText(cause)
+      }
+    })()
   })
 
   function startEditFacts() {
@@ -468,24 +536,23 @@
   let creatingCollection = $state(false)
 
   /**
-   * The artist tag `RenameArtistDialog` is open for, and the image it reads
-   * its candidate URL from — `null` while none is open (`artist-entries`
-   * design D6). A snapshot taken when the menu item is chosen, not a guard on
-   * the tag plus the live `image` above: a capture landing while the dialog is
-   * up runs `results.refresh()`, which empties the results for a moment and
-   * turns `image` briefly `null`, and reading the live `image` instead would
-   * change what the open dialog reads out from under a rename in progress.
-   * `RenameArtistDialog` itself stays mounted (the `CollectionNameDialog`
-   * shape) and follows this via `open`/`from`/`image` props, so it is only
-   * this snapshot's own reassignment, not `results.refresh()`, that ever
-   * changes what it sees.
+   * The `ArtistDialog` request this panel opened, or `null` while none is
+   * open (`artist-workflow` design D2, D4). A snapshot taken when the menu item or
+   * "Create artist…" is chosen, not a guard on the tag plus the live `image`
+   * above: a capture landing while the dialog is up runs `results.refresh()`,
+   * which empties the results for a moment and turns `image` briefly `null`,
+   * and reading the live `image` instead would change what the open dialog
+   * reads out from under a save in progress. `ArtistDialog` itself stays
+   * mounted (the `CollectionNameDialog` shape) and follows this via
+   * `open`/`request` props, so it is only this snapshot's own reassignment,
+   * not `results.refresh()`, that ever changes what it sees.
    */
-  let renamingArtist = $state<{ tag: string, image: ImageRecord } | null>(null)
+  let editingArtist = $state<ArtistDialogRequest | null>(null)
 
   /**
    * The tag `TagNoteDialog` is open for — the name, snapshotted when "Edit
    * note…" is chosen (`tag-notes` design D10), one dialog here for the
-   * chips of both strips and the badges, the `renamingArtist` shape above:
+   * chips of both strips and the badges, the `editingArtist` shape above:
    * the dialog cannot live inside `TagVocabularyMenuItems` (its content
    * unmounts on select).
    */
@@ -827,7 +894,11 @@
         {#if chip.kind === 'tag'}
           {@render tagSearchItems(chip.tag)}
           <ContextMenu.Separator />
-          <TagVocabularyMenuItems name={chip.tag} oneditnote={(name) => (editingNote = name)} />
+          <TagVocabularyMenuItems
+            name={chip.tag}
+            oneditnote={(name) => (editingNote = name)}
+            oneditartist={(tag) => (editingArtist = { mode: 'edit', tag, adapter: image?.adapter ?? null })}
+          />
         {:else}
           <CollectionPinMenuItem collection={chip.collection} />
         {/if}
@@ -1014,7 +1085,11 @@
             (`Button`'s own default, Tailwind 4 preflight otherwise leaves a
             `<button>` at `cursor: default`): every clickable text in the
             panel admits it. Grouped by category (`tag-vocabulary` design
-            D7): `groupedTags` above.
+            D7): `groupedTags` above. The badge stays one line beside its note
+            mark, but a name wider than the panel breaks inside the box
+            (`max-w-full`, the name's own `break-all`) rather than pushing the
+            panel sideways; the name needs `whitespace-normal`, since the
+            button's `nowrap` would otherwise suppress `break-all`.
           -->
           <ul class="mt-2 flex flex-wrap gap-x-2">
             {#each groupedTags as tag (tag)}
@@ -1026,13 +1101,14 @@
                         type="button"
                         {...props}
                         class="
-                          cursor-pointer rounded-md px-1 py-0.5 text-xs
+                          inline-flex max-w-full cursor-pointer items-center gap-1 rounded-md px-1
+                          py-0.5 text-xs whitespace-nowrap
                           {CATEGORY_TEXT_CLASS[vocabulary.categoryOf(tag)]}
                           {searchMarkClass(searchMark(tag, terms.included, terms.excluded), 'hover:bg-accent')}
                         "
                         onclick={() => query(toggleTagInQuery(tagQuery, tag))}
                       >
-                        {tag}
+                        <span class="min-w-0 break-all whitespace-normal">{tag}</span>
                         <TagNoteIndicator note={vocabulary.noteOf(tag)} {portalTo} />
                       </button>
                     {/snippet}
@@ -1040,23 +1116,10 @@
                   <ContextMenu.Content portalProps={{ to: portalTo }}>
                     {@render tagSearchItems(tag)}
                     <ContextMenu.Separator />
-                    {#if vocabulary.categoryOf(tag) === 'artist'}
-                      <!--
-                        `artist-entries` design D6: only this menu offers it — the
-                        sidebar row and the pinned chip share `TagVocabularyMenuItems`
-                        below with no image in scope to read a profile URL from, so
-                        the item is kept here rather than inside that component,
-                        which must not gain it.
-                      -->
-                      <ContextMenu.Item onSelect={() => (renamingArtist = { tag, image })}>
-                        <PencilIcon />
-                        Rename artist…
-                      </ContextMenu.Item>
-                      <ContextMenu.Separator />
-                    {/if}
                     <TagVocabularyMenuItems
                       name={tag}
                       oneditnote={(name) => (editingNote = name)}
+                      oneditartist={(name) => (editingArtist = { mode: 'edit', tag: name, adapter: image?.adapter ?? null })}
                     />
                     <ContextMenu.Separator />
                     <ContextMenu.Item variant="destructive" onSelect={() => remove(tag)}>
@@ -1258,6 +1321,48 @@
         <dt class="text-muted-foreground">Source</dt>
         <dd class="wrap-break-word">{origin}</dd>
 
+        {#if artistMatchAnswer}
+          <!--
+            `artist-workflow` design D5: who the library says the image's
+            author is, from the adapter record and the artist entries — a
+            different fact from Account below, which it sits above (spec
+            `tag-editing`'s own "does not replace it"). Read the same in both
+            `editingFacts` states, like Account.
+          -->
+          <dt class="text-muted-foreground">Artist</dt>
+          <dd>
+            {#if artistMatchAnswer.owner}
+              {@const owner = artistMatchAnswer.owner}
+              <button
+                type="button"
+                class="
+                  cursor-pointer rounded-md px-1 py-0.5
+                  {CATEGORY_TEXT_CLASS.artist}
+                  {searchMarkClass(searchMark(owner, terms.included, terms.excluded), 'hover:bg-accent')}
+                "
+                onclick={() => query(toggleTagInQuery(tagQuery, owner))}
+              >
+                {owner}
+              </button>
+            {:else}
+              {@const match = artistMatchAnswer}
+              <Button
+                type="button"
+                size="xs"
+                variant="ghost"
+                class="h-auto px-1 py-0.5 text-xs"
+                onclick={() => (editingArtist = { mode: 'create', tag: match.derived ?? '', url: match.url })}
+              >
+                Create artist…
+              </Button>
+            {/if}
+          </dd>
+        {/if}
+        {#if artistMatchError}
+          <dt class="text-muted-foreground">Artist</dt>
+          <dd class="text-destructive">{artistMatchError}</dd>
+        {/if}
+
         {#if image.account}
           {@const account = image.account}
           <!--
@@ -1432,35 +1537,28 @@
 <!--
   Outside the menu above, the same reason as `CollectionNameDialog`, and
   mounted unconditionally like it: a bits-ui `Dialog` torn down while still
-  open (the old `{#if renamingArtist}`) keeps running its own close effects
-  against derived state that no longer exists (`derived_inert`). Reads
-  `renamingArtist`'s own snapshot, not `image` — see its doc comment above.
+  open keeps running its own close effects against derived state that no
+  longer exists (`derived_inert`). Reads `editingArtist`'s own snapshot, not
+  `image` — see its doc comment above. `onartistsaved` is the screen's
+  `afterWrite`, which refreshes the vocabulary and the search; the Artist row
+  follows `artistRevision`, which the dialog bumps itself.
 -->
-<RenameArtistDialog
-  open={renamingArtist !== null}
-  from={renamingArtist?.tag ?? ''}
-  image={renamingArtist?.image ?? null}
+<ArtistDialog
+  open={editingArtist !== null}
+  request={editingArtist}
   {portalTo}
   onclose={() => {
-    renamingArtist = null
+    editingArtist = null
     onrelease?.()
   }}
-  onrenamed={() => {
-    renamingArtist = null
-    // `artist-entries` design D6: the panel and the grid show the new name
-    // once these land — `vocabulary.refresh()` for the category and pin,
-    // then the screen's own write pattern (`afterWrite`, `LibraryScreen.svelte`).
-    void vocabulary.refresh()
-    onartistrenamed()
-    onrelease?.()
-  }}
+  onsaved={onartistsaved}
 />
 
 <!--
   Outside the menus above, mounted unconditionally, the same reason as
-  `RenameArtistDialog`: one dialog for the chips of both strips and the
-  badges (`tag-notes` design D10), `{portalTo}` so it lands in the viewer's
-  own `<dialog>` when this panel is shown there.
+  `ArtistDialog`: one dialog for the chips of both strips and the badges
+  (`tag-notes` design D10), `{portalTo}` so it lands in the viewer's own
+  `<dialog>` when this panel is shown there.
 -->
 <TagNoteDialog
   open={editingNote !== null}

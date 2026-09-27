@@ -12,18 +12,26 @@
   // from every menu it has, sidebar and badge included, not only the chip.
   //
   // "Edit note…" lives here too (`tag-notes` design D10): a note is a
-  // property of the tag, not of an image, so unlike "Rename artist…"
-  // (`artist-entries` design D6, kept on the inspector's own tag chip menu,
-  // which has an image in scope to read a profile URL from) it belongs where
-  // every tag menu shares it. `oneditnote` is required so a mount that
-  // forgets it fails typecheck rather than offering a dead item — the dialog
-  // itself cannot live here (this component's content unmounts on select),
-  // so each host owns one, mounted unconditionally beside its menu.
+  // property of the tag, not of an image, so unlike "Rename artist…" once was
+  // (`artist-entries` design D6, kept on the inspector's own tag chip menu
+  // because the dialog's inputs came from an image) it belongs where every
+  // tag menu shares it. `oneditnote` is required so a mount that forgets it
+  // fails typecheck rather than offering a dead item — the dialog itself
+  // cannot live here (this component's content unmounts on select), so each
+  // host owns one, mounted unconditionally beside its menu.
+  //
+  // "Edit artist…" moved in here too (`artist-workflow` design D1, reversing
+  // `artist-entries` D6): once an entry's own URLs, not an image's, are what
+  // the dialog shows, an image is no longer required to open it, so the
+  // sidebar row and the pinned chip can offer it exactly like the badge does.
+  // `oneditartist` is required for the same reason `oneditnote` is; the item
+  // itself renders only for a tag whose category is artist.
   //
   // Snippet-free, unlike `CollectionMenuItems`: every mount point here is a
   // `ContextMenu.Root` (never a dropdown), so this renders `ContextMenu.*`
   // primitives directly rather than taking them as snippets.
   import ExternalLinkIcon from '@lucide/svelte/icons/external-link'
+  import PencilIcon from '@lucide/svelte/icons/pencil'
   import PinIcon from '@lucide/svelte/icons/pin'
   import PinOffIcon from '@lucide/svelte/icons/pin-off'
   import StickyNoteIcon from '@lucide/svelte/icons/sticky-note'
@@ -38,9 +46,15 @@
     name: string
     /** "Edit note…" was chosen — the host snapshots `name` and opens its own `TagNoteDialog`. */
     oneditnote: (name: string) => void
+    /**
+     * "Edit artist…" was chosen — the host builds its own `ArtistDialogRequest`
+     * snapshot (`{ mode: 'edit', tag, adapter }`) and opens its own
+     * `ArtistDialog` (`artist-workflow` design D2).
+     */
+    oneditartist: (tag: string) => void
   }
 
-  let { name, oneditnote }: Props = $props()
+  let { name, oneditnote, oneditartist }: Props = $props()
 
   const group = $derived(vocabulary.groupOf(name))
   const pinned = $derived(group !== null)
@@ -63,6 +77,17 @@
   const alone = $derived(group !== null && vocabulary.pinnedGroups[group - 1]?.length === 1)
 </script>
 
+{#if category === 'artist'}
+  <!--
+    First among the vocabulary items (`artist-workflow` design D1): the
+    position the badge menu's artist item has held since `artist-entries`,
+    so the owner's hand finds it where it always was.
+  -->
+  <ContextMenu.Item onSelect={() => oneditartist(name)}>
+    <PencilIcon />
+    Edit artist…
+  </ContextMenu.Item>
+{/if}
 <ContextMenu.Item onSelect={() => openDanbooruLookup(lookup)}>
   <ExternalLinkIcon />
   {lookup.label}

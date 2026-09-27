@@ -17,7 +17,11 @@
   // delete clears it on its own ground: no image changes, but the deleted
   // entry is what the next matching capture is silently filed under instead —
   // undoing a mistaken delete means retyping the URLs from memory, not one
-  // click.
+  // click. Applying an artist entry to stored images (`artist-workflow`
+  // design D7) clears it on the rating write's own ground: nothing is
+  // destroyed, but it is a bulk write over however many images the entry
+  // owns, made from one button, and the count naming how many is exactly
+  // what the trash's own bar asks for.
   import { Button } from '$lib/components/ui/button'
   import * as Dialog from '$lib/components/ui/dialog'
 
@@ -34,6 +38,12 @@
      * and a red button under that copy would say otherwise.
      */
     destructive?: boolean
+    /**
+     * Disables the confirming button without hiding it (`artist-workflow`
+     * design D7: "Apply to N images", disabled at `N === 0`) — the question
+     * is still worth asking, there is simply nothing this answer would do.
+     */
+    confirmDisabled?: boolean
     open: boolean
     /** Dismissed — by the button, the overlay or `Esc`. Nothing is destroyed. */
     onclose: () => void
@@ -41,7 +51,8 @@
   }
 
   let {
-    title, description, confirmLabel, destructive = true, open, onclose, onconfirm,
+    title, description, confirmLabel, destructive = true, confirmDisabled = false,
+    open, onclose, onconfirm,
   }: Props = $props()
 </script>
 
@@ -62,7 +73,13 @@
 
     <Dialog.Footer>
       <Button variant="ghost" onclick={onclose}>Cancel</Button>
-      <Button variant={destructive ? 'destructive' : 'default'} onclick={onconfirm}>{confirmLabel}</Button>
+      <Button
+        variant={destructive ? 'destructive' : 'default'}
+        disabled={confirmDisabled}
+        onclick={onconfirm}
+      >
+        {confirmLabel}
+      </Button>
     </Dialog.Footer>
   </Dialog.Content>
 </Dialog.Root>

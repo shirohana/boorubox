@@ -1,7 +1,8 @@
 // @vitest-environment jsdom
 
-import type { ImageRecord } from '@boorubox/shared'
+import type { ArtistMatch, ImageRecord } from '@boorubox/shared'
 import type { SearchResults } from '$lib/api'
+import { artistRevision } from '$lib/api'
 import { clearMocks, mockIPC } from '@tauri-apps/api/mocks'
 import { flushSync, mount, tick, unmount } from 'svelte'
 import { afterEach, expect, it, vi } from 'vitest'
@@ -35,8 +36,15 @@ function stubActions(): TrashActions {
  * collections on the fixture image, the only command a test can reach is
  * `tag_suggestions`, from typing into the tag editor.
  */
-function setup(image: ImageRecord) {
-  mockIPC((cmd) => (cmd === 'tag_suggestions' ? [] : null))
+function setup(
+  image: ImageRecord,
+  options: {
+    ipc?: (cmd: string, payload: unknown) => unknown
+    onrelease?: () => void
+    onquery?: (next: string, id: string | undefined) => void
+  } = {},
+) {
+  mockIPC(options.ipc ?? ((cmd) => (cmd === 'tag_suggestions' ? [] : null)))
   const target = document.createElement('div')
   document.body.appendChild(target)
   const props = $state({
@@ -44,8 +52,9 @@ function setup(image: ImageRecord) {
     results: stubResults(),
     actions: stubActions(),
     tagQuery: '',
-    onquery: () => {},
-    onartistrenamed: () => {},
+    onquery: options.onquery ?? (() => {}),
+    onrelease: options.onrelease,
+    onartistsaved: () => {},
   })
   const instance = mount(Inspector, { target, props })
   return { target, props, instance }
@@ -154,6 +163,169 @@ it('the facts heading\'s pencil opens the form', async () => {
   const titleInput = target.querySelector<HTMLInputElement>('input[aria-label="Title"]')
   expect(titleInput).not.toBeNull()
   expect(document.activeElement).toBe(titleInput)
+
+  unmount(instance)
+})
+
+it('hands the focus back when an image change closes the editor that held it', () => {
+  const onrelease = vi.fn()
+  const { target, props, instance } = setup(img({ id: 'a' }), { onrelease })
+
+  instance.startEditTags()
+  flushSync()
+  const cancel = [...target.querySelectorAll<HTMLButtonElement>('button')]
+    .find((button) => button.textContent?.trim() === 'Cancel')!
+  cancel.focus()
+  expect(document.activeElement).toBe(cancel)
+
+  props.image = img({ id: 'b' })
+  flushSync()
+
+  expect(tagTextarea(target)).toBeNull()
+  expect(onrelease).toHaveBeenCalledTimes(1)
+
+  unmount(instance)
+})
+
+it('does not hand the focus back when the panel loses its image', () => {
+  const onrelease = vi.fn()
+  const { target, props, instance } = setup(img({ id: 'a' }), { onrelease })
+
+  instance.startEditTags()
+  flushSync()
+  const cancel = [...target.querySelectorAll<HTMLButtonElement>('button')]
+    .find((button) => button.textContent?.trim() === 'Cancel')!
+  cancel.focus()
+
+  props.image = null
+  flushSync()
+
+  expect(onrelease).not.toHaveBeenCalled()
+
+  unmount(instance)
+})
+
+it('does not hand the focus back on the first run, with an editor opened right after mount', () => {
+  const onrelease = vi.fn()
+  const { target, instance } = setup(img({ id: 'a' }), { onrelease })
+
+  instance.startEditTags()
+  flushSync()
+  const cancel = [...target.querySelectorAll<HTMLButtonElement>('button')]
+    .find((button) => button.textContent?.trim() === 'Cancel')!
+  cancel.focus()
+  flushSync()
+
+  expect(tagTextarea(target)).not.toBeNull()
+  expect(onrelease).not.toHaveBeenCalled()
+
+  unmount(instance)
+})
+
+it('leaves the focus alone when the editor did not hold it', () => {
+  const onrelease = vi.fn()
+  const { props, instance } = setup(img({ id: 'a' }), { onrelease })
+  const elsewhere = document.createElement('button')
+  document.body.appendChild(elsewhere)
+
+  instance.startEditTags()
+  flushSync()
+  elsewhere.focus()
+
+  props.image = img({ id: 'b' })
+  flushSync()
+
+  expect(onrelease).not.toHaveBeenCalled()
+
+  elsewhere.remove()
+  unmount(instance)
+})
+
+function xImage(id: string, handle: string): ImageRecord {
+  return img({ id, adapter: { site: 'x', fields: { handle } } })
+}
+
+function matchOf(handle: string, owner: string | null): ArtistMatch {
+  return { url: `https://x.com/${handle}`, owner, derived: handle }
+}
+
+/** `artist_match` answers held open per handle, so a test decides the order they land in. */
+function heldArtistMatches() {
+  const held = new Map<string, (match: ArtistMatch | null) => void>()
+  const calls: string[] = []
+  const ipc = (cmd: string, payload: unknown) => {
+    if (cmd !== 'artist_match') return null
+    const handle = (payload as { adapter: { fields: { handle: string } } }).adapter.fields.handle
+    calls.push(handle)
+    return new Promise<ArtistMatch | null>((resolve) => held.set(handle, resolve))
+  }
+  return { held, calls, ipc }
+}
+
+async function settle() {
+  for (let i = 0; i < 5; i++) await tick()
+  flushSync()
+}
+
+function artistOwnerButton(target: HTMLElement, owner: string) {
+  return [...target.querySelectorAll<HTMLButtonElement>('button')]
+    .find((button) => button.textContent?.trim() === owner)
+}
+
+it('the Artist row drops an answer for an image it has moved past', async () => {
+  const { held, ipc } = heldArtistMatches()
+  const { target, props, instance } = setup(xImage('a', 'alice_x'), { ipc })
+  flushSync()
+  await settle()
+
+  props.image = xImage('b', 'bob_x')
+  flushSync()
+  await settle()
+
+  held.get('bob_x')!(matchOf('bob_x', 'bob'))
+  await settle()
+  held.get('alice_x')!(matchOf('alice_x', 'alice'))
+  await settle()
+
+  expect(artistOwnerButton(target, 'bob')).toBeDefined()
+  expect(artistOwnerButton(target, 'alice')).toBeUndefined()
+
+  unmount(instance)
+})
+
+it('the Artist row\'s owner toggles the owner\'s tag in the query', async () => {
+  const { held, ipc } = heldArtistMatches()
+  const onquery = vi.fn()
+  const { target, instance } = setup(xImage('a', 'alice_x'), { ipc, onquery })
+  flushSync()
+  await settle()
+
+  held.get('alice_x')!(matchOf('alice_x', 'alice'))
+  await settle()
+
+  artistOwnerButton(target, 'alice')!.click()
+  expect(onquery).toHaveBeenCalledWith('alice', 'a')
+
+  unmount(instance)
+})
+
+it('the Artist row re-reads when an artist entry is written elsewhere', async () => {
+  const { held, calls, ipc } = heldArtistMatches()
+  const { target, instance } = setup(xImage('a', 'alice_x'), { ipc })
+  flushSync()
+  await settle()
+  held.get('alice_x')!(matchOf('alice_x', null))
+  await settle()
+  expect(calls).toEqual(['alice_x'])
+
+  artistRevision.bump()
+  flushSync()
+  await settle()
+  held.get('alice_x')!(matchOf('alice_x', 'alice'))
+  await settle()
+
+  expect(calls).toEqual(['alice_x', 'alice_x'])
+  expect(artistOwnerButton(target, 'alice')).toBeDefined()
 
   unmount(instance)
 })

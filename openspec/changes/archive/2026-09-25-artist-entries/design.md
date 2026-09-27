@@ -113,6 +113,13 @@ errors, Cancel, and "Rename N images". After success: `vocabulary.refresh()` and
 search re-run through the store's existing refresh (the UI unit names the method in its
 handoff), so the panel and the grid show the new name.
 
+**2026-09-28 — reversed by `artist-workflow` D1.** This confined the door to the inspector
+badge because the dialog's two inputs came from an image at the time — the prefilled URL was
+that image's own profile URL and the count came from the same preview keyed by it — leaving
+the sidebar row and the pinned chip, which have no image in scope, nothing to offer.
+`artist-workflow` reads both from the entry and the tag name alone instead, with the image
+contributing only an optional extra line, so every artist-tag menu now opens the same dialog.
+
 **D7. Settings → Artists, above Rules.** `components/artists/ArtistsSection.svelte`: heading,
 one paragraph saying what an entry does and the notice "Changing URLs applies to future
 captures only; images already in the library keep their tags. To retag images, rename the

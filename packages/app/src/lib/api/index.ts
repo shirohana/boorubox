@@ -1,3 +1,4 @@
+export { artistRevision } from './artists.svelte'
 export * from './assets'
 export * from './booru'
 export { booruSites } from './booru.svelte'
@@ -10,6 +11,7 @@ export * from './drag-drop'
 export * from './errors'
 export * from './events'
 export { imports, type ImportReportEntry, type ImportRun } from './imports.svelte'
+export * from './latest-only'
 export { library } from './library.svelte'
 export { libraryCounts } from './library-counts.svelte'
 export {

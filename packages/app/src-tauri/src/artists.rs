@@ -3,7 +3,10 @@
 //! that is not the artist's tag (design D1, D3, D4), and the rename action
 //! that records a correction from an image carrying the wrong name (design
 //! D5). `ingest::resolve_tag_text` is the one caller that derives an artist
-//! tag at capture time; this module only matches, stores and rewrites.
+//! tag at capture time; this module only matches, stores and rewrites. A bare
+//! "design Dn" below is `artist-entries`'; the preview, match and apply
+//! additions cite `artist-workflow` by name, since the two changes both
+//! number their decisions from D1.
 
 use rusqlite::{Connection, params};
 
@@ -153,9 +156,9 @@ pub fn candidate(adapter: Option<&SiteAdapterRecord>) -> Option<String> {
 
 /// The entry that owns `candidate` (already normalised) — among several
 /// owning entries (nested prefixes), the one with the longest owning URL, the
-/// most specific (design D3, extracted from [`derive`] so [`preview`],
-/// [`artist_match`] and `derive` share the one answer to "who owns this
-/// URL"). `None` when no entry owns it.
+/// most specific (`artist-workflow` design D3, extracted from [`derive`] so
+/// [`preview`], [`artist_match`] and `derive` share the one answer to "who
+/// owns this URL"). `None` when no entry owns it.
 pub fn owning_entry<'a>(candidate: &str, entries: &'a [ArtistEntry]) -> Option<&'a ArtistEntry> {
     entries
         .iter()
@@ -311,19 +314,20 @@ pub fn delete(library: &Library, tag: &str) -> Result<Vec<ArtistEntry>> {
 }
 
 // ---------------------------------------------------------------------------
-// Preview and match (design D3, D5)
+// Preview and match (`artist-workflow` design D3, D5)
 // ---------------------------------------------------------------------------
 
 /// The entry's own URLs, the carrier count (trash included), and the image's
 /// own profile URL as a further candidate line — replacing `rename_preview`
-/// (design D3): `carriers` and `urls` name the tag alone, so the dialog can
-/// open on a sidebar row or a pinned chip with no image in scope; `candidate`
-/// is `None` for a tag with no adapter, no profile URL, or a URL **any**
-/// entry already owns — this one (already in `urls`) or another, where
-/// appending it could only end in the "already owned by" refusal, and the
-/// Artist row (design D5) already says which artist that is.
+/// (`artist-workflow` design D3): `carriers` and `urls` name the tag alone,
+/// so the dialog can open on a sidebar row or a pinned chip with no image in
+/// scope; `candidate` is `None` for a tag with no adapter, no profile URL, or
+/// a URL **any** entry already owns — this one (already in `urls`) or
+/// another, where appending it could only end in the "already owned by"
+/// refusal, and the Artist row (`artist-workflow` design D5) already says
+/// which artist that is.
 pub fn preview(conn: &Connection, input: &ArtistPreviewInput) -> Result<ArtistPreview> {
-    let tag = tags::canonical(&input.tag);
+    let tag = tags::underscored(&input.tag);
     let carriers = carrier_count(conn, &tag)?;
     let entries = list(conn)?;
     let urls = entries
@@ -348,11 +352,11 @@ pub fn preview(conn: &Connection, input: &ArtistPreviewInput) -> Result<ArtistPr
 
 /// The image's own profile URL, the entry that owns it (if any), and the
 /// artist tag a capture from this record derives regardless of any entry
-/// (design D5) — `None` when the record yields no profile URL at all.
-/// Ownership does not consult the owning entry's category the way [`derive`]
-/// does: the row this backs names who owns the URL as the vocabulary has it
-/// today, and a stale category is fixed where it is listed (Settings →
-/// Artists), not hidden from the chip.
+/// (`artist-workflow` design D5) — `None` when the record yields no profile
+/// URL at all. Ownership does not consult the owning entry's category the way
+/// [`derive`] does: the row this backs names who owns the URL as the
+/// vocabulary has it today, and a stale category is fixed where it is listed
+/// (Settings → Artists), not hidden from the chip.
 pub fn artist_match(conn: &Connection, adapter: &SiteAdapterRecord) -> Result<Option<ArtistMatch>> {
     let Some(candidate) = candidate(Some(adapter)) else {
         return Ok(None);
@@ -528,14 +532,14 @@ pub fn rename(library: &Library, input: &RenameArtistInput) -> Result<RenameArti
 }
 
 // ---------------------------------------------------------------------------
-// Applying an entry to stored images (design D6)
+// Applying an entry to stored images (`artist-workflow` design D6)
 // ---------------------------------------------------------------------------
 
 /// Every non-deleted image whose record's own profile URL (design D4) some
-/// URL in `owned_urls` (already normalised) owns — the one scan [`preview`]
-/// (via `apply_preview`) and [`apply`] both read, so "images from these
-/// URLs" has one answer. A record that does not parse as JSON, or yields no
-/// candidate, is skipped rather than failing the scan.
+/// URL in `owned_urls` (already normalised) owns — the one scan
+/// [`apply_preview`] and [`apply`] both read, so "images from these URLs" has
+/// one answer. A record that does not parse as JSON, or yields no candidate,
+/// is skipped rather than failing the scan.
 fn from_profiles(conn: &Connection, owned_urls: &[String]) -> Result<Vec<String>> {
     let mut stmt = conn.prepare("SELECT id, adapter_json FROM images WHERE deleted_at IS NULL")?;
     let rows = stmt.query_map([], |row| {
@@ -561,9 +565,9 @@ fn from_profiles(conn: &Connection, owned_urls: &[String]) -> Result<Vec<String>
 }
 
 /// How many stored images `urls` would reach and how many of them carry no
-/// artist tag at all (design D6): `urls` as the caller gives them — typed
-/// into a form, mid-edit — so a line that does not normalise is ignored
-/// rather than refusing the whole preview.
+/// artist tag at all (`artist-workflow` design D6): `urls` as the caller
+/// gives them — typed into a form, mid-edit — so a line that does not
+/// normalise is ignored rather than refusing the whole preview.
 pub fn apply_preview(conn: &Connection, urls: &[String]) -> Result<ArtistApplyPreview> {
     let owned: Vec<String> = urls.iter().filter_map(|url| normalized(url)).collect();
     let ids = from_profiles(conn, &owned)?;
@@ -596,16 +600,16 @@ fn count_carrying_no_artist_tag(conn: &Connection, ids: &[String]) -> Result<i64
 
 /// Add `tag` — an existing artist entry's tag — as an artist tag to every
 /// image [`from_profiles`] finds for that entry's URLs, unless it carries the
-/// tag already (design D6): refused before any write when `tag` has no entry
-/// (`AppError::NotFound`) or exists under a category other than artist
-/// (`tags::category_conflict`, the same check [`derive`] makes, so apply
-/// never links an image under a general or character tag). One transaction —
-/// the owner's largest artist is hundreds of images, the scale `rename`
-/// already writes in one. Trash is excluded, unlike `rename`: apply only
-/// adds, so a trashed image loses nothing by being left out and restores as
-/// it was.
+/// tag already (`artist-workflow` design D6): refused before any write when
+/// `tag` has no entry (`AppError::NotFound`) or exists under a category other
+/// than artist (`tags::category_conflict`, the same check [`derive`] makes,
+/// so apply never links an image under a general or character tag). One
+/// transaction — the owner's largest artist is hundreds of images, the scale
+/// `rename` already writes in one. Trash is excluded, unlike `rename`: apply
+/// only adds, so a trashed image loses nothing by being left out and restores
+/// as it was.
 pub fn apply(library: &Library, tag: &str) -> Result<ArtistApplyReport> {
-    let tag = tags::canonical(tag);
+    let tag = tags::underscored(tag);
 
     let tx = library.conn.unchecked_transaction()?;
 
@@ -1635,6 +1639,49 @@ mod tests {
     }
 
     #[test]
+    fn artist_match_of_an_owned_pixiv_user() {
+        let (_dir, library) = library();
+        upsert(
+            &library,
+            &entry("kani_beam", &["https://www.pixiv.net/users/3439325"]),
+        )
+        .unwrap();
+        let record = adapter(
+            "pixiv",
+            serde_json::json!({ "artist": "someone", "userId": "3439325" }),
+        );
+
+        let matched = artist_match(&library.conn, &record).unwrap().unwrap();
+
+        assert_eq!(matched.owner, Some("kani_beam".to_string()));
+        assert_eq!(matched.derived, Some("someone".to_string()));
+    }
+
+    /// `artist_match`'s owner ignores a stale category (`artist-workflow`
+    /// design D5's own risk note): the chip still names who owns the URL once
+    /// `set_category` has moved the entry's tag out of `artist` — the
+    /// Artists list is where a stale category gets fixed, not the chip.
+    #[test]
+    fn artist_match_names_the_owner_even_once_its_tag_left_the_artist_category() {
+        let (_dir, library) = library();
+        upsert(
+            &library,
+            &entry("kani_beam", &["https://www.pixiv.net/users/3439325"]),
+        )
+        .unwrap();
+        store_captured(&library, "seed", &["kani_beam"]);
+        tags::set_category(&library, "kani_beam", TagCategory::General).unwrap();
+        let record = adapter(
+            "pixiv",
+            serde_json::json!({ "artist": "someone", "userId": "3439325" }),
+        );
+
+        let matched = artist_match(&library.conn, &record).unwrap().unwrap();
+
+        assert_eq!(matched.owner, Some("kani_beam".to_string()));
+    }
+
+    #[test]
     fn artist_match_is_none_without_a_profile_url() {
         let (_dir, library) = library();
         let pixiv = adapter("pixiv", serde_json::json!({ "artist": "someone" }));
@@ -1718,6 +1765,36 @@ mod tests {
                 .unwrap()
                 .tags
                 .is_empty()
+        );
+    }
+
+    /// `apply` and `preview` look `tag` up the same way `upsert` and `rename`
+    /// store one — `tags::underscored`, not `tags::canonical` — so a name
+    /// with inner whitespace still reaches the entry `upsert` saved under it.
+    #[test]
+    fn apply_of_a_name_with_whitespace_reaches_the_underscored_entry() {
+        let (_dir, library) = library();
+        store_with_adapter(
+            &library,
+            "a",
+            "x",
+            serde_json::json!({ "handle": "alice_art" }),
+            &[],
+        );
+        upsert(&library, &entry("alice_art", &["https://x.com/alice_art"])).unwrap();
+
+        let report = apply(&library, "alice art").unwrap();
+
+        assert_eq!(
+            report,
+            ArtistApplyReport {
+                tagged: 1,
+                skipped: 0
+            }
+        );
+        assert_eq!(
+            ingest::require_record(&library.conn, "a").unwrap().tags,
+            vec!["alice_art".to_string()]
         );
     }
 
@@ -1902,7 +1979,16 @@ mod tests {
         .unwrap();
         store_captured(&library, "seed", &["kani_beam"]);
         tags::set_category(&library, "kani_beam", TagCategory::General).unwrap();
-        store_captured(&library, "a", &["cat"]);
+        // Carries the entry's own URL, so a refusal that stopped happening
+        // would actually link it — "a" left untagged is not, by itself,
+        // evidence the refusal fired.
+        store_with_adapter(
+            &library,
+            "a",
+            "pixiv",
+            serde_json::json!({ "userId": "3439325" }),
+            &["cat"],
+        );
 
         let error = apply(&library, "kani_beam").unwrap_err();
 

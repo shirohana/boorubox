@@ -18,15 +18,15 @@ use crate::booru::credentials::Credentials;
 use crate::error::{AppError, Result};
 use crate::library::{self, Library, SharedLibrary, with_library, with_library_if_open};
 use crate::model::{
-    AppSettings, ArtistEntry, BooruConnectionTest, BooruSite, BooruUploadForm, BooruUploadOutcome,
+    AppSettings, ArtistApplyPreview, ArtistApplyReport, ArtistEntry, ArtistMatch, ArtistPreview,
+    ArtistPreviewInput, BooruConnectionTest, BooruSite, BooruUploadForm, BooruUploadOutcome,
     BundlePlan, CLICK_ZOOM_CEILING_MAX, CLICK_ZOOM_CEILING_MIN, Collection, CollectionCount,
     DeleteReport, ExportProgress, ExportReport, FactsEdit, GRID_TILE_MAX, GRID_TILE_MIN,
     ImageCounts, ImageRecord, ImportReport, LibraryStatus, ListenerStatus, Note, PinTarget,
-    PostRef, RebuildProgress, RebuildReport, RecentLibrary, RenameArtistInput, RenameArtistPreview,
-    RenameArtistPreviewInput, RenameArtistReport, Rule, RuleInput, RuleListEntry,
-    RulesImportReport, RulesRunReport, SearchRequest, SearchResult, SidecarsProgress, Stamp,
-    StampInput, TagCategory, TagCount, TagCounts, TagEditSpec, TagEntry, Theme, ThumbnailRef,
-    ThumbsProgress, ThumbsReport,
+    PostRef, RebuildProgress, RebuildReport, RecentLibrary, RenameArtistInput, RenameArtistReport,
+    Rule, RuleInput, RuleListEntry, RulesImportReport, RulesRunReport, SearchRequest, SearchResult,
+    SidecarsProgress, SiteAdapterRecord, Stamp, StampInput, TagCategory, TagCount, TagCounts,
+    TagEditSpec, TagEntry, Theme, ThumbnailRef, ThumbsProgress, ThumbsReport,
 };
 use crate::settings::Settings;
 use crate::{
@@ -1162,18 +1162,54 @@ pub async fn artists_delete(tag: String, state: State<'_, AppState>) -> Result<V
     .await
 }
 
-/// The carrier count (trash included) and the candidate URLs a rename from
-/// this image would prefill, answered before anything is written
-/// (`artist-entries` design D5).
+/// The entry's own URLs, the carrier count and the image's own candidate
+/// line, answered before anything is written — replacing
+/// `rename_artist_preview` (`artist-workflow` design D3, D8).
 #[tauri::command]
-pub async fn rename_artist_preview(
-    input: RenameArtistPreviewInput,
+pub async fn artist_preview(
+    input: ArtistPreviewInput,
     state: State<'_, AppState>,
-) -> Result<RenameArtistPreview> {
+) -> Result<ArtistPreview> {
     with_library_off_main_thread(&state.library, move |library| {
-        artists::rename_preview(&library.conn, &input)
+        artists::preview(&library.conn, &input)
     })
     .await
+}
+
+/// The image's own profile URL, the entry that owns it (if any), and the
+/// artist tag a capture from this record derives — `null` for a record with
+/// no profile URL at all (`artist-workflow` design D5, D8).
+#[tauri::command]
+pub async fn artist_match(
+    adapter: SiteAdapterRecord,
+    state: State<'_, AppState>,
+) -> Result<Option<ArtistMatch>> {
+    with_library_off_main_thread(&state.library, move |library| {
+        artists::artist_match(&library.conn, &adapter)
+    })
+    .await
+}
+
+/// How many stored images come from `urls` and how many of them carry no
+/// artist tag at all, answered before anything is written (`artist-workflow`
+/// design D6, D8).
+#[tauri::command]
+pub async fn artists_apply_preview(
+    urls: Vec<String>,
+    state: State<'_, AppState>,
+) -> Result<ArtistApplyPreview> {
+    with_library_off_main_thread(&state.library, move |library| {
+        artists::apply_preview(&library.conn, &urls)
+    })
+    .await
+}
+
+/// Add `tag` — an existing artist entry's tag — to every stored image its
+/// URLs own, unless it carries the tag already (`artist-workflow` design D6,
+/// D8).
+#[tauri::command]
+pub async fn artists_apply(tag: String, state: State<'_, AppState>) -> Result<ArtistApplyReport> {
+    with_library_off_main_thread(&state.library, move |library| artists::apply(library, &tag)).await
 }
 
 /// Record `to` as the owner of `input.urls`, moving any the old name owned,
@@ -3247,8 +3283,8 @@ mod tests {
     }
 
     #[test]
-    fn artists_upsert_rename_artist_and_rename_artist_preview_reach_the_open_library_through_the_commands()
-     {
+    fn artists_upsert_rename_artist_and_artist_preview_reach_the_open_library_through_the_commands()
+    {
         let (_library, app) = app_with_library();
         import(&app, &folder_of_images(1));
         let ids = ids_in_library(&app);
@@ -3265,9 +3301,9 @@ mod tests {
         assert_eq!(entries.len(), 1);
         assert_eq!(now(artists_list(app.state())).unwrap(), entries);
 
-        let preview = now(rename_artist_preview(
-            RenameArtistPreviewInput {
-                from: "metaljelly0811".to_string(),
+        let preview = now(artist_preview(
+            ArtistPreviewInput {
+                tag: "metaljelly0811".to_string(),
                 adapter: None,
             },
             app.state(),
@@ -3289,6 +3325,54 @@ mod tests {
 
         let entries = now(artists_delete("metaljelly".to_string(), app.state())).unwrap();
         assert!(entries.is_empty());
+    }
+
+    /// `artist_match`, `artists_apply_preview` and `artists_apply` reach the
+    /// open library through the commands (`artist-workflow` task 1.6); the
+    /// fixture images carry no adapter record, so the scan finds none — the
+    /// wiring is what this proves, not the scan itself (covered in
+    /// `artists.rs`).
+    #[test]
+    fn artist_match_artists_apply_preview_and_artists_apply_reach_the_open_library_through_the_commands()
+     {
+        let (_library, app) = app_with_library();
+        import(&app, &folder_of_images(1));
+
+        now(artists_upsert(
+            ArtistEntry {
+                tag: "alice".to_string(),
+                urls: vec!["https://x.com/alice_art".to_string()],
+            },
+            app.state(),
+        ))
+        .unwrap();
+
+        let matched = now(artist_match(
+            SiteAdapterRecord {
+                site: "x".to_string(),
+                fields: serde_json::json!({ "handle": "alice_art" }),
+            },
+            app.state(),
+        ))
+        .unwrap()
+        .unwrap();
+        assert_eq!(matched.owner, Some("alice".to_string()));
+
+        let preview = now(artists_apply_preview(
+            vec!["https://x.com/alice_art".to_string()],
+            app.state(),
+        ))
+        .unwrap();
+        assert_eq!(preview.images, 0, "the fixture carries no adapter record");
+
+        let report = now(artists_apply("alice".to_string(), app.state())).unwrap();
+        assert_eq!(
+            report,
+            ArtistApplyReport {
+                tagged: 0,
+                skipped: 0
+            }
+        );
     }
 
     #[test]

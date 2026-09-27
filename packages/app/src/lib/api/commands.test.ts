@@ -3,7 +3,12 @@
 
 import type {
   AppSettings,
+  ArtistApplyPreview,
+  ArtistApplyReport,
   ArtistEntry,
+  ArtistMatch,
+  ArtistPreview,
+  ArtistPreviewInput,
   BundlePlan,
   Collection,
   CollectionCount,
@@ -13,14 +18,13 @@ import type {
   PinTarget,
   RebuildReport,
   RenameArtistInput,
-  RenameArtistPreview,
-  RenameArtistPreviewInput,
   RenameArtistReport,
   RuleInput,
   RuleListEntry,
   RulesImportReport,
   RulesRunReport,
   SearchRequest,
+  SiteAdapterRecord,
   Stamp,
   StampInput,
   TagCounts,
@@ -40,6 +44,10 @@ import { afterEach, expect, it, vi } from 'vitest'
 import {
   applyEdit,
   appSettings,
+  artistMatch,
+  artistPreview,
+  artistsApply,
+  artistsApplyPreview,
   artistsDelete,
   artistsList,
   artistsUpsert,
@@ -66,7 +74,6 @@ import {
   rebuildLibrary,
   regenerateThumbnails,
   renameArtist,
-  renameArtistPreview,
   restoreImages,
   revealLibrary,
   rulesDelete,
@@ -740,18 +747,49 @@ it('artists_delete passes the tag and returns the entries as they now stand', as
   expect(calls).toHaveBeenCalledWith('artists_delete', { tag: 'metaljelly' })
 })
 
-it('rename_artist_preview passes the input and returns the preview', async () => {
-  const input: RenameArtistPreviewInput = {
-    from: 'metaljelly0811',
+it('artist_preview passes the input and returns the preview', async () => {
+  const input: ArtistPreviewInput = {
+    tag: 'metaljelly',
     adapter: null,
   }
-  const preview: RenameArtistPreview = {
+  const preview: ArtistPreview = {
     carriers: 120,
     urls: ['https://x.com/metaljelly0811'],
+    candidate: null,
   }
   const calls = spyIPC(preview)
-  await expect(renameArtistPreview(input)).resolves.toEqual(preview)
-  expect(calls).toHaveBeenCalledWith('rename_artist_preview', { input })
+  await expect(artistPreview(input)).resolves.toEqual(preview)
+  expect(calls).toHaveBeenCalledWith('artist_preview', { input })
+})
+
+it('artist_match passes the adapter and returns the match', async () => {
+  const adapter: SiteAdapterRecord = {
+    site: 'x',
+    fields: { handle: 'metaljelly0811' },
+  }
+  const matched: ArtistMatch = {
+    url: 'https://x.com/metaljelly0811',
+    owner: 'metaljelly',
+    derived: 'metaljelly0811',
+  }
+  const calls = spyIPC(matched)
+  await expect(artistMatch(adapter)).resolves.toEqual(matched)
+  expect(calls).toHaveBeenCalledWith('artist_match', { adapter })
+})
+
+it('artists_apply_preview passes the urls and returns the preview', async () => {
+  const urls = ['https://x.com/metaljelly0811']
+  const preview: ArtistApplyPreview = { images: 8, untagged: 3 }
+  const calls = spyIPC(preview)
+  await expect(artistsApplyPreview(urls)).resolves.toEqual(preview)
+  expect(calls).toHaveBeenCalledWith('artists_apply_preview', { urls })
+})
+
+it('artists_apply passes the tag and returns the report', async () => {
+  const report: ArtistApplyReport = { tagged: 5, skipped: 3 }
+  const calls = spyIPC(report)
+  await expect(artistsApply('metaljelly')).resolves.toEqual(report)
+  expect(calls).toHaveBeenCalledWith('artists_apply', { tag: 'metaljelly' })
 })
 
 it('rename_artist passes the input and returns the report', async () => {

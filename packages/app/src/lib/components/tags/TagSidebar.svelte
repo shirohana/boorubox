@@ -9,6 +9,8 @@
   // as noise once the labels were gone).
   import type { TagCount } from '@boorubox/shared'
   import { settings, vocabulary } from '$lib/api'
+  import type { ArtistDialogRequest } from '$lib/components/artists/artist-dialog'
+  import ArtistDialog from '$lib/components/artists/ArtistDialog.svelte'
   import { CATEGORY_ORDER, categoryLabel, sidebarRows } from '$lib/domain/tag-categories'
   import { danbooruLookup } from '$lib/domain/danbooru'
   import {
@@ -31,9 +33,15 @@
     tags: TagCount[] | null
     tagQuery: string
     onquery: (next: string) => void
+    /**
+     * An artist entry was saved from this sidebar's own `ArtistDialog`
+     * (`artist-workflow` design D4): the screen's `afterWrite`, so the
+     * vocabulary, the search and the counts all follow.
+     */
+    onartistsaved: () => void
   }
 
-  let { tags, tagQuery, onquery }: Props = $props()
+  let { tags, tagQuery, onquery, onartistsaved }: Props = $props()
 
   // `inspector-polish` design D3: the one reader for "is this term active", shared
   // with the inspector's tags.
@@ -77,11 +85,18 @@
 
   /**
    * The tag `TagNoteDialog` is open for — the name, snapshotted when "Edit
-   * note…" is chosen (`tag-notes` design D10), the `renamingArtist` pattern
-   * `Inspector.svelte` uses for the same reason: the dialog cannot live
+   * note…" is chosen (`tag-notes` design D10), the `editingArtist` pattern
+   * below and in `Inspector.svelte`, for the same reason: the dialog cannot live
    * inside `TagVocabularyMenuItems` (its content unmounts on select).
    */
   let editingNote = $state<string | null>(null)
+
+  /**
+   * The `ArtistDialog` this row's own menu opens (`artist-workflow` design
+   * D2, D4), the `editingNote` shape above: no image in scope here, so every
+   * open is `{ mode: 'edit', tag, adapter: null }`.
+   */
+  let editingArtist = $state<ArtistDialogRequest | null>(null)
 </script>
 
 <!--
@@ -158,7 +173,11 @@
           ontoggle={() => onquery(toggleTagInQuery(tagQuery, name))}
         >
           {#snippet menu()}
-            <TagVocabularyMenuItems {name} oneditnote={(tag) => (editingNote = tag)} />
+            <TagVocabularyMenuItems
+              {name}
+              oneditnote={(tag) => (editingNote = tag)}
+              oneditartist={(tag) => (editingArtist = { mode: 'edit', tag, adapter: null })}
+            />
           {/snippet}
         </FilterRow>
       {/each}
@@ -175,4 +194,10 @@
   open={editingNote !== null}
   name={editingNote ?? ''}
   onclose={() => (editingNote = null)}
+/>
+<ArtistDialog
+  open={editingArtist !== null}
+  request={editingArtist}
+  onclose={() => (editingArtist = null)}
+  onsaved={onartistsaved}
 />

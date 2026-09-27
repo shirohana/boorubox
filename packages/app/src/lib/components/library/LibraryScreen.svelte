@@ -991,6 +991,7 @@
     tags={results.counts?.tags ?? null}
     {tagQuery}
     onquery={(next) => void searchKeeping(next, focused?.id)}
+    onartistsaved={afterWrite}
   />
   <CollectionsSection
     counts={results.counts?.collections ?? null}
@@ -1103,11 +1104,13 @@
   {#if browseSession.inspectorOpen}
     <aside class="w-80 shrink-0 border-s border-border">
       <!--
-        `onartistrenamed` (`artist-entries` design D5): the retag also walks
-        the trash, so a rename made here can change carriers `afterWrite`
-        never touches — this screen's own `results` is only the library's or
-        only the trash's, never both. Not refreshed here on purpose: the
-        other view's `SearchResults` instance is kept for the app's run
+        `onartistsaved` (`artist-entries` design D5, renamed by
+        `artist-workflow` design D4 now that it also fires after a create or
+        an apply, not only a rename): the retag or the apply also walks the
+        trash, so a save made here can change carriers `afterWrite` never
+        touches — this screen's own `results` is only the library's or only
+        the trash's, never both. Not refreshed here on purpose: the other
+        view's `SearchResults` instance is kept for the app's run
         (`browse-feedback` design D1), but this screen still calls
         `results.run(results.inputs)` unconditionally on mount (below), so
         leaving for that route and coming back re-queries it fresh — the same
@@ -1133,7 +1136,7 @@
         }}
         onactivate={openViewer}
         onedit={editSelection}
-        onartistrenamed={afterWrite}
+        onartistsaved={afterWrite}
       />
     </aside>
   {/if}
@@ -1148,7 +1151,7 @@
     {clickZoomCeiling}
     {tagQuery}
     onquery={searchKeeping}
-    onartistrenamed={afterWrite}
+    onartistsaved={afterWrite}
     bind:mode={browseSession.lightboxMode}
     bind:index={lightboxIndex}
     onmove={(index) => grid?.scrollIntoView(index)}

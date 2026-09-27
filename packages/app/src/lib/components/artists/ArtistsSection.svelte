@@ -5,11 +5,21 @@
   // (`artists_upsert`'s own refusals decide what a valid entry is either
   // way) — unlike Rules' three-way split, there is no separate list
   // component here, since the list is only a handful of rows drawn inline.
-  import type { ArtistEntry } from '@boorubox/shared'
+  import type { ArtistApplyPreview, ArtistApplyReport, ArtistEntry } from '@boorubox/shared'
   import PencilIcon from '@lucide/svelte/icons/pencil'
+  import PlayIcon from '@lucide/svelte/icons/play'
   import PlusIcon from '@lucide/svelte/icons/plus'
   import Trash2Icon from '@lucide/svelte/icons/trash-2'
-  import { artistsDelete, artistsList, errorText, library, vocabulary } from '$lib/api'
+  import {
+    artistRevision,
+    artistsApply,
+    artistsApplyPreview,
+    artistsDelete,
+    artistsList,
+    errorText,
+    library,
+    vocabulary,
+  } from '$lib/api'
   import ConfirmDialog from '$lib/components/common/ConfirmDialog.svelte'
   import { CATEGORY_TEXT_CLASS } from '$lib/components/tags/categories'
   import { Button } from '$lib/components/ui/button'
@@ -23,6 +33,38 @@
   let editing = $state<ArtistEntry | null>(null)
   let confirming = $state<ArtistEntry | null>(null)
   let error = $state<string | null>(null)
+
+  /**
+   * Apply, per entry (`artist-workflow` design D7).
+   * `confirmingApply` is only set once `artistsApplyPreview` has answered —
+   * the confirmation's own count is what the button reads, so there is
+   * nothing to confirm before it is known. `applyPending` names which
+   * entry's preview is in flight, so a second click on the same row while it
+   * loads is a no-op rather than a second fetch. `applyResult` is shown
+   * under the entry it answers for and cleared the next time that entry's
+   * Apply is chosen.
+   */
+  let applyPending = $state<string | null>(null)
+  let confirmingApply = $state<{ entry: ArtistEntry, preview: ArtistApplyPreview } | null>(null)
+  /**
+   * What the confirmation draws: the last `confirmingApply`, kept after it is
+   * cleared so the dialog's close animation still shows the entry and counts
+   * it was opened for rather than "undefined" and zeros.
+   */
+  let applyShown = $state<{ entry: ArtistEntry, preview: ArtistApplyPreview } | null>(null)
+  const applyImages = $derived(applyShown?.preview.images ?? 0)
+  const applyUntagged = $derived(applyShown?.preview.untagged ?? 0)
+  const applyDescription = $derived(
+    [
+      `${applyImages.toLocaleString()} ${applyImages === 1 ? 'image comes' : 'images come'}`,
+      `from these URLs; ${applyUntagged.toLocaleString()} of ${applyImages === 1 ? 'it' : 'them'}`,
+      `${applyUntagged === 1 ? 'carries' : 'carry'} no artist tag.`,
+      `Applying adds “${applyShown?.entry.tag ?? ''}” to`,
+      `${applyImages === 1 ? 'it' : `all ${applyImages.toLocaleString()}`}; no tag is removed.`,
+    ].join(' '),
+  )
+  let applyResult = $state<{ tag: string, report: ArtistApplyReport } | null>(null)
+  let applyError = $state<string | null>(null)
   // Not remembered and not cleared by a save (`settings-pages` design D8): the field is the
   // user's own filter at work, not view state worth persisting.
   let query = $state('')
@@ -55,9 +97,42 @@
     void (async () => {
       try {
         entries = await artistsDelete(doomed.tag)
+        artistRevision.bump()
         error = null
       } catch (cause) {
         error = errorText(cause)
+      }
+    })()
+  }
+
+  async function startApply(entry: ArtistEntry) {
+    if (applyPending) return
+    applyError = null
+    applyResult = null
+    applyPending = entry.tag
+    try {
+      const preview = await artistsApplyPreview(entry.urls)
+      confirmingApply = { entry, preview }
+      applyShown = confirmingApply
+    } catch (cause) {
+      applyError = errorText(cause)
+    } finally {
+      applyPending = null
+    }
+  }
+
+  function applyConfirmed() {
+    const target = confirmingApply
+    confirmingApply = null
+    if (!target) return
+    void (async () => {
+      try {
+        const report = await artistsApply(target.entry.tag)
+        artistRevision.bump()
+        applyResult = { tag: target.entry.tag, report }
+        await vocabulary.refresh()
+      } catch (cause) {
+        applyError = errorText(cause)
       }
     })()
   }
@@ -68,25 +143,17 @@
 
   <p class="text-sm text-muted-foreground">
     An artist entry is a tag that owns a list of profile URLs, matched against a capture's
-    source so the right name is used from then on. Changing URLs here applies to future
-    captures only — images already in the library keep their tags. To retag images, rename the
-    artist from its tag in the image's inspector.
+    source so the right name is used from then on. Changing URLs applies to future captures
+    only. To tag images already in the library, apply the artist; applying only adds its tag.
+    To rename an artist and retag its images, use Edit artist… on its tag.
   </p>
-
-  <!--
-    FIXME(`artist-entries` D9): correcting an entry's URLs here does not
-    re-derive any image already stored — only a rename from the inspector
-    retags, because that is the case the proposal covers today. A "run over
-    existing images" pass, the shape `auto-tag-rules` design D9's `rules.rs`
-    `run` already has, is the missing way back for an entry corrected here
-    instead.
-  -->
 
   {#if formOpen}
     <ArtistForm
       entry={editing}
       onsaved={(saved) => {
         entries = saved
+        artistRevision.bump()
         formOpen = false
         editing = null
       }}
@@ -115,7 +182,8 @@
 
   {#if entries.length === 0}
     <p class="text-sm text-muted-foreground">
-      No artist entries yet. Renaming an artist from its tag in the inspector creates one too.
+      No artist entries yet. Editing or creating an artist from its tag elsewhere in the app
+      creates one too.
     </p>
   {:else if shown.length === 0}
     <p class="text-sm text-muted-foreground">No artist matches “{query}”.</p>
@@ -130,6 +198,16 @@
               {entry.tag}
             </span>
             <div class="ml-auto flex items-center gap-1">
+              <Button
+                size="icon-xs"
+                variant="ghost"
+                aria-label="Apply {entry.tag} to stored images"
+                title="Apply to stored images"
+                disabled={applyPending === entry.tag}
+                onclick={() => void startApply(entry)}
+              >
+                <PlayIcon />
+              </Button>
               <Button
                 size="icon-xs"
                 variant="ghost"
@@ -169,9 +247,21 @@
               <li class="font-mono text-xs break-all text-muted-foreground">{url}</li>
             {/each}
           </ul>
+
+          {#if applyResult?.tag === entry.tag}
+            <p class="mt-1 text-xs text-muted-foreground">
+              Tagged {applyResult.report.tagged.toLocaleString()}
+              {applyResult.report.tagged === 1 ? 'image' : 'images'};
+              {applyResult.report.skipped.toLocaleString()} already carried it.
+            </p>
+          {/if}
         </li>
       {/each}
     </ul>
+  {/if}
+
+  {#if applyError}
+    <p class="text-sm text-destructive">{applyError}</p>
   {/if}
 
   {#if error}
@@ -194,4 +284,23 @@
   open={confirming !== null}
   onclose={() => (confirming = null)}
   onconfirm={deleteConfirmed}
+/>
+
+<!--
+  The eighth caller (`artist-workflow` design D7, the doc comment above names
+  the bar): not destructive, but a bulk write over however many images the
+  entry owns, made from one button — the same ground the rating write clears
+  it on. `destructive={false}` for the same reason the rating write's own
+  call is: nothing here is destroyed. `confirmDisabled` at 0 images: there is
+  nothing that button would do.
+-->
+<ConfirmDialog
+  title="Apply “{applyShown?.entry.tag}”?"
+  description={applyDescription}
+  confirmLabel="Apply to {applyImages.toLocaleString()} {applyImages === 1 ? 'image' : 'images'}"
+  destructive={false}
+  confirmDisabled={applyImages === 0}
+  open={confirmingApply !== null}
+  onclose={() => (confirmingApply = null)}
+  onconfirm={applyConfirmed}
 />

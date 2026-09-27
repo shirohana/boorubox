@@ -257,7 +257,10 @@ pub fn run() {
             commands::artists_list,
             commands::artists_upsert,
             commands::artists_delete,
-            commands::rename_artist_preview,
+            commands::artist_preview,
+            commands::artist_match,
+            commands::artists_apply_preview,
+            commands::artists_apply,
             commands::rename_artist,
         ])
         .run(tauri::generate_context!())
