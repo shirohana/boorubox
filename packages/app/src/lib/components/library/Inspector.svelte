@@ -27,6 +27,8 @@
   import TagInput from '$lib/components/tags/TagInput.svelte'
   import CollectionPinMenuItem from '$lib/components/tags/CollectionPinMenuItem.svelte'
   import RenameArtistDialog from '$lib/components/tags/RenameArtistDialog.svelte'
+  import TagNoteDialog from '$lib/components/tags/TagNoteDialog.svelte'
+  import TagNoteIndicator from '$lib/components/tags/TagNoteIndicator.svelte'
   import TagVocabularyMenuItems from '$lib/components/tags/TagVocabularyMenuItems.svelte'
   import { Badge } from '$lib/components/ui/badge'
   import { Button } from '$lib/components/ui/button'
@@ -480,6 +482,15 @@
    */
   let renamingArtist = $state<{ tag: string, image: ImageRecord } | null>(null)
 
+  /**
+   * The tag `TagNoteDialog` is open for — the name, snapshotted when "Edit
+   * note…" is chosen (`tag-notes` design D10), one dialog here for the
+   * chips of both strips and the badges, the `renamingArtist` shape above:
+   * the dialog cannot live inside `TagVocabularyMenuItems` (its content
+   * unmounts on select).
+   */
+  let editingNote = $state<string | null>(null)
+
   async function removeFromCollection(collectionId: string): Promise<void> {
     if (!image) return
     try {
@@ -805,6 +816,9 @@
                 "
               />
               {label}
+              {#if chip.kind === 'tag'}
+                <TagNoteIndicator note={vocabulary.noteOf(chip.tag)} {portalTo} />
+              {/if}
             </Badge>
           </button>
         {/snippet}
@@ -813,7 +827,7 @@
         {#if chip.kind === 'tag'}
           {@render tagSearchItems(chip.tag)}
           <ContextMenu.Separator />
-          <TagVocabularyMenuItems name={chip.tag} />
+          <TagVocabularyMenuItems name={chip.tag} oneditnote={(name) => (editingNote = name)} />
         {:else}
           <CollectionPinMenuItem collection={chip.collection} />
         {/if}
@@ -1019,6 +1033,7 @@
                         onclick={() => query(toggleTagInQuery(tagQuery, tag))}
                       >
                         {tag}
+                        <TagNoteIndicator note={vocabulary.noteOf(tag)} {portalTo} />
                       </button>
                     {/snippet}
                   </ContextMenu.Trigger>
@@ -1039,7 +1054,10 @@
                       </ContextMenu.Item>
                       <ContextMenu.Separator />
                     {/if}
-                    <TagVocabularyMenuItems name={tag} />
+                    <TagVocabularyMenuItems
+                      name={tag}
+                      oneditnote={(name) => (editingNote = name)}
+                    />
                     <ContextMenu.Separator />
                     <ContextMenu.Item variant="destructive" onSelect={() => remove(tag)}>
                       Remove from this image
@@ -1434,6 +1452,22 @@
     // then the screen's own write pattern (`afterWrite`, `LibraryScreen.svelte`).
     void vocabulary.refresh()
     onartistrenamed()
+    onrelease?.()
+  }}
+/>
+
+<!--
+  Outside the menus above, mounted unconditionally, the same reason as
+  `RenameArtistDialog`: one dialog for the chips of both strips and the
+  badges (`tag-notes` design D10), `{portalTo}` so it lands in the viewer's
+  own `<dialog>` when this panel is shown there.
+-->
+<TagNoteDialog
+  open={editingNote !== null}
+  name={editingNote ?? ''}
+  {portalTo}
+  onclose={() => {
+    editingNote = null
     onrelease?.()
   }}
 />

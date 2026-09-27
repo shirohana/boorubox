@@ -12,6 +12,7 @@
   import PlusIcon from '@lucide/svelte/icons/plus'
   import * as ContextMenu from '$lib/components/ui/context-menu'
   import { searchMarkClass, type SearchMark } from './categories'
+  import TagNoteIndicator from './TagNoteIndicator.svelte'
 
   interface Props {
     name: string
@@ -23,6 +24,11 @@
     nameClass?: string
     /** Absent for a collection row; present, the `?` renders first in the button group. */
     lookup?: { label: string, open: () => void }
+    /**
+     * The tag's note, if it has one (`tag-notes` design D9); the collection
+     * list passes nothing.
+     */
+    note?: string | null
     oninclude: () => void
     onexclude: () => void
     ontoggle: () => void
@@ -35,6 +41,7 @@
     mark,
     nameClass = '',
     lookup,
+    note = null,
     oninclude,
     onexclude,
     ontoggle,
@@ -98,6 +105,7 @@
           >
             {name}
           </button>
+          <TagNoteIndicator {note} />
           <span class="shrink-0 text-muted-foreground tabular-nums">{count}</span>
         </div>
       {/snippet}

@@ -220,6 +220,7 @@ pub fn run() {
             commands::tag_vocabulary,
             commands::set_tag_category,
             commands::set_tag_pinned_group,
+            commands::set_tag_note,
             commands::export_zip,
             commands::trash_images,
             commands::restore_images,

@@ -176,9 +176,10 @@ impl rusqlite::types::FromSql for TagCategory {
     }
 }
 
-/// One tag outside the `(general, unpinned)` default: its name, its category
-/// and the group it is pinned into, `None` for a tag that is not pinned —
-/// the vocabulary's own row (`tag-vocabulary`/`pinned-tag-groups` design D2).
+/// One tag outside the `(general, unpinned)` default: its name, its category,
+/// the group it is pinned into (`None` for a tag that is not pinned) and its
+/// note (`None` for a tag with no note) — the vocabulary's own row
+/// (`tag-vocabulary`/`pinned-tag-groups` design D2, `tag-notes` design D1).
 /// What `tag_vocabulary` answers with, what `library.json`'s `tags` key
 /// lists, and what a rebuild restores onto the row verbatim.
 #[derive(Debug, Clone, PartialEq)]
@@ -186,38 +187,60 @@ pub struct TagEntry {
     pub name: String,
     pub category: TagCategory,
     pub pinned_group: Option<u32>,
+    pub note: Option<String>,
+}
+
+/// Trim both ends and map an empty result to `None` (`tag-notes` design D2):
+/// the one normaliser between free text and a stored note, called by
+/// [`crate::tags::set_note`] and by `TagEntry`'s `Deserialize`, so a
+/// hand-edited `"note": "  "` in `library.json` restores as no note. Inner
+/// newlines stay — only the ends are trimmed.
+pub fn normalized_note(text: Option<&str>) -> Option<String> {
+    let trimmed = text?.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
+    }
 }
 
 /// Hand-written rather than derived (review finding on `aa38dda`,
-/// `pinned-tag-groups` design D2): a build before this change has
+/// `pinned-tag-groups` design D2, and `tag-notes` design D2): a build before
+/// this change has
 /// `TagEntry { name, category, pinned: bool }` with `pinned` required — no
 /// `#[serde(default)]` — so a `library.json` this build writes has to keep
 /// carrying that key or that older build's `read_library` fails on the
 /// whole file, not just the vocabulary: rules, sites, note, collections and
 /// stamps are lost along with it on the next rebuild it runs. `pinnedGroup`
 /// is written for this build and any later one; `pinned` is computed from
-/// it (`pinned_group.is_some()`) and kept only for the older reader.
+/// it (`pinned_group.is_some()`) and kept only for the older reader. `note`
+/// is written always, `null` when there is none: an older build's `Raw` has
+/// no field for it and ignores the unknown key, same as any key it predates.
 impl Serialize for TagEntry {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         use serde::ser::SerializeStruct;
-        let mut state = serializer.serialize_struct("TagEntry", 4)?;
+        let mut state = serializer.serialize_struct("TagEntry", 5)?;
         state.serialize_field("name", &self.name)?;
         state.serialize_field("category", &self.category)?;
         state.serialize_field("pinnedGroup", &self.pinned_group)?;
         state.serialize_field("pinned", &self.pinned_group.is_some())?;
+        state.serialize_field("note", &self.note)?;
         state.end()
     }
 }
 
-/// Hand-written rather than derived (`pinned-tag-groups` design D2): a
-/// `library.json` written before groups existed carries `"pinned":
-/// true|false` and no `pinnedGroup` key at all. `pinned: true` reads as
-/// `Some(1)` — every pin that existed before groups did becomes group 1, the
-/// owner's "at begin I only have one default group #1" — and `pinned: false`
-/// or an absent key reads as `None`. A file written by this version or later
-/// carries `pinnedGroup` directly and that key wins when both are present;
-/// `pinnedGroup: 0` reads as `None` too — `0` names no group, and D2 gives
-/// unpinned only one value.
+/// Hand-written rather than derived (`pinned-tag-groups` design D2, extended
+/// by `tag-notes` design D2): a `library.json` written before groups existed
+/// carries `"pinned": true|false` and no `pinnedGroup` key at all. `pinned:
+/// true` reads as `Some(1)` — every pin that existed before groups did
+/// becomes group 1, the owner's "at begin I only have one default group #1"
+/// — and `pinned: false` or an absent key reads as `None`. A file written by
+/// this version or later carries `pinnedGroup` directly and that key wins
+/// when both are present; `pinnedGroup: 0` reads as `None` too — `0` names no
+/// group, and D2 gives unpinned only one value. `note` is `#[serde(default)]`
+/// so a file written before this change, with no key at all, reads as no
+/// note; whatever is there is run through [`normalized_note`] so a
+/// hand-edited blank string reads as no note too, same as [`crate::tags::set_note`].
 impl<'de> Deserialize<'de> for TagEntry {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         #[derive(Deserialize)]
@@ -229,6 +252,8 @@ impl<'de> Deserialize<'de> for TagEntry {
             pinned_group: Option<u32>,
             #[serde(default)]
             pinned: bool,
+            #[serde(default)]
+            note: Option<String>,
         }
 
         let raw = Raw::deserialize(deserializer)?;
@@ -240,6 +265,7 @@ impl<'de> Deserialize<'de> for TagEntry {
             name: raw.name,
             category: raw.category,
             pinned_group,
+            note: normalized_note(raw.note.as_deref()),
         })
     }
 }
@@ -300,26 +326,64 @@ pub struct ArtistEntry {
     pub urls: Vec<String>,
 }
 
-/// What `rename_artist_preview` takes: the image's own record
-/// (`artist-entries` design D5), so the one URL it answers with is exactly
-/// the profile URL a capture from this image would match against. `adapter`
-/// carries `null` rather than being omitted when there is none.
+/// What `artist_preview` takes: the tag being edited and, when the dialog was
+/// opened from an image, that image's own record (`artist-workflow` design
+/// D3) — `adapter` carries `null` rather than being omitted when there is
+/// none, and is `null` whenever the dialog opens from the sidebar row or the
+/// pinned chip, which have no image in scope.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct RenameArtistPreviewInput {
-    pub from: String,
+pub struct ArtistPreviewInput {
+    pub tag: String,
     pub adapter: Option<SiteAdapterRecord>,
 }
 
-/// What `rename_artist_preview` answers with: how many images carry `from`
-/// (trash included) and the candidate URLs a rename would prefill, each shown
-/// with a scheme (`artist-entries` design D5) — the webview never builds a
-/// profile URL itself, so what it shows is exactly what the match would read.
+/// What `artist_preview` answers with (`artist-workflow` design D3):
+/// `carriers` is the tag's carrier count (trash included); `urls` is the
+/// tag's entry's stored URLs, each shown with a scheme, empty for a tag with
+/// no entry; `candidate` is the image's own profile URL, shown with a scheme,
+/// or `null` when there is no adapter, no profile URL, or any entry —
+/// this one or another — already owns it.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct RenameArtistPreview {
+pub struct ArtistPreview {
     pub carriers: i64,
     pub urls: Vec<String>,
+    pub candidate: Option<String>,
+}
+
+/// What `artist_match` answers with (`artist-workflow` design D5): `url` is
+/// the image's own profile URL, shown with a scheme; `owner` is the tag of
+/// the entry that owns it, `null` for nobody yet; `derived` is the artist tag
+/// a capture from this record derives regardless of any entry. `artist_match`
+/// itself answers `null` — not this type — for a record with no profile URL
+/// at all.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ArtistMatch {
+    pub url: String,
+    pub owner: Option<String>,
+    pub derived: Option<String>,
+}
+
+/// What `artists_apply_preview` answers with (`artist-workflow` design D6):
+/// how many stored images (trash excluded) come from the given URLs, and how
+/// many of them carry no artist tag at all.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ArtistApplyPreview {
+    pub images: i64,
+    pub untagged: i64,
+}
+
+/// What `artists_apply` answers with (`artist-workflow` design D6): how many
+/// images it tagged, and how many it left because they already carried the
+/// tag.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ArtistApplyReport {
+    pub tagged: i64,
+    pub skipped: i64,
 }
 
 /// What `rename_artist` takes (`artist-entries` design D5).
@@ -1316,21 +1380,24 @@ mod tests {
         );
     }
 
-    /// `tag-vocabulary`/`pinned-tag-groups` task 1.2: the wire spelling a
-    /// hand-mirrored rename would silently break — camelCase keys, every
-    /// category its own lower-case name in both directions, and
-    /// `pinnedGroup` a plain number.
+    /// `tag-vocabulary`/`pinned-tag-groups` task 1.2, extended by `tag-notes`
+    /// task 1.2: the wire spelling a hand-mirrored rename would silently
+    /// break — camelCase keys, every category its own lower-case name in
+    /// both directions, `pinnedGroup` a plain number and `note` a plain
+    /// string.
     #[test]
     fn a_tag_entry_crosses_the_wire_in_camel_case_with_lowercase_categories() {
         let entry = TagEntry {
             name: "kantoku".to_string(),
             category: TagCategory::Artist,
             pinned_group: Some(2),
+            note: Some("confirmed handle".to_string()),
         };
         assert_eq!(
             serde_json::to_value(&entry).unwrap(),
             serde_json::json!({
-                "name": "kantoku", "category": "artist", "pinnedGroup": 2, "pinned": true
+                "name": "kantoku", "category": "artist", "pinnedGroup": 2, "pinned": true,
+                "note": "confirmed handle",
             }),
         );
 
@@ -1349,11 +1416,12 @@ mod tests {
         }
     }
 
-    /// `artist-entries` task 1.3: the wire spelling a hand-mirrored rename
-    /// would silently break — camelCase keys throughout, and `adapter`
-    /// present as `null` rather than omitted when there is none.
+    /// `artist-entries` task 1.3, extended by `artist-workflow` task 1.5: the
+    /// wire spelling a hand-mirrored type would silently break — camelCase
+    /// keys throughout, and `adapter` present as `null` rather than omitted
+    /// when there is none.
     #[test]
-    fn artist_entry_and_rename_types_cross_the_wire_in_camel_case() {
+    fn artist_types_cross_the_wire_in_camel_case() {
         let entry = ArtistEntry {
             tag: "metaljelly".to_string(),
             urls: vec!["x.com/metaljelly0811".to_string()],
@@ -1363,8 +1431,8 @@ mod tests {
             serde_json::json!({ "tag": "metaljelly", "urls": ["x.com/metaljelly0811"] }),
         );
 
-        let preview_input = RenameArtistPreviewInput {
-            from: "metaljelly0811".to_string(),
+        let preview_input = ArtistPreviewInput {
+            tag: "metaljelly0811".to_string(),
             adapter: Some(SiteAdapterRecord {
                 site: "x".to_string(),
                 fields: serde_json::json!({ "handle": "metaljelly0811" }),
@@ -1373,26 +1441,63 @@ mod tests {
         assert_eq!(
             serde_json::to_value(&preview_input).unwrap(),
             serde_json::json!({
-                "from": "metaljelly0811",
+                "tag": "metaljelly0811",
                 "adapter": { "site": "x", "fields": { "handle": "metaljelly0811" } },
             }),
         );
-        let no_adapter = RenameArtistPreviewInput {
-            from: "someone".to_string(),
+        let no_adapter = ArtistPreviewInput {
+            tag: "someone".to_string(),
             adapter: None,
         };
         assert_eq!(
             serde_json::to_value(&no_adapter).unwrap(),
-            serde_json::json!({ "from": "someone", "adapter": null }),
+            serde_json::json!({ "tag": "someone", "adapter": null }),
         );
 
-        let preview = RenameArtistPreview {
+        let preview = ArtistPreview {
             carriers: 120,
             urls: vec!["https://x.com/metaljelly0811".to_string()],
+            candidate: Some("https://x.com/metaljelly_sub".to_string()),
         };
         assert_eq!(
             serde_json::to_value(&preview).unwrap(),
-            serde_json::json!({ "carriers": 120, "urls": ["https://x.com/metaljelly0811"] }),
+            serde_json::json!({
+                "carriers": 120,
+                "urls": ["https://x.com/metaljelly0811"],
+                "candidate": "https://x.com/metaljelly_sub",
+            }),
+        );
+
+        let matched = ArtistMatch {
+            url: "https://x.com/metaljelly0811".to_string(),
+            owner: Some("metaljelly".to_string()),
+            derived: Some("metaljelly0811".to_string()),
+        };
+        assert_eq!(
+            serde_json::to_value(&matched).unwrap(),
+            serde_json::json!({
+                "url": "https://x.com/metaljelly0811",
+                "owner": "metaljelly",
+                "derived": "metaljelly0811",
+            }),
+        );
+
+        let apply_preview = ArtistApplyPreview {
+            images: 8,
+            untagged: 3,
+        };
+        assert_eq!(
+            serde_json::to_value(apply_preview).unwrap(),
+            serde_json::json!({ "images": 8, "untagged": 3 }),
+        );
+
+        let apply_report = ArtistApplyReport {
+            tagged: 5,
+            skipped: 3,
+        };
+        assert_eq!(
+            serde_json::to_value(apply_report).unwrap(),
+            serde_json::json!({ "tagged": 5, "skipped": 3 }),
         );
 
         let rename_input = RenameArtistInput {
@@ -1470,6 +1575,36 @@ mod tests {
         );
     }
 
+    /// `tag-notes` task 1.2, design D2: a `library.json` written before this
+    /// change has no `note` key at all; `#[serde(default)]` reads that as
+    /// `None`, not a deserialisation failure.
+    #[test]
+    fn a_tag_entry_without_a_note_key_reads_none() {
+        let entry: TagEntry = serde_json::from_value(serde_json::json!({
+            "name": "sky", "category": "general"
+        }))
+        .unwrap();
+        assert_eq!(entry.note, None);
+    }
+
+    /// `tag-notes` task 1.2, design D2: a hand-edited `"note": "  "` (or
+    /// `""`) restores as no note, the same [`normalized_note`] rule
+    /// [`crate::tags::set_note`] applies on write.
+    #[test]
+    fn a_blank_note_reads_none() {
+        let entry: TagEntry = serde_json::from_value(serde_json::json!({
+            "name": "sky", "category": "general", "note": "   "
+        }))
+        .unwrap();
+        assert_eq!(entry.note, None);
+
+        let entry: TagEntry = serde_json::from_value(serde_json::json!({
+            "name": "sky", "category": "general", "note": ""
+        }))
+        .unwrap();
+        assert_eq!(entry.note, None);
+    }
+
     /// Review finding on `aa38dda`: a build before this change deserialises
     /// `TagEntry { name, category, pinned: bool }` with `pinned` required —
     /// no `#[serde(default)]` — so a `library.json` this build writes has to
@@ -1478,6 +1613,9 @@ mod tests {
     /// this locks that a value this build serialises still satisfies a
     /// reader with a required `pinned` (and, since a plain `Option<u32>`
     /// field is itself required unless defaulted, a required `pinnedGroup`).
+    /// The old reader has no field for `note` and still parses an entry
+    /// that carries one: an unknown key is ignored, not refused, with no
+    /// `deny_unknown_fields` anywhere on this type.
     #[test]
     fn a_serialised_tag_entry_still_satisfies_an_old_readers_required_pinned_field() {
         #[derive(Deserialize)]
@@ -1494,9 +1632,10 @@ mod tests {
             name: "kantoku".to_string(),
             category: TagCategory::Artist,
             pinned_group: Some(2),
+            note: Some("confirmed handle".to_string()),
         };
         let old: OldTagEntry = serde_json::from_value(serde_json::to_value(&entry).unwrap())
-            .expect("an old reader's required `pinned` and `pinnedGroup` are both present");
+            .expect("an old reader's required `pinned` and `pinnedGroup` are both present, `note` ignored");
         assert!(old.pinned);
         assert_eq!(old.pinned_group, Some(2));
 
@@ -1504,6 +1643,7 @@ mod tests {
             name: "tagme".to_string(),
             category: TagCategory::General,
             pinned_group: None,
+            note: None,
         };
         let old: OldTagEntry = serde_json::from_value(serde_json::to_value(&unpinned).unwrap())
             .expect("an old reader's required `pinned` and `pinnedGroup` are both present");

@@ -20,6 +20,7 @@
   import { CATEGORY_ICON, CATEGORY_TEXT_CLASS, searchMark } from './categories'
   import { openDanbooruLookup } from './danbooru-open'
   import FilterRow from './FilterRow.svelte'
+  import TagNoteDialog from './TagNoteDialog.svelte'
   import TagVocabularyMenuItems from './TagVocabularyMenuItems.svelte'
 
   interface Props {
@@ -73,6 +74,14 @@
     const lookup = danbooruLookup(name, vocabulary.categoryOf(name))
     return { label: lookup.label, open: () => openDanbooruLookup(lookup) }
   }
+
+  /**
+   * The tag `TagNoteDialog` is open for — the name, snapshotted when "Edit
+   * note…" is chosen (`tag-notes` design D10), the `renamingArtist` pattern
+   * `Inspector.svelte` uses for the same reason: the dialog cannot live
+   * inside `TagVocabularyMenuItems` (its content unmounts on select).
+   */
+  let editingNote = $state<string | null>(null)
 </script>
 
 <!--
@@ -143,15 +152,27 @@
           mark={searchMark(name, included, excluded)}
           nameClass={CATEGORY_TEXT_CLASS[vocabulary.categoryOf(name)]}
           lookup={tagLookup(name)}
+          note={vocabulary.noteOf(name)}
           oninclude={() => onquery(addTagToQuery(tagQuery, name))}
           onexclude={() => onquery(excludeTagFromQuery(tagQuery, name))}
           ontoggle={() => onquery(toggleTagInQuery(tagQuery, name))}
         >
           {#snippet menu()}
-            <TagVocabularyMenuItems {name} />
+            <TagVocabularyMenuItems {name} oneditnote={(tag) => (editingNote = tag)} />
           {/snippet}
         </FilterRow>
       {/each}
     </ul>
   {/if}
 </section>
+
+<!--
+  Outside the menu above, mounted unconditionally, the `CollectionNameDialog`
+  shape (see `TagNoteDialog`'s own doc comment for why). No `portalTo`: this
+  section is never inside the viewer.
+-->
+<TagNoteDialog
+  open={editingNote !== null}
+  name={editingNote ?? ''}
+  onclose={() => (editingNote = null)}
+/>

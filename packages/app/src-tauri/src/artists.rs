@@ -11,9 +11,10 @@ use crate::error::{AppError, Result};
 use crate::ingest;
 use crate::library::Library;
 use crate::model::{
-    ArtistEntry, RenameArtistInput, RenameArtistPreview, RenameArtistPreviewInput,
-    RenameArtistReport, SiteAdapterRecord, TagCategory,
+    ArtistApplyPreview, ArtistApplyReport, ArtistEntry, ArtistMatch, ArtistPreview,
+    ArtistPreviewInput, RenameArtistInput, RenameArtistReport, SiteAdapterRecord, TagCategory,
 };
+use crate::query::{ID_CHUNK, placeholders};
 use crate::tags;
 
 // ---------------------------------------------------------------------------
@@ -138,8 +139,9 @@ fn profile_url(adapter: &SiteAdapterRecord) -> Option<String> {
 /// The one candidate a capture's record offers for matching (design D4): its
 /// own profile URL ([`profile_url`]), normalised — `None` for a site with no
 /// profile field the app reads, a missing or non-text field, a URL that does
-/// not normalise, or no record at all (`rename_preview`'s own call, over an
-/// image with no adapter record). The page URL and the record's `postUrl`
+/// not normalise, or no record at all (`preview`'s own call, over a tag with
+/// no entry or a menu opened with no image in scope). The page URL and the
+/// record's `postUrl`
 /// are not read here: the page URL is the tab's address, which on X is often
 /// the timeline or another user's profile when a repost is captured, and the
 /// post URL names the same handle the profile URL already does — an entry
@@ -149,15 +151,27 @@ pub fn candidate(adapter: Option<&SiteAdapterRecord>) -> Option<String> {
     normalized(&profile_url(adapter?)?)
 }
 
+/// The entry that owns `candidate` (already normalised) — among several
+/// owning entries (nested prefixes), the one with the longest owning URL, the
+/// most specific (design D3, extracted from [`derive`] so [`preview`],
+/// [`artist_match`] and `derive` share the one answer to "who owns this
+/// URL"). `None` when no entry owns it.
+pub fn owning_entry<'a>(candidate: &str, entries: &'a [ArtistEntry]) -> Option<&'a ArtistEntry> {
+    entries
+        .iter()
+        .flat_map(|entry| entry.urls.iter().map(move |url| (entry, url.as_str())))
+        .filter(|(_, entry_url)| owns(entry_url, candidate))
+        .max_by_key(|(_, entry_url)| entry_url.len())
+        .map(|(entry, _)| entry)
+}
+
 /// The artist tag a capture with `adapter` should carry (design D4): the tag
-/// of the entry that owns [`candidate`]'s answer — among several owning
-/// entries (nested prefixes), the one with the longest owning URL, the most
-/// specific. That entry is skipped in favour of the fallback when its tag
-/// exists under a category other than artist (`upsert` and `rename` refuse
-/// creating one that way, but `set_category` can change a tag afterwards) —
-/// a capture never loses its artist tag to a stale entry. With no owning
-/// entry, or no candidate at all, the answer is [`artist_tag`]'s guess from
-/// the record alone.
+/// of the entry [`owning_entry`] finds for [`candidate`]'s answer. That entry
+/// is skipped in favour of the fallback when its tag exists under a category
+/// other than artist (`upsert` and `rename` refuse creating one that way, but
+/// `set_category` can change a tag afterwards) — a capture never loses its
+/// artist tag to a stale entry. With no owning entry, or no candidate at all,
+/// the answer is [`artist_tag`]'s guess from the record alone.
 pub fn derive(
     conn: &Connection,
     adapter: &SiteAdapterRecord,
@@ -166,13 +180,8 @@ pub fn derive(
     let Some(candidate) = candidate(Some(adapter)) else {
         return Ok(artist_tag(adapter));
     };
-    let owning = entries
-        .iter()
-        .flat_map(|entry| entry.urls.iter().map(move |url| (entry, url.as_str())))
-        .filter(|(_, entry_url)| owns(entry_url, &candidate))
-        .max_by_key(|(_, entry_url)| entry_url.len());
-    let owned_by_an_artist_tag = match owning {
-        Some((entry, _)) => match tags::existing_tag_category(conn, &entry.tag)? {
+    let owned_by_an_artist_tag = match owning_entry(&candidate, entries) {
+        Some(entry) => match tags::existing_tag_category(conn, &entry.tag)? {
             Some(category) if category != TagCategory::Artist => None,
             _ => Some(entry.tag.clone()),
         },
@@ -302,24 +311,59 @@ pub fn delete(library: &Library, tag: &str) -> Result<Vec<ArtistEntry>> {
 }
 
 // ---------------------------------------------------------------------------
-// Rename (design D5)
+// Preview and match (design D3, D5)
 // ---------------------------------------------------------------------------
 
-/// The carrier count (trash included) and the one profile URL [`derive`]
-/// would read from this image, if any (design D4, D5): the webview never
-/// builds a profile URL itself, so what the dialog prefills is exactly what
-/// the match will read.
-pub fn rename_preview(
-    conn: &Connection,
-    input: &RenameArtistPreviewInput,
-) -> Result<RenameArtistPreview> {
-    let from = tags::canonical(&input.from);
-    let carriers = carrier_count(conn, &from)?;
-    let urls = candidate(input.adapter.as_ref())
-        .into_iter()
-        .map(|url| format!("https://{url}"))
-        .collect();
-    Ok(RenameArtistPreview { carriers, urls })
+/// The entry's own URLs, the carrier count (trash included), and the image's
+/// own profile URL as a further candidate line — replacing `rename_preview`
+/// (design D3): `carriers` and `urls` name the tag alone, so the dialog can
+/// open on a sidebar row or a pinned chip with no image in scope; `candidate`
+/// is `None` for a tag with no adapter, no profile URL, or a URL **any**
+/// entry already owns — this one (already in `urls`) or another, where
+/// appending it could only end in the "already owned by" refusal, and the
+/// Artist row (design D5) already says which artist that is.
+pub fn preview(conn: &Connection, input: &ArtistPreviewInput) -> Result<ArtistPreview> {
+    let tag = tags::canonical(&input.tag);
+    let carriers = carrier_count(conn, &tag)?;
+    let entries = list(conn)?;
+    let urls = entries
+        .iter()
+        .find(|entry| entry.tag == tag)
+        .map(|entry| {
+            entry
+                .urls
+                .iter()
+                .map(|url| format!("https://{url}"))
+                .collect()
+        })
+        .unwrap_or_default();
+    let candidate = candidate(input.adapter.as_ref())
+        .filter(|candidate| owning_entry(candidate, &entries).is_none());
+    Ok(ArtistPreview {
+        carriers,
+        urls,
+        candidate: candidate.map(|candidate| format!("https://{candidate}")),
+    })
+}
+
+/// The image's own profile URL, the entry that owns it (if any), and the
+/// artist tag a capture from this record derives regardless of any entry
+/// (design D5) — `None` when the record yields no profile URL at all.
+/// Ownership does not consult the owning entry's category the way [`derive`]
+/// does: the row this backs names who owns the URL as the vocabulary has it
+/// today, and a stale category is fixed where it is listed (Settings →
+/// Artists), not hidden from the chip.
+pub fn artist_match(conn: &Connection, adapter: &SiteAdapterRecord) -> Result<Option<ArtistMatch>> {
+    let Some(candidate) = candidate(Some(adapter)) else {
+        return Ok(None);
+    };
+    let entries = list(conn)?;
+    let owner = owning_entry(&candidate, &entries).map(|entry| entry.tag.clone());
+    Ok(Some(ArtistMatch {
+        url: format!("https://{candidate}"),
+        owner,
+        derived: artist_tag(adapter),
+    }))
 }
 
 fn carrier_count(conn: &Connection, tag_name: &str) -> Result<i64> {
@@ -353,10 +397,11 @@ fn carrier_ids(conn: &Connection, tag_name: &str) -> Result<Vec<String>> {
 /// `input.urls` are deduped by [`normalize_all`].
 ///
 /// With no `to` row yet, the `from` row is renamed in place — keeping its id,
-/// its pinned group and every `image_tags` link (`merged: false`). With `to`
-/// already an artist tag, the carriers' links move onto it (`INSERT OR
-/// IGNORE`, so an image already carrying both is left linked once), a pinned
-/// group on `from` moves over only if `to` has none, and the now carrier-less
+/// its pinned group, its note and every `image_tags` link (`merged: false`).
+/// With `to` already an artist tag, the carriers' links move onto it
+/// (`INSERT OR IGNORE`, so an image already carrying both is left linked
+/// once), a pinned group and a note on `from` each move over only if `to`
+/// has none of its own (`tag-notes` design D5), and the now carrier-less
 /// `from` row is deleted (`merged: true`) — the point being that the old name
 /// never survives the merge as a row nothing carries.
 ///
@@ -444,6 +489,19 @@ pub fn rename(library: &Library, input: &RenameArtistInput) -> Result<RenameArti
                 params![from_pinned_group, to_id],
             )?;
         }
+        // The note on the handle is what the merge is confirming
+        // (`tag-notes` design D5), the same rule as the pinned group above:
+        // carried over only when the target has none of its own.
+        let from_note: Option<String> =
+            tx.query_row("SELECT note FROM tags WHERE id = ?1", [from_id], |row| {
+                row.get(0)
+            })?;
+        if from_note.is_some() {
+            tx.execute(
+                "UPDATE tags SET note = ?1 WHERE id = ?2 AND note IS NULL",
+                params![from_note, to_id],
+            )?;
+        }
         tx.execute("DELETE FROM tags WHERE id = ?1", params![from_id])?;
         tags::compact_groups(&tx)?;
     } else {
@@ -467,6 +525,137 @@ pub fn rename(library: &Library, input: &RenameArtistInput) -> Result<RenameArti
         retagged: carriers.len() as i64,
         merged,
     })
+}
+
+// ---------------------------------------------------------------------------
+// Applying an entry to stored images (design D6)
+// ---------------------------------------------------------------------------
+
+/// Every non-deleted image whose record's own profile URL (design D4) some
+/// URL in `owned_urls` (already normalised) owns — the one scan [`preview`]
+/// (via `apply_preview`) and [`apply`] both read, so "images from these
+/// URLs" has one answer. A record that does not parse as JSON, or yields no
+/// candidate, is skipped rather than failing the scan.
+fn from_profiles(conn: &Connection, owned_urls: &[String]) -> Result<Vec<String>> {
+    let mut stmt = conn.prepare("SELECT id, adapter_json FROM images WHERE deleted_at IS NULL")?;
+    let rows = stmt.query_map([], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?))
+    })?;
+    let mut ids = Vec::new();
+    for row in rows {
+        let (id, adapter_json) = row?;
+        let Some(adapter_json) = adapter_json else {
+            continue;
+        };
+        let Ok(adapter) = serde_json::from_str::<SiteAdapterRecord>(&adapter_json) else {
+            continue;
+        };
+        let Some(candidate) = candidate(Some(&adapter)) else {
+            continue;
+        };
+        if owned_urls.iter().any(|url| owns(url, &candidate)) {
+            ids.push(id);
+        }
+    }
+    Ok(ids)
+}
+
+/// How many stored images `urls` would reach and how many of them carry no
+/// artist tag at all (design D6): `urls` as the caller gives them — typed
+/// into a form, mid-edit — so a line that does not normalise is ignored
+/// rather than refusing the whole preview.
+pub fn apply_preview(conn: &Connection, urls: &[String]) -> Result<ArtistApplyPreview> {
+    let owned: Vec<String> = urls.iter().filter_map(|url| normalized(url)).collect();
+    let ids = from_profiles(conn, &owned)?;
+    let untagged = count_carrying_no_artist_tag(conn, &ids)?;
+    Ok(ArtistApplyPreview {
+        images: ids.len() as i64,
+        untagged,
+    })
+}
+
+fn count_carrying_no_artist_tag(conn: &Connection, ids: &[String]) -> Result<i64> {
+    let mut count = 0i64;
+    for chunk in ids.chunks(ID_CHUNK) {
+        let in_list = placeholders(chunk.len());
+        let sql = format!(
+            "SELECT COUNT(*) FROM images
+             WHERE id IN ({in_list})
+             AND id NOT IN (
+                 SELECT image_tags.image_id FROM image_tags
+                 JOIN tags ON tags.id = image_tags.tag_id
+                 WHERE tags.category = 'artist'
+             )"
+        );
+        count += conn.query_row(&sql, rusqlite::params_from_iter(chunk), |row| {
+            row.get::<_, i64>(0)
+        })?;
+    }
+    Ok(count)
+}
+
+/// Add `tag` — an existing artist entry's tag — as an artist tag to every
+/// image [`from_profiles`] finds for that entry's URLs, unless it carries the
+/// tag already (design D6): refused before any write when `tag` has no entry
+/// (`AppError::NotFound`) or exists under a category other than artist
+/// (`tags::category_conflict`, the same check [`derive`] makes, so apply
+/// never links an image under a general or character tag). One transaction —
+/// the owner's largest artist is hundreds of images, the scale `rename`
+/// already writes in one. Trash is excluded, unlike `rename`: apply only
+/// adds, so a trashed image loses nothing by being left out and restores as
+/// it was.
+pub fn apply(library: &Library, tag: &str) -> Result<ArtistApplyReport> {
+    let tag = tags::canonical(tag);
+
+    let tx = library.conn.unchecked_transaction()?;
+
+    let entries = list(&tx)?;
+    let urls = entries
+        .iter()
+        .find(|entry| entry.tag == tag)
+        .map(|entry| entry.urls.clone())
+        .ok_or_else(|| AppError::NotFound(format!("artist entry {tag}")))?;
+    if let Some(category) = tags::existing_tag_category(&tx, &tag)?
+        && category != TagCategory::Artist
+    {
+        return Err(tags::category_conflict(&tag, category, TagCategory::Artist));
+    }
+
+    let ids = from_profiles(&tx, &urls)?;
+    let text = tags::read_metatags(&[format!("artist:{tag}")]);
+    let mut tagged_ids = Vec::new();
+    let mut tagged = 0i64;
+    let mut skipped = 0i64;
+    let mut categorised = false;
+    for id in &ids {
+        let already: bool = tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM image_tags
+             JOIN tags ON tags.id = image_tags.tag_id
+             WHERE image_tags.image_id = ?1 AND tags.name = ?2)",
+            params![id, &tag],
+            |row| row.get(0),
+        )?;
+        if already {
+            skipped += 1;
+            continue;
+        }
+        categorised |= tags::link_tags(&tx, id, &text, tags::Conflict::Keep)?;
+        tags::mark_updated(&tx, id, None)?;
+        tagged += 1;
+        tagged_ids.push(id.clone());
+    }
+    tx.commit()?;
+
+    // After the commit, never inside it (`library-sidecars` design D4, D5).
+    if !tagged_ids.is_empty() {
+        let records = ingest::load_records(&library.conn, &tagged_ids)?;
+        crate::sidecar::write_for_records(&library.paths, &records)?;
+    }
+    if categorised {
+        crate::sidecar::write_library(&library.paths, &library.conn)?;
+    }
+
+    Ok(ArtistApplyReport { tagged, skipped })
 }
 
 #[cfg(test)]
@@ -631,6 +820,26 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let library = Library::open_or_create(dir.path()).unwrap();
         (dir, library)
+    }
+
+    // ---- owning_entry (task 1.1) ----
+
+    #[test]
+    fn owning_entry_picks_the_longest_of_two_nested_owners() {
+        let entries = vec![entry("a", &["x.com/foo"]), entry("b", &["x.com/foo/bar"])];
+        let candidate = normalized("https://x.com/foo/bar").unwrap();
+
+        let owner = owning_entry(&candidate, &entries);
+
+        assert_eq!(owner.map(|entry| entry.tag.as_str()), Some("b"));
+    }
+
+    #[test]
+    fn owning_entry_answers_none_for_the_neighbour() {
+        let entries = vec![entry("a", &["x.com/metaljelly0811"])];
+        let candidate = normalized("https://x.com/metaljelly08110").unwrap();
+
+        assert_eq!(owning_entry(&candidate, &entries), None);
     }
 
     // ---- derive (task 1.1; finding 2: category refusals) ----
@@ -866,6 +1075,7 @@ mod tests {
         store_captured(&library, "a", &["artist:metaljelly0811"]);
         store_captured(&library, "b", &["artist:metaljelly0811"]);
         tags::place_pinned(&library, "metaljelly0811", PinTarget::Group(1)).unwrap();
+        tags::set_note(&library, "metaljelly0811", Some("also posts as jelly")).unwrap();
 
         let report = rename(
             &library,
@@ -899,6 +1109,15 @@ mod tests {
             )
             .unwrap();
         assert_eq!(group, 1);
+        let note: Option<String> = library
+            .conn
+            .query_row(
+                "SELECT note FROM tags WHERE name = 'metaljelly'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(note, Some("also posts as jelly".to_string()));
         assert_eq!(
             list(&library.conn).unwrap()[0].urls,
             vec!["x.com/metaljelly0811".to_string()]
@@ -981,6 +1200,61 @@ mod tests {
             vec![1, 2],
             "compact_groups leaves no gap where kantoku_(pixiv)'s row was"
         );
+    }
+
+    /// `tag-notes` design D5, the pinned-group rule beside it: a merge
+    /// carries `from`'s note onto `to` only when `to` has none of its own —
+    /// the owner's note on the handle is what the merge is confirming, but a
+    /// note `to` already carries is not silently overwritten.
+    #[test]
+    fn a_merge_carries_the_note_when_the_target_has_none_and_keeps_the_targets_own() {
+        let (_dir, library) = library();
+        store_captured(&library, "a", &["artist:kantoku_(pixiv)"]);
+        store_captured(&library, "b", &["artist:kantoku"]);
+        tags::set_note(&library, "kantoku_(pixiv)", Some("danbooru: kantoku")).unwrap();
+
+        rename(
+            &library,
+            &RenameArtistInput {
+                from: "kantoku_(pixiv)".to_string(),
+                to: "kantoku".to_string(),
+                urls: vec![],
+            },
+        )
+        .unwrap();
+
+        let note: Option<String> = library
+            .conn
+            .query_row("SELECT note FROM tags WHERE name = 'kantoku'", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(note, Some("danbooru: kantoku".to_string()));
+
+        // The other order: `to` already has a note of its own, `from`'s is
+        // never overwritten onto it.
+        store_captured(&library, "c", &["artist:someone_(twitter)"]);
+        store_captured(&library, "d", &["artist:someone"]);
+        tags::set_note(&library, "someone_(twitter)", Some("stale, never applied")).unwrap();
+        tags::set_note(&library, "someone", Some("the target's own note")).unwrap();
+
+        rename(
+            &library,
+            &RenameArtistInput {
+                from: "someone_(twitter)".to_string(),
+                to: "someone".to_string(),
+                urls: vec![],
+            },
+        )
+        .unwrap();
+
+        let note: Option<String> = library
+            .conn
+            .query_row("SELECT note FROM tags WHERE name = 'someone'", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(note, Some("the target's own note".to_string()));
     }
 
     #[test]
@@ -1190,23 +1464,25 @@ mod tests {
         );
     }
 
-    // ---- rename_preview (task 1.6) ----
+    // ---- preview (task 1.2, replacing rename_preview) ----
 
     #[test]
-    fn preview_counts_trash_and_lists_the_profile_url_with_a_scheme() {
+    fn artist_preview_lists_the_entrys_urls_and_counts_trash() {
         let (_dir, library) = library();
-        store_captured(&library, "a", &["metaljelly0811"]);
-        store_captured(&library, "b", &["metaljelly0811"]);
+        store_captured(&library, "a", &["artist:metaljelly"]);
+        store_captured(&library, "b", &["artist:metaljelly"]);
         crate::trash::trash_images(&library, &["b".to_string()]).unwrap();
+        upsert(
+            &library,
+            &entry("metaljelly", &["https://x.com/metaljelly0811"]),
+        )
+        .unwrap();
 
-        let preview = rename_preview(
+        let preview = preview(
             &library.conn,
-            &RenameArtistPreviewInput {
-                from: "metaljelly0811".to_string(),
-                adapter: Some(adapter(
-                    "x",
-                    serde_json::json!({ "handle": "metaljelly0811" }),
-                )),
+            &ArtistPreviewInput {
+                tag: "metaljelly".to_string(),
+                adapter: None,
             },
         )
         .unwrap();
@@ -1216,25 +1492,463 @@ mod tests {
             preview.urls,
             vec!["https://x.com/metaljelly0811".to_string()]
         );
+        assert_eq!(preview.candidate, None, "no adapter, no candidate");
     }
 
     #[test]
-    fn preview_has_no_url_for_a_record_with_no_profile_url() {
+    fn artist_preview_offers_an_unowned_candidate() {
+        let (_dir, library) = library();
+        let record = adapter("x", serde_json::json!({ "handle": "alice_art" }));
+
+        let preview = preview(
+            &library.conn,
+            &ArtistPreviewInput {
+                tag: "alice_art".to_string(),
+                adapter: Some(record),
+            },
+        )
+        .unwrap();
+
+        assert_eq!(
+            preview.candidate,
+            Some("https://x.com/alice_art".to_string())
+        );
+    }
+
+    #[test]
+    fn artist_preview_withholds_a_candidate_this_entry_owns() {
+        let (_dir, library) = library();
+        upsert(
+            &library,
+            &entry("metaljelly", &["https://x.com/metaljelly0811"]),
+        )
+        .unwrap();
+        let record = adapter("x", serde_json::json!({ "handle": "MetalJelly0811" }));
+
+        let preview = preview(
+            &library.conn,
+            &ArtistPreviewInput {
+                tag: "metaljelly".to_string(),
+                adapter: Some(record),
+            },
+        )
+        .unwrap();
+
+        assert_eq!(preview.candidate, None, "already among this entry's urls");
+    }
+
+    #[test]
+    fn artist_preview_withholds_a_candidate_another_entry_owns() {
+        let (_dir, library) = library();
+        upsert(&library, &entry("bob", &["https://x.com/bob_art"])).unwrap();
+        let record = adapter("x", serde_json::json!({ "handle": "bob_art" }));
+
+        let preview = preview(
+            &library.conn,
+            &ArtistPreviewInput {
+                tag: "alice".to_string(),
+                adapter: Some(record),
+            },
+        )
+        .unwrap();
+
+        assert_eq!(preview.candidate, None, "another artist owns it");
+    }
+
+    #[test]
+    fn artist_preview_of_a_tag_without_entry_has_no_urls() {
         let (_dir, library) = library();
         store_captured(&library, "a", &["someone"]);
 
-        let preview = rename_preview(
+        let preview = preview(
             &library.conn,
-            &RenameArtistPreviewInput {
-                from: "someone".to_string(),
-                adapter: Some(adapter(
-                    "danbooru",
-                    serde_json::json!({ "artist": "someone" }),
-                )),
+            &ArtistPreviewInput {
+                tag: "someone".to_string(),
+                adapter: None,
             },
         )
         .unwrap();
 
         assert!(preview.urls.is_empty());
+        assert_eq!(preview.carriers, 1);
+    }
+
+    #[test]
+    fn a_pixiv_record_without_a_user_id_offers_no_candidate_in_the_preview() {
+        let (_dir, library) = library();
+        let record = adapter("pixiv", serde_json::json!({ "artist": "someone" }));
+
+        let preview = preview(
+            &library.conn,
+            &ArtistPreviewInput {
+                tag: "someone".to_string(),
+                adapter: Some(record),
+            },
+        )
+        .unwrap();
+
+        assert_eq!(preview.candidate, None);
+    }
+
+    // ---- artist_match (task 1.3) ----
+
+    #[test]
+    fn artist_match_names_the_owner_and_the_derived_tag() {
+        let (_dir, library) = library();
+        upsert(
+            &library,
+            &entry("metaljelly", &["https://x.com/metaljelly0811"]),
+        )
+        .unwrap();
+        let record = adapter("x", serde_json::json!({ "handle": "MetalJelly0811" }));
+
+        let matched = artist_match(&library.conn, &record).unwrap().unwrap();
+
+        assert_eq!(matched.url, "https://x.com/metaljelly0811");
+        assert_eq!(matched.owner, Some("metaljelly".to_string()));
+        assert_eq!(matched.derived, Some("metaljelly0811".to_string()));
+    }
+
+    #[test]
+    fn artist_match_without_owner_has_only_the_derived_tag() {
+        let (_dir, library) = library();
+        let record = adapter("x", serde_json::json!({ "handle": "alice_art" }));
+
+        let matched = artist_match(&library.conn, &record).unwrap().unwrap();
+
+        assert_eq!(matched.owner, None);
+        assert_eq!(matched.derived, Some("alice_art".to_string()));
+    }
+
+    #[test]
+    fn artist_match_of_a_pixiv_user() {
+        let (_dir, library) = library();
+        let record = adapter(
+            "pixiv",
+            serde_json::json!({ "artist": "someone", "userId": "3439325" }),
+        );
+
+        let matched = artist_match(&library.conn, &record).unwrap().unwrap();
+
+        assert_eq!(matched.url, "https://pixiv.net/users/3439325");
+        assert_eq!(matched.derived, Some("someone".to_string()));
+    }
+
+    #[test]
+    fn artist_match_is_none_without_a_profile_url() {
+        let (_dir, library) = library();
+        let pixiv = adapter("pixiv", serde_json::json!({ "artist": "someone" }));
+        assert_eq!(artist_match(&library.conn, &pixiv).unwrap(), None);
+
+        let danbooru = adapter("danbooru", serde_json::json!({ "artist": "someone" }));
+        assert_eq!(artist_match(&library.conn, &danbooru).unwrap(), None);
+    }
+
+    // ---- apply / apply_preview (task 1.4) ----
+
+    /// Stores a plain, adapter-less image (no capture-time derivation runs),
+    /// then attaches an adapter record directly to the row — an image
+    /// carrying a profile URL but no artist tag of its own, the shape
+    /// `apply`'s own scan (`from_profiles`) has to tell from one that does.
+    fn store_with_adapter(
+        library: &Library,
+        id: &str,
+        site: &str,
+        fields: serde_json::Value,
+        tags: &[&str],
+    ) {
+        store_captured(library, id, tags);
+        let json = serde_json::to_string(&adapter(site, fields)).unwrap();
+        library
+            .conn
+            .execute(
+                "UPDATE images SET adapter_json = ?1 WHERE id = ?2",
+                params![json, id],
+            )
+            .unwrap();
+    }
+
+    #[test]
+    fn apply_tags_only_images_whose_profile_the_entry_owns() {
+        let (_dir, library) = library();
+        store_with_adapter(
+            &library,
+            "a",
+            "x",
+            serde_json::json!({ "handle": "alice_art" }),
+            &[],
+        );
+        store_with_adapter(
+            &library,
+            "b",
+            "x",
+            serde_json::json!({ "handle": "alice_art2" }),
+            &[],
+        );
+        store_with_adapter(
+            &library,
+            "c",
+            "danbooru",
+            serde_json::json!({ "artist": "alice_art" }),
+            &[],
+        );
+        upsert(&library, &entry("alice", &["https://x.com/alice_art"])).unwrap();
+
+        let report = apply(&library, "alice").unwrap();
+
+        assert_eq!(
+            report,
+            ArtistApplyReport {
+                tagged: 1,
+                skipped: 0
+            }
+        );
+        assert_eq!(
+            ingest::require_record(&library.conn, "a").unwrap().tags,
+            vec!["alice".to_string()]
+        );
+        assert!(
+            ingest::require_record(&library.conn, "b")
+                .unwrap()
+                .tags
+                .is_empty()
+        );
+        assert!(
+            ingest::require_record(&library.conn, "c")
+                .unwrap()
+                .tags
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn apply_is_additive() {
+        let (_dir, library) = library();
+        store_with_adapter(
+            &library,
+            "a",
+            "x",
+            serde_json::json!({ "handle": "alice_art" }),
+            &["cat", "artist:alice_art"],
+        );
+        upsert(&library, &entry("alice", &["https://x.com/alice_art"])).unwrap();
+
+        apply(&library, "alice").unwrap();
+
+        assert_eq!(
+            ingest::require_record(&library.conn, "a").unwrap().tags,
+            vec![
+                "alice".to_string(),
+                "alice_art".to_string(),
+                "cat".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn apply_twice_tags_nothing_the_second_time() {
+        let (_dir, library) = library();
+        store_with_adapter(
+            &library,
+            "a",
+            "x",
+            serde_json::json!({ "handle": "alice_art" }),
+            &[],
+        );
+        upsert(&library, &entry("alice", &["https://x.com/alice_art"])).unwrap();
+
+        let first = apply(&library, "alice").unwrap();
+        let second = apply(&library, "alice").unwrap();
+
+        assert_eq!(
+            first,
+            ArtistApplyReport {
+                tagged: 1,
+                skipped: 0
+            }
+        );
+        assert_eq!(
+            second,
+            ArtistApplyReport {
+                tagged: 0,
+                skipped: 1
+            }
+        );
+    }
+
+    #[test]
+    fn apply_leaves_the_trash_alone() {
+        let (_dir, library) = library();
+        store_with_adapter(
+            &library,
+            "a",
+            "x",
+            serde_json::json!({ "handle": "alice_art" }),
+            &[],
+        );
+        crate::trash::trash_images(&library, &["a".to_string()]).unwrap();
+        upsert(&library, &entry("alice", &["https://x.com/alice_art"])).unwrap();
+
+        let report = apply(&library, "alice").unwrap();
+
+        assert_eq!(
+            report,
+            ArtistApplyReport {
+                tagged: 0,
+                skipped: 0
+            }
+        );
+        crate::trash::restore_images(&library, &["a".to_string()]).unwrap();
+        assert!(
+            !ingest::require_record(&library.conn, "a")
+                .unwrap()
+                .tags
+                .contains(&"alice".to_string())
+        );
+    }
+
+    #[test]
+    fn apply_rewrites_the_sidecars_of_the_images_it_tagged() {
+        let (_dir, library) = library();
+        store_with_adapter(
+            &library,
+            "a",
+            "x",
+            serde_json::json!({ "handle": "alice_art" }),
+            &[],
+        );
+        store_with_adapter(
+            &library,
+            "b",
+            "x",
+            serde_json::json!({ "handle": "alice_art2" }),
+            &[],
+        );
+        upsert(&library, &entry("alice", &["https://x.com/alice_art"])).unwrap();
+
+        apply(&library, "alice").unwrap();
+
+        let sidecar_a = crate::sidecar::read(&crate::sidecar::path(&library.paths, "a")).unwrap();
+        assert!(sidecar_a.tags.contains(&"alice".to_string()));
+        let sidecar_b = crate::sidecar::read(&crate::sidecar::path(&library.paths, "b")).unwrap();
+        assert!(
+            !sidecar_b.tags.contains(&"alice".to_string()),
+            "an untouched image's sidecar is unchanged"
+        );
+    }
+
+    #[test]
+    fn apply_moves_updated_at_of_tagged_images_only() {
+        let (_dir, library) = library();
+        store_with_adapter(
+            &library,
+            "a",
+            "x",
+            serde_json::json!({ "handle": "alice_art" }),
+            &[],
+        );
+        store_with_adapter(
+            &library,
+            "b",
+            "x",
+            serde_json::json!({ "handle": "alice_art2" }),
+            &[],
+        );
+        let before = 1_600_000_000_000_i64;
+        for id in ["a", "b"] {
+            library
+                .conn
+                .execute(
+                    "UPDATE images SET updated_at = ?1 WHERE id = ?2",
+                    params![before, id],
+                )
+                .unwrap();
+        }
+        upsert(&library, &entry("alice", &["https://x.com/alice_art"])).unwrap();
+
+        apply(&library, "alice").unwrap();
+
+        let after_a = ingest::require_record(&library.conn, "a")
+            .unwrap()
+            .updated_at;
+        let after_b = ingest::require_record(&library.conn, "b")
+            .unwrap()
+            .updated_at;
+        assert!(after_a > before, "the tagged image's updated_at moves");
+        assert_eq!(after_b, before, "the untouched image's updated_at does not");
+    }
+
+    #[test]
+    fn apply_refuses_a_tag_without_entry() {
+        let (_dir, library) = library();
+        store_captured(&library, "a", &["cat"]);
+
+        let error = apply(&library, "nobody").unwrap_err();
+
+        assert!(matches!(error, AppError::NotFound(_)), "got {error}");
+        assert_eq!(
+            ingest::require_record(&library.conn, "a").unwrap().tags,
+            vec!["cat".to_string()]
+        );
+    }
+
+    #[test]
+    fn apply_refuses_a_tag_of_another_category() {
+        let (_dir, library) = library();
+        upsert(
+            &library,
+            &entry("kani_beam", &["https://www.pixiv.net/users/3439325"]),
+        )
+        .unwrap();
+        store_captured(&library, "seed", &["kani_beam"]);
+        tags::set_category(&library, "kani_beam", TagCategory::General).unwrap();
+        store_captured(&library, "a", &["cat"]);
+
+        let error = apply(&library, "kani_beam").unwrap_err();
+
+        assert!(matches!(error, AppError::BadRequest(_)), "got {error}");
+        assert_eq!(
+            ingest::require_record(&library.conn, "a").unwrap().tags,
+            vec!["cat".to_string()]
+        );
+    }
+
+    #[test]
+    fn apply_preview_counts_images_and_untagged() {
+        let (_dir, library) = library();
+        store_with_adapter(
+            &library,
+            "a",
+            "x",
+            serde_json::json!({ "handle": "alice_art" }),
+            &["artist:alice"],
+        );
+        store_with_adapter(
+            &library,
+            "b",
+            "x",
+            serde_json::json!({ "handle": "alice_art" }),
+            &[],
+        );
+        store_with_adapter(
+            &library,
+            "c",
+            "x",
+            serde_json::json!({ "handle": "alice_art" }),
+            &[],
+        );
+        crate::trash::trash_images(&library, &["c".to_string()]).unwrap();
+
+        let preview = apply_preview(
+            &library.conn,
+            &[
+                "https://x.com/alice_art".to_string(),
+                "not a url".to_string(),
+            ],
+        )
+        .unwrap();
+
+        assert_eq!(preview.images, 2, "trash excluded, the bad URL ignored");
+        assert_eq!(preview.untagged, 1);
     }
 }

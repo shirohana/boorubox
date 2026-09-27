@@ -145,12 +145,13 @@ pub struct LibraryFile {
     /// seed is the better answer than an emptied table.
     #[serde(default)]
     pub collections: Option<Vec<Collection>>,
-    /// The tag vocabulary's exceptions (`tag-vocabulary` design D2): every tag
-    /// that is not `(general, unpinned)`, with its category and its pin,
+    /// The tag vocabulary's exceptions (`tag-vocabulary` design D2, widened
+    /// by `tag-notes` design D3): every tag that is not general and
+    /// unpinned, or carries a note, with its category, its pin and its note,
     /// sorted by name. The same `Option` reasoning as `collections` above:
     /// `None` is a file written before this change, and every tag comes back
-    /// general and unpinned on a rebuild; `Some` — empty included — is
-    /// restored onto the rows verbatim.
+    /// general and unpinned with no note on a rebuild; `Some` — empty
+    /// included — is restored onto the rows verbatim.
     #[serde(default)]
     pub tags: Option<Vec<TagEntry>>,
     /// The stamps, by creation order (`stamps` design D3). The same `Option`
@@ -652,6 +653,7 @@ mod tests {
             name: "cat".to_string(),
             category: TagCategory::Artist,
             pinned_group: Some(1),
+            note: Some("a note".to_string()),
         };
         let serialised = serde_json::to_value(&entry).unwrap();
         let fields: Vec<&String> = serialised.as_object().unwrap().keys().collect();
@@ -732,6 +734,7 @@ mod tests {
                 name: "kantoku".to_string(),
                 category: TagCategory::Artist,
                 pinned_group: None,
+                note: None,
             }]
         );
         let stamps = file.stamps.expect("the key is always written");

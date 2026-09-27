@@ -6,19 +6,20 @@
 // category changed.
 //
 // `entries` holds the exceptions only (design D2) — a general, unpinned tag
-// is never in it, so this is hundreds of names in a library of thousands of
-// tags — and `#byName` is the Map that makes a lookup cheap over that list;
-// `$derived` rebuilds it only when a refresh or a setter replaces `entries`
-// wholesale, never once per `categoryOf` call from a panel full of badges.
+// with no note is never in it, so this is hundreds of names in a library of
+// thousands of tags — and `#byName` is the Map that makes a lookup cheap
+// over that list; `$derived` rebuilds it only when a refresh or a setter
+// replaces `entries` wholesale, never once per `categoryOf` call from a
+// panel full of badges.
 //
-// No `setCategory`/`place` write of its own kind to read back: each setter's
-// command already answers the whole vocabulary, so the setters below replace
-// `entries` with that answer directly, the cheapest way to keep the one list
-// in step.
+// No `setCategory`/`place`/`setNote` write of its own kind to read back: each
+// setter's command already answers the whole vocabulary, so the setters
+// below replace `entries` with that answer directly, the cheapest way to
+// keep the one list in step.
 
 import type { PinTarget, TagCategory, TagEntry } from '@boorubox/shared'
 import { groupByCategory } from '$lib/domain/tag-categories'
-import { setTagCategory, setTagPinnedGroup, tagVocabulary } from './commands'
+import { setTagCategory, setTagNote, setTagPinnedGroup, tagVocabulary } from './commands'
 import { errorText } from './errors'
 
 export class Vocabulary {
@@ -50,6 +51,9 @@ export class Vocabulary {
   groupOf = (name: string): number | null => this.#byName.get(name)?.pinnedGroup ?? null
 
   isPinned = (name: string): boolean => this.groupOf(name) !== null
+
+  /** `null` for a tag outside the exceptions list, which carries no note. */
+  noteOf = (name: string): string | null => this.#byName.get(name)?.note ?? null
 
   /**
    * Every pinned tag's group, in group order, each group in the sidebar's
@@ -120,6 +124,23 @@ export class Vocabulary {
       this.error = null
     } catch (cause) {
       this.error = errorText(cause)
+    }
+  }
+
+  /**
+   * A refusal is reported the same way `refresh()` reports one: `entries`
+   * untouched. Also answers whether it landed (`tag-notes` design D7): a
+   * menu's fire-and-forget setter has nowhere to show a failure, but the
+   * note dialog does and must stay open on one.
+   */
+  async setNote(name: string, note: string | null): Promise<boolean> {
+    try {
+      this.entries = await setTagNote(name, note)
+      this.error = null
+      return true
+    } catch (cause) {
+      this.error = errorText(cause)
+      return false
     }
   }
 }

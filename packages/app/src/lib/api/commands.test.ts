@@ -90,6 +90,7 @@ import {
   setShowTileTags,
   setTagCategory,
   setTagCategoryHidden,
+  setTagNote,
   setTagPinnedGroup,
   setTheme,
   stampsDelete,
@@ -515,25 +516,38 @@ it('selection_tag_counts passes the optional names filter when given', async () 
 })
 
 it('tag_vocabulary takes no arguments and returns the exceptions list', async () => {
-  const vocabulary: TagEntry[] = [{ name: 'kantoku', category: 'artist', pinnedGroup: null }]
+  const vocabulary: TagEntry[] = [
+    { name: 'kantoku', category: 'artist', pinnedGroup: null, note: null },
+  ]
   const calls = spyIPC(vocabulary)
   await expect(tagVocabulary()).resolves.toEqual(vocabulary)
   expect(calls).toHaveBeenCalledWith('tag_vocabulary', {})
 })
 
 it('set_tag_category passes the name and the category and returns the vocabulary', async () => {
-  const vocabulary: TagEntry[] = [{ name: 'cat', category: 'artist', pinnedGroup: null }]
+  const vocabulary: TagEntry[] = [{ name: 'cat', category: 'artist', pinnedGroup: null, note: null }]
   const calls = spyIPC(vocabulary)
   await expect(setTagCategory('cat', 'artist')).resolves.toEqual(vocabulary)
   expect(calls).toHaveBeenCalledWith('set_tag_category', { name: 'cat', category: 'artist' })
 })
 
 it('set_tag_pinned_group passes the name and the target and returns the vocabulary', async () => {
-  const vocabulary: TagEntry[] = [{ name: 'tagme', category: 'general', pinnedGroup: 1 }]
+  const vocabulary: TagEntry[] = [
+    { name: 'tagme', category: 'general', pinnedGroup: 1, note: null },
+  ]
   const calls = spyIPC(vocabulary)
   const target: PinTarget = { group: 1 }
   await expect(setTagPinnedGroup('tagme', target)).resolves.toEqual(vocabulary)
   expect(calls).toHaveBeenCalledWith('set_tag_pinned_group', { name: 'tagme', target })
+})
+
+it('set_tag_note passes the name and the note and returns the vocabulary', async () => {
+  const vocabulary: TagEntry[] = [
+    { name: 'sky', category: 'general', pinnedGroup: null, note: 'whole background only' },
+  ]
+  const calls = spyIPC(vocabulary)
+  await expect(setTagNote('sky', 'whole background only')).resolves.toEqual(vocabulary)
+  expect(calls).toHaveBeenCalledWith('set_tag_note', { name: 'sky', note: 'whole background only' })
 })
 
 it('export_zip passes the ids, the path and this zone\'s offset, and returns the report', async () => {

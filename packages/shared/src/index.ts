@@ -341,18 +341,21 @@ export interface TagCount {
 export type TagCategory = 'artist' | 'copyright' | 'character' | 'meta' | 'general'
 
 /**
- * One tag outside the `(general, unpinned)` default: its name, its category
- * and the group it is pinned into, `null` for a tag that is not pinned — the
- * vocabulary's own row (`tag-vocabulary`/`pinned-tag-groups` design D2). What
- * `tagVocabulary` answers with, what `library.json`'s `tags` key lists, and
- * what a rebuild restores onto the row verbatim. Groups are numbered from 1
- * and have no names; the store derives display order from `pinnedGroup`
- * (`vocabulary.svelte.ts`'s `pinnedGroups`), never this array's own order.
+ * One tag outside the `(general, unpinned)` default: its name, its category,
+ * the group it is pinned into (`null` for a tag that is not pinned) and its
+ * note (`null` for a tag with no note) — the vocabulary's own row
+ * (`tag-vocabulary`/`pinned-tag-groups` design D2, `tag-notes` design D1).
+ * What `tagVocabulary` answers with, what `library.json`'s `tags` key lists,
+ * and what a rebuild restores onto the row verbatim. Groups are numbered
+ * from 1 and have no names; the store derives display order from
+ * `pinnedGroup` (`vocabulary.svelte.ts`'s `pinnedGroups`), never this
+ * array's own order.
  */
 export interface TagEntry {
   name: string
   category: TagCategory
   pinnedGroup: number | null
+  note: string | null
 }
 
 /**

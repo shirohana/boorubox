@@ -373,6 +373,17 @@ CREATE TABLE artist_urls (
 CREATE INDEX artist_urls_by_tag ON artist_urls (tag);
 ";
 
+/// Schema v13 (`tag-notes` design D1): a tag's note. Nullable, `NULL` is "no
+/// note", never an empty string — `model::normalized_note` is the one
+/// normaliser between free text and this column, so a stored `''` is never a
+/// second spelling of "no note" that every predicate reading it would have to
+/// know about. A column on `tags` rather than a `tag_notes` table: a note is
+/// one value per tag with the tag's own lifetime, exactly like `category` and
+/// `pinned_group`, and every reader already reads that row.
+const SCHEMA_V13: &str = r"
+ALTER TABLE tags ADD COLUMN note TEXT;
+";
+
 /// One schema version's step: plain SQL for every version but the one
 /// `merge_case_duplicates` is (its own doc comment says why that one has to be
 /// Rust).
@@ -396,6 +407,7 @@ const MIGRATIONS: &[Migration] = &[
     Migration::Sql(SCHEMA_V10),
     Migration::Sql(SCHEMA_V11),
     Migration::Sql(SCHEMA_V12),
+    Migration::Sql(SCHEMA_V13),
 ];
 
 /// Open (creating if needed) the library database with the pragmas D2 fixes,
@@ -964,6 +976,46 @@ mod tests {
             .unwrap();
         assert_eq!(version, MIGRATIONS.len() as i64);
         assert!(table_names(&conn).contains(&"artist_urls".to_string()));
+        assert_eq!(fts_matches(&conn, "kyoto"), vec!["a".to_string()]);
+    }
+
+    /// `tag-notes` task 1.1: a v12 database with a tag row migrates gaining a
+    /// `NULL` `note` column, same shape as the v11 migration test above.
+    #[test]
+    fn a_v12_library_migrates_gaining_a_null_tag_note() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("library.sqlite");
+
+        let conn = Connection::open(&path).unwrap();
+        conn.execute_batch(SCHEMA_V1).unwrap();
+        conn.execute_batch(SCHEMA_V2).unwrap();
+        conn.execute_batch(SCHEMA_V3).unwrap();
+        conn.execute_batch(SCHEMA_V4).unwrap();
+        conn.execute_batch(SCHEMA_V5).unwrap();
+        conn.execute_batch(SCHEMA_V6).unwrap();
+        conn.execute_batch(SCHEMA_V7).unwrap();
+        conn.execute_batch(SCHEMA_V8).unwrap();
+        conn.execute_batch(SCHEMA_V10).unwrap();
+        conn.execute_batch(SCHEMA_V11).unwrap();
+        conn.execute_batch(SCHEMA_V12).unwrap();
+        conn.pragma_update(None, "user_version", 12i64).unwrap();
+        insert_bare_image(&conn, "a", "sunset over kyoto");
+        conn.execute("INSERT INTO tags (name) VALUES ('cat')", [])
+            .unwrap();
+        drop(conn);
+
+        let conn = open(&path).unwrap();
+
+        let version: i64 = conn
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, MIGRATIONS.len() as i64);
+        let note: Option<String> = conn
+            .query_row("SELECT note FROM tags WHERE name = 'cat'", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(note, None);
         assert_eq!(fts_matches(&conn, "kyoto"), vec!["a".to_string()]);
     }
 

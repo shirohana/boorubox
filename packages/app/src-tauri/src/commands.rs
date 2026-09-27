@@ -662,6 +662,20 @@ pub async fn set_tag_pinned_group(
     .await
 }
 
+/// Write `name`'s note, cleared by an empty or blank text (`tag-notes`
+/// design D4); answers with the vocabulary as it now stands.
+#[tauri::command]
+pub async fn set_tag_note(
+    name: String,
+    note: Option<String>,
+    state: State<'_, AppState>,
+) -> Result<Vec<TagEntry>> {
+    with_library_off_main_thread(&state.library, move |library| {
+        tags::set_note(library, &name, note.as_deref())
+    })
+    .await
+}
+
 /// Writes `ids` to a zip at `path`, emitting `export:progress` as it goes
 /// (design D11–D13). The save dialog runs in the webview (design D12); this
 /// takes a path so a Rust test can drive it against a `tempfile::TempDir`.
@@ -3194,6 +3208,28 @@ mod tests {
         .unwrap();
         assert_eq!(entries[0].category, TagCategory::Copyright);
         assert_eq!(entries[0].pinned_group, None);
+    }
+
+    #[test]
+    fn set_tag_note_reaches_the_open_library_through_the_command() {
+        let (_library, app) = app_with_library();
+        import(&app, &folder_of_images(1));
+        let ids = ids_in_library(&app);
+        tag(&app, &ids[0], &["azur_lane"]);
+
+        let entries = now(set_tag_note(
+            "azur_lane".to_string(),
+            Some("whole background only".to_string()),
+            app.state(),
+        ))
+        .unwrap();
+        assert_eq!(entries[0].note, Some("whole background only".to_string()));
+
+        let entries = now(set_tag_note("azur_lane".to_string(), None, app.state())).unwrap();
+        assert!(
+            entries.is_empty(),
+            "clearing the note of a general, unpinned tag leaves the vocabulary"
+        );
     }
 
     #[test]

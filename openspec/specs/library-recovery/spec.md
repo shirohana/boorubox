@@ -47,7 +47,8 @@ changed produces the same bytes.
 The app SHALL keep one file in the library folder describing the library-level state a
 rebuild would otherwise lose: the auto-tag rules, the configured booru sites, the library
 note, the collections with their ids, names and pins, the tag vocabulary — every tag that is
-not general or is pinned, with its category and its pin — and the stamps. It SHALL be rewritten whenever any
+not general, is pinned or carries a note, with its category, its pin and its note — and the
+stamps. It SHALL be rewritten whenever any
 of those change. It SHALL NOT contain any API key or other credential; those live in the
 operating system's credential store (`booru-sites`) and SHALL NOT be written into the
 library folder.
@@ -78,7 +79,11 @@ library folder.
 
 #### Scenario: A tag is categorised or pinned
 - **WHEN** the user creates a tag under a category, changes a tag's category, or pins or unpins a tag
-- **THEN** the library's own file lists the vocabulary as it now stands, and a general unpinned tag is not in it
+- **THEN** the library's own file lists the vocabulary as it now stands, and a general unpinned tag with no note is not in it
+
+#### Scenario: A tag's note is written
+- **WHEN** the user writes, changes or removes a tag's note
+- **THEN** the library's own file lists the vocabulary as it now stands, each noted tag with its note
 
 ### Requirement: A write that cannot be mirrored is a failed write
 A write that stores the row but cannot write the file describing it SHALL be reported as a
@@ -201,6 +206,14 @@ if it is interrupted.
 #### Scenario: Stamps come back
 - **WHEN** a library is rebuilt whose file lists two stamps
 - **THEN** both are back with their names and texts, in their order
+
+#### Scenario: Tag notes come back
+- **WHEN** a library is rebuilt whose file lists `sky` as general with a note and carried by no image, and `kantoku` as an artist with a note
+- **THEN** both carry their notes, and `sky` is suggested when `sk` is typed
+
+#### Scenario: A file from before tag notes
+- **WHEN** a library is rebuilt whose file lists the vocabulary with no word on notes
+- **THEN** every tag comes back with its category and pin and no note
 
 ### Requirement: A rebuild is offered where the damage is met, and only on request
 The app SHALL offer to rebuild a library from the start screen when that library will not

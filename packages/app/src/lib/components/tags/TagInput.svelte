@@ -282,7 +282,13 @@
             "
             onSelect={() => accept(tag)}
           >
-            {tag}
+            <span class="shrink-0">{tag}</span>
+            {#if vocabulary.noteOf(tag)}
+              <!-- A newline reads as a space in one truncated line (`tag-notes` design D9). -->
+              <span class="min-w-0 truncate text-xs text-muted-foreground">
+                {vocabulary.noteOf(tag)}
+              </span>
+            {/if}
           </Command.Item>
         {/each}
       </Command.List>

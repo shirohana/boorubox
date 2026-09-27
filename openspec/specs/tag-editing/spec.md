@@ -89,10 +89,11 @@ it, then the rest, each band most used first and then by name (owner, 2026-09-24
 compounds like `cute_cat` whose remembered half is the tail). It SHALL exclude tags already
 named elsewhere in the input, but never the word being typed itself, so a whole typed tag is
 offered and highlighted and one confirmation finishes it. Each suggestion SHALL be drawn in
-its category's colour. It SHALL NOT offer anything while the token being typed is a metatag
-or the `or` operator of the query language, nor while it begins with a category prefix.
-Accepting a suggestion SHALL replace the token being typed, preserving a leading `-` when
-the token has one.
+its category's colour. A suggestion for a tag that carries a note SHALL show the note after the
+name, muted and smaller, on one line, cut short where it does not fit (owner, 2026-09-28). It
+SHALL NOT offer anything while the token being typed is a metatag or the `or` operator of the
+query language, nor while it begins with a category prefix. Accepting a suggestion SHALL
+replace the token being typed, preserving a leading `-` when the token has one.
 
 #### Scenario: Prefix first
 - **WHEN** the library uses `cat`, `cathedral`, `cute_cat` and `dog`, and the user types `cat`
@@ -125,6 +126,10 @@ the token has one.
 #### Scenario: Accepting into an exclusion
 - **WHEN** the token being typed is `-cathe` and the suggestion `cathedral` is accepted
 - **THEN** the token becomes `-cathedral`
+
+#### Scenario: A noted suggestion
+- **WHEN** `sky` carries the note `whole background only` and the user types `sk`
+- **THEN** the `sky` row reads `sky` followed by `whole background only` in muted smaller text on the same line, and accepting it inserts `sky` alone
 
 ### Requirement: Confirming a tag takes two steps
 Confirming SHALL first act on what is pending, then submit: while a suggestion is highlighted

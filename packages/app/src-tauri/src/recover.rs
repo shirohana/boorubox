@@ -275,12 +275,16 @@ fn insert_collections(conn: &Connection, collections: &[Collection]) -> Result<(
 /// among the entries that canonicalise to its name, and so its category (if
 /// non-general) always wins regardless of the order `library.json` lists the
 /// two spellings in.
+///
+/// `note` (`tag-notes` design D3): `note = COALESCE(excluded.note, tags.note)`
+/// — with the canonical spelling applied last, its note wins when both
+/// spellings carry one, and a spelling with none never erases the other's.
 fn insert_vocabulary(conn: &Connection, entries: &[TagEntry]) -> Result<()> {
     let mut ordered: Vec<&TagEntry> = entries.iter().collect();
     ordered.sort_by_key(|entry| entry.name == tags::canonical(&entry.name));
     for entry in ordered {
         conn.execute(
-            "INSERT INTO tags (name, category, pinned_group) VALUES (?1, ?2, ?3)
+            "INSERT INTO tags (name, category, pinned_group, note) VALUES (?1, ?2, ?3, ?4)
              ON CONFLICT (name) DO UPDATE SET
                  category = CASE WHEN excluded.category = 'general' THEN tags.category
                                   ELSE excluded.category END,
@@ -288,11 +292,13 @@ fn insert_vocabulary(conn: &Connection, entries: &[TagEntry]) -> Result<()> {
                      WHEN tags.pinned_group = 0 THEN excluded.pinned_group
                      WHEN excluded.pinned_group = 0 THEN tags.pinned_group
                      ELSE MIN(tags.pinned_group, excluded.pinned_group)
-                 END",
+                 END,
+                 note = COALESCE(excluded.note, tags.note)",
             params![
                 tags::canonical(&entry.name),
                 entry.category,
                 entry.pinned_group.unwrap_or(0),
+                entry.note,
             ],
         )?;
     }
@@ -883,6 +889,71 @@ mod tests {
         assert_eq!(suggested, vec!["azur_lane".to_string()]);
     }
 
+    /// Spec `library-recovery`, "Tag notes come back": a noted general tag
+    /// no image carries and a noted artist tag both restore their notes
+    /// (`tag-notes` design D1).
+    #[test]
+    fn a_rebuild_restores_tag_notes() {
+        let (_dir, library) = library();
+        store(&library, "a", &[], None);
+        crate::tags::update_tags(&library, "a", &strs(&["artist:kantoku", "sky"])).unwrap();
+        crate::tags::set_note(&library, "kantoku", Some("danbooru: kantoku (confirmed)")).unwrap();
+        crate::tags::set_note(&library, "sky", Some("whole background only")).unwrap();
+        crate::tags::update_tags(&library, "a", &strs(&["artist:kantoku"])).unwrap();
+        let paths = library.paths.clone();
+        drop(library);
+
+        let report = rebuild(&paths, &mut |_, _| {}).unwrap();
+
+        assert!(report.failures.is_empty(), "{:?}", report.failures);
+        let rebuilt = Library::open_existing(paths.root.as_path()).unwrap();
+        assert_eq!(
+            note_of(&rebuilt.conn, "kantoku"),
+            Some("danbooru: kantoku (confirmed)".to_string())
+        );
+        assert_eq!(
+            note_of(&rebuilt.conn, "sky"),
+            Some("whole background only".to_string())
+        );
+        let suggested: Vec<String> = crate::tags::suggestions(&rebuilt.conn, "sk", 8)
+            .unwrap()
+            .into_iter()
+            .map(|tag| tag.name)
+            .collect();
+        assert_eq!(suggested, vec!["sky".to_string()]);
+    }
+
+    /// Spec `library-recovery`, "A file from before tag notes": a vocabulary
+    /// entry with no `note` key restores with its category and pin, and no
+    /// note.
+    #[test]
+    fn a_library_file_without_note_keys_restores_no_notes() {
+        let (_dir, library) = library();
+        sidecar::write_library(&library.paths, &library.conn).unwrap();
+        let file = sidecar::library_path(&library.paths);
+        let mut json: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&file).unwrap()).unwrap();
+        json.as_object_mut().unwrap().insert(
+            "tags".to_string(),
+            serde_json::json!([
+                { "name": "kantoku", "category": "artist" },
+                { "name": "tagme", "category": "general", "pinnedGroup": 1 },
+            ]),
+        );
+        std::fs::write(&file, serde_json::to_vec_pretty(&json).unwrap()).unwrap();
+        let paths = library.paths.clone();
+        drop(library);
+
+        let report = rebuild(&paths, &mut |_, _| {}).unwrap();
+
+        assert!(report.failures.is_empty(), "{:?}", report.failures);
+        let rebuilt = Library::open_existing(paths.root.as_path()).unwrap();
+        assert_eq!(tag_row(&rebuilt.conn, "kantoku"), ("artist".to_string(), 0));
+        assert_eq!(tag_row(&rebuilt.conn, "tagme"), ("general".to_string(), 1));
+        assert_eq!(note_of(&rebuilt.conn, "kantoku"), None);
+        assert_eq!(note_of(&rebuilt.conn, "tagme"), None);
+    }
+
     /// Spec `tag-vocabulary`, "Groups survive a rebuild": a tag pinned into a
     /// group past 1 comes back in that same group, not folded down to 1.
     #[test]
@@ -1171,11 +1242,13 @@ mod tests {
                 name: "Tagme".to_string(),
                 category: TagCategory::Artist,
                 pinned_group: None,
+                note: None,
             },
             TagEntry {
                 name: "tagme".to_string(),
                 category: TagCategory::Meta,
                 pinned_group: Some(2),
+                note: None,
             },
         ];
 
@@ -1194,11 +1267,13 @@ mod tests {
                 name: "tagme".to_string(),
                 category: TagCategory::Meta,
                 pinned_group: Some(2),
+                note: None,
             },
             TagEntry {
                 name: "Tagme".to_string(),
                 category: TagCategory::Artist,
                 pinned_group: None,
+                note: None,
             },
         ];
 
@@ -1218,17 +1293,85 @@ mod tests {
                 name: "Tagme".to_string(),
                 category: TagCategory::General,
                 pinned_group: Some(3),
+                note: None,
             },
             TagEntry {
                 name: "tagme".to_string(),
                 category: TagCategory::General,
                 pinned_group: Some(1),
+                note: None,
             },
         ];
 
         insert_vocabulary(&library.conn, &entries).unwrap();
 
         assert_eq!(tag_row(&library.conn, "tagme"), ("general".to_string(), 1));
+    }
+
+    /// `tag-notes` task 1.4, design D3: the canonical spelling's absent note
+    /// never erases the non-canonical spelling's own.
+    #[test]
+    fn two_vocabulary_entries_that_canonicalise_together_keep_a_note_the_canonical_spelling_lacks()
+    {
+        let (_dir, library) = library();
+        let entries = vec![
+            TagEntry {
+                name: "Tagme".to_string(),
+                category: TagCategory::General,
+                pinned_group: None,
+                note: Some("capitalised spelling's own note".to_string()),
+            },
+            TagEntry {
+                name: "tagme".to_string(),
+                category: TagCategory::General,
+                pinned_group: None,
+                note: None,
+            },
+        ];
+
+        insert_vocabulary(&library.conn, &entries).unwrap();
+
+        assert_eq!(
+            note_of(&library.conn, "tagme"),
+            Some("capitalised spelling's own note".to_string()),
+        );
+    }
+
+    /// `tag-notes` task 1.4, design D3: applied last, the canonical
+    /// spelling's own note wins when both spellings carry one — regardless of
+    /// which order the caller lists them in, since `insert_vocabulary` sorts
+    /// the canonical spelling to run last.
+    #[test]
+    fn two_vocabulary_entries_that_canonicalise_together_keep_the_canonical_spellings_note() {
+        let (_dir, library) = library();
+        let entries = vec![
+            TagEntry {
+                name: "tagme".to_string(),
+                category: TagCategory::General,
+                pinned_group: None,
+                note: Some("canonical wins".to_string()),
+            },
+            TagEntry {
+                name: "Tagme".to_string(),
+                category: TagCategory::General,
+                pinned_group: None,
+                note: Some("stale".to_string()),
+            },
+        ];
+
+        insert_vocabulary(&library.conn, &entries).unwrap();
+
+        assert_eq!(
+            note_of(&library.conn, "tagme"),
+            Some("canonical wins".to_string()),
+        );
+    }
+
+    fn note_of(conn: &Connection, name: &str) -> Option<String> {
+        conn.query_row("SELECT note FROM tags WHERE name = ?1", [name], |row| {
+            row.get(0)
+        })
+        .unwrap()
     }
 
     fn tag_row(conn: &Connection, name: &str) -> (String, u32) {

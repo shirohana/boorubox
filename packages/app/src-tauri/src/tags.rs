@@ -470,11 +470,12 @@ pub fn tag_ids_of(conn: &Connection, image_id: &str) -> Result<Vec<i64>> {
 
 /// Delete each of `tag_ids` that no `image_tags` row references any more and
 /// that carries no vocabulary the user built (design D5, narrowed by
-/// `tag-vocabulary` design D3): a categorised or pinned tag survives having no
-/// carrier, since a tag someone filed as an artist or pinned is kept
-/// deliberately, not as a by-product of one image — losing it with the
-/// image's last trash-and-delete would make the artist's next capture a
-/// general tag again.
+/// `tag-vocabulary` design D3, `tag-notes` design D3): a categorised, pinned
+/// or noted tag survives having no carrier, since a tag someone filed as an
+/// artist, pinned or wrote a note on is kept deliberately, not as a
+/// by-product of one image — losing it with the image's last
+/// trash-and-delete would make the artist's next capture a general tag
+/// again, and drop the note along with it.
 ///
 /// Scoped to the ids a statement just unlinked and run inside that statement's
 /// transaction, rather than as a sweep over the whole table: `tags` is the
@@ -494,7 +495,7 @@ pub fn collect_orphans(conn: &Connection, tag_ids: &[i64]) -> Result<()> {
         &format!(
             "DELETE FROM tags
              WHERE id IN ({})
-               AND category = 'general' AND pinned_group = 0
+               AND category = 'general' AND pinned_group = 0 AND note IS NULL
                AND NOT EXISTS (SELECT 1 FROM image_tags WHERE image_tags.tag_id = tags.id)",
             placeholders(tag_ids.len())
         ),
@@ -767,17 +768,18 @@ fn described(category: TagCategory) -> String {
 }
 
 /// Every tag outside the `(general, unpinned)` default, by name — the
-/// vocabulary's own exceptions list (`tag-vocabulary` design D2): what
-/// `library.json`'s `tags` key holds, what the `tag_vocabulary` command
-/// answers with, and what [`set_category`] and [`place_pinned`] answer with
-/// after their own write, so the caller redraws from one list rather than
-/// trusting its own edit landed. Sorted by name: group order is the store's
-/// job (`pinned-tag-groups` design D4), and every exceptions read answers
-/// in one order so a caller never has to know which one it got.
+/// vocabulary's own exceptions list (`tag-vocabulary` design D2, widened by
+/// `tag-notes` design D3 to a noted tag too): what `library.json`'s `tags`
+/// key holds, what the `tag_vocabulary` command answers with, and what
+/// [`set_category`], [`place_pinned`] and [`set_note`] answer with after
+/// their own write, so the caller redraws from one list rather than trusting
+/// its own edit landed. Sorted by name: group order is the store's job
+/// (`pinned-tag-groups` design D4), and every exceptions read answers in one
+/// order so a caller never has to know which one it got.
 pub fn vocabulary(conn: &Connection) -> Result<Vec<TagEntry>> {
     let mut stmt = conn.prepare(
-        "SELECT name, category, pinned_group FROM tags
-         WHERE category != 'general' OR pinned_group > 0
+        "SELECT name, category, pinned_group, note FROM tags
+         WHERE category != 'general' OR pinned_group > 0 OR note IS NOT NULL
          ORDER BY name",
     )?;
     let rows = stmt.query_map([], |row| {
@@ -786,6 +788,7 @@ pub fn vocabulary(conn: &Connection) -> Result<Vec<TagEntry>> {
             name: row.get(0)?,
             category: row.get(1)?,
             pinned_group: if group == 0 { None } else { Some(group) },
+            note: row.get(3)?,
         })
     })?;
     Ok(rows.collect::<rusqlite::Result<_>>()?)
@@ -807,6 +810,47 @@ pub fn set_category(library: &Library, name: &str, category: TagCategory) -> Res
     if changed == 0 {
         return Err(AppError::NotFound(format!("tag {name}")));
     }
+    crate::sidecar::write_library(&library.paths, &library.conn)?;
+    vocabulary(&library.conn)
+}
+
+/// Write `name`'s note (`tag-notes` design D4), and answer with the
+/// vocabulary as it now stands. Same refusal, and the same canonicalisation,
+/// as [`set_category`] for a name that is not a tag: **a name with no row is
+/// refused, not created** — every door to this command is a menu on a tag
+/// drawn on screen, which has a row, and creating one from a note would add
+/// a tag no image ever carried to completion. `note` goes through
+/// [`crate::model::normalized_note`] first, so an empty or blank text clears
+/// the note exactly as a hand-edited `library.json` would read it.
+///
+/// One transaction: when the note became `NULL`, [`collect_orphans`] runs on
+/// `name`'s own id in the same transaction — a general, unpinned tag nothing
+/// carries has just lost the one thing keeping it in the vocabulary, and
+/// leaving the row would have it suggest itself at count 0 with nothing to
+/// show, the same argument [`collect_orphans`]'s own doc gives for a
+/// categorised tag.
+pub fn set_note(library: &Library, name: &str, note: Option<&str>) -> Result<Vec<TagEntry>> {
+    let name = canonical(name);
+    let note = crate::model::normalized_note(note);
+    let tx = library.conn.unchecked_transaction()?;
+
+    let changed = tx.execute(
+        "UPDATE tags SET note = ?1 WHERE name = ?2",
+        params![note, name],
+    )?;
+    if changed == 0 {
+        return Err(AppError::NotFound(format!("tag {name}")));
+    }
+    if note.is_none() {
+        let id: i64 = tx.query_row(
+            "SELECT id FROM tags WHERE name = ?1",
+            params![name],
+            |row| row.get(0),
+        )?;
+        collect_orphans(&tx, &[id])?;
+    }
+    tx.commit()?;
+
     crate::sidecar::write_library(&library.paths, &library.conn)?;
     vocabulary(&library.conn)
 }
@@ -1572,11 +1616,13 @@ mod tests {
                     name: "dog".to_string(),
                     category: TagCategory::General,
                     pinned_group: Some(1),
+                    note: None,
                 },
                 TagEntry {
                     name: "zebra".to_string(),
                     category: TagCategory::Artist,
                     pinned_group: None,
+                    note: None,
                 },
             ]
         );
@@ -1602,11 +1648,13 @@ mod tests {
                     name: "cat".to_string(),
                     category: TagCategory::General,
                     pinned_group: Some(1),
+                    note: None,
                 },
                 TagEntry {
                     name: "dog".to_string(),
                     category: TagCategory::General,
                     pinned_group: Some(2),
+                    note: None,
                 },
             ]
         );
@@ -1630,6 +1678,7 @@ mod tests {
                 name: "azur_lane".to_string(),
                 category: TagCategory::Copyright,
                 pinned_group: None,
+                note: None,
             }]
         );
     }
@@ -1657,6 +1706,118 @@ mod tests {
             entries
                 .iter()
                 .any(|entry| entry.name == "azur_lane" && entry.category == TagCategory::Copyright)
+        );
+    }
+
+    // -- `tag-notes` task 1.3: `set_note` --
+
+    #[test]
+    fn set_note_round_trips_and_a_blank_note_clears_it() {
+        let (_dir, library) = library();
+        store(&library, "a", None, &["sky"]);
+
+        let entries = set_note(&library, "sky", Some("whole background only")).unwrap();
+        assert_eq!(
+            entries
+                .iter()
+                .find(|entry| entry.name == "sky")
+                .unwrap()
+                .note,
+            Some("whole background only".to_string())
+        );
+
+        let entries = set_note(&library, "sky", Some("  ")).unwrap();
+        assert!(
+            !entries.iter().any(|entry| entry.name == "sky"),
+            "a blank note clears it, and a general, unpinned, noteless tag is not in the vocabulary"
+        );
+    }
+
+    #[test]
+    fn set_note_on_a_name_with_no_row_is_refused() {
+        let (_dir, library) = library();
+
+        let error = set_note(&library, "nobody", Some("whatever")).unwrap_err();
+
+        assert!(matches!(error, AppError::NotFound(_)), "got {error}");
+    }
+
+    /// Spec `tag-vocabulary`, "A noted general tag's last image": design D3
+    /// widens `collect_orphans`' exception to a noted tag, the same as it
+    /// already does for a categorised or pinned one.
+    #[test]
+    fn a_noted_general_tag_survives_losing_its_last_carrier() {
+        let (_dir, library) = library();
+        store(&library, "a", None, &["bench"]);
+        set_note(&library, "bench", Some("park bench, not a workbench")).unwrap();
+
+        edit(&library, "a", &[]);
+
+        assert_eq!(category_of(&library, "bench"), TagCategory::General);
+    }
+
+    #[test]
+    fn vocabulary_lists_a_noted_general_unpinned_tag() {
+        let (_dir, library) = library();
+        store(&library, "a", None, &["bench"]);
+
+        let entries = set_note(&library, "bench", Some("park bench")).unwrap();
+
+        assert_eq!(
+            entries,
+            vec![TagEntry {
+                name: "bench".to_string(),
+                category: TagCategory::General,
+                pinned_group: None,
+                note: Some("park bench".to_string()),
+            }]
+        );
+    }
+
+    /// Spec `tag-vocabulary`, "The note of an uncarried tag is removed"
+    /// (`tag-notes` design D4): clearing a general, unpinned tag's note runs
+    /// `collect_orphans` on it, the same as `set_category` making a tag
+    /// general or `place_pinned` unpinning it.
+    #[test]
+    fn clearing_the_note_of_an_uncarried_general_tag_removes_it() {
+        let (_dir, library) = library();
+        store(&library, "a", None, &["bench"]);
+        set_note(&library, "bench", Some("park bench")).unwrap();
+        edit(&library, "a", &[]);
+        assert_eq!(tag_names(&library), vec!["bench".to_string()]);
+
+        set_note(&library, "bench", None).unwrap();
+
+        assert!(!tag_names(&library).contains(&"bench".to_string()));
+    }
+
+    #[test]
+    fn suggestions_offer_a_noted_tag_with_no_carrier() {
+        let (_dir, library) = library();
+        store(&library, "a", None, &["bench"]);
+        set_note(&library, "bench", Some("park bench")).unwrap();
+
+        edit(&library, "a", &[]);
+
+        assert_eq!(
+            suggested(&library, "ben", 8),
+            vec![("bench".to_string(), 0)]
+        );
+    }
+
+    #[test]
+    fn set_note_rewrites_library_json() {
+        let (_dir, library) = library();
+        store(&library, "a", None, &["sky"]);
+
+        set_note(&library, "sky", Some("whole background only")).unwrap();
+
+        let file =
+            crate::sidecar::read_library(&crate::sidecar::library_path(&library.paths)).unwrap();
+        let entries = file.tags.expect("the key is always written");
+        assert!(
+            entries.iter().any(|entry| entry.name == "sky"
+                && entry.note.as_deref() == Some("whole background only"))
         );
     }
 

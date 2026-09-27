@@ -1,14 +1,24 @@
 <script lang="ts">
-  // The tag context menu's vocabulary items — a Danbooru look-up, pin/unpin,
-  // a pinned tag's own group moves, and the category group — mounted
-  // wherever a tag's context menu opens (`tag-vocabulary` design D9): the
-  // sidebar row, the inspector badge's menu, and the pinned chip's own menu.
-  // A chip's tag is pinned by definition, so its menu shows Unpin and the
-  // group moves without this component needing a flag to suppress Pin.
+  // The tag context menu's vocabulary items — a Danbooru look-up, "Edit
+  // note…", pin/unpin, a pinned tag's own group moves, and the category
+  // group — mounted wherever a tag's context menu opens (`tag-vocabulary`
+  // design D9): the sidebar row, the inspector badge's menu, and the pinned
+  // chip's own menu. A chip's tag is pinned by definition, so its menu shows
+  // Unpin and the group moves without this component needing a flag to
+  // suppress Pin.
   //
   // The group moves live here rather than on the chip itself
   // (`pinned-tag-groups` design D6) so a pinned tag offers the same moves
   // from every menu it has, sidebar and badge included, not only the chip.
+  //
+  // "Edit note…" lives here too (`tag-notes` design D10): a note is a
+  // property of the tag, not of an image, so unlike "Rename artist…"
+  // (`artist-entries` design D6, kept on the inspector's own tag chip menu,
+  // which has an image in scope to read a profile URL from) it belongs where
+  // every tag menu shares it. `oneditnote` is required so a mount that
+  // forgets it fails typecheck rather than offering a dead item — the dialog
+  // itself cannot live here (this component's content unmounts on select),
+  // so each host owns one, mounted unconditionally beside its menu.
   //
   // Snippet-free, unlike `CollectionMenuItems`: every mount point here is a
   // `ContextMenu.Root` (never a dropdown), so this renders `ContextMenu.*`
@@ -16,6 +26,7 @@
   import ExternalLinkIcon from '@lucide/svelte/icons/external-link'
   import PinIcon from '@lucide/svelte/icons/pin'
   import PinOffIcon from '@lucide/svelte/icons/pin-off'
+  import StickyNoteIcon from '@lucide/svelte/icons/sticky-note'
   import { vocabulary } from '$lib/api'
   import * as ContextMenu from '$lib/components/ui/context-menu'
   import { CATEGORY_ORDER, categoryLabel } from '$lib/domain/tag-categories'
@@ -25,9 +36,11 @@
 
   interface Props {
     name: string
+    /** "Edit note…" was chosen — the host snapshots `name` and opens its own `TagNoteDialog`. */
+    oneditnote: (name: string) => void
   }
 
-  let { name }: Props = $props()
+  let { name, oneditnote }: Props = $props()
 
   const group = $derived(vocabulary.groupOf(name))
   const pinned = $derived(group !== null)
@@ -53,6 +66,10 @@
 <ContextMenu.Item onSelect={() => openDanbooruLookup(lookup)}>
   <ExternalLinkIcon />
   {lookup.label}
+</ContextMenu.Item>
+<ContextMenu.Item onSelect={() => oneditnote(name)}>
+  <StickyNoteIcon />
+  Edit note…
 </ContextMenu.Item>
 <ContextMenu.Separator />
 <ContextMenu.Item onSelect={() => void vocabulary.place(name, pinned ? 'unpin' : { group: 1 })}>

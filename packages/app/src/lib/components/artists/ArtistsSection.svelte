@@ -9,7 +9,7 @@
   import PencilIcon from '@lucide/svelte/icons/pencil'
   import PlusIcon from '@lucide/svelte/icons/plus'
   import Trash2Icon from '@lucide/svelte/icons/trash-2'
-  import { artistsDelete, artistsList, errorText, library } from '$lib/api'
+  import { artistsDelete, artistsList, errorText, library, vocabulary } from '$lib/api'
   import ConfirmDialog from '$lib/components/common/ConfirmDialog.svelte'
   import { CATEGORY_TEXT_CLASS } from '$lib/components/tags/categories'
   import { Button } from '$lib/components/ui/button'
@@ -151,6 +151,18 @@
               </Button>
             </div>
           </div>
+
+          <!--
+            The note between the tag and its URLs (`tag-notes` design D9): the
+            store is refreshed by the frame on library open (`frame/Sidebar.svelte`),
+            so it is live here too, edited from the tag's own context menu, not
+            from this list (`tag-notes` spec `artist-entries`).
+          -->
+          {#if vocabulary.noteOf(entry.tag)}
+            <p class="mt-1 text-xs wrap-break-word whitespace-pre-wrap text-muted-foreground">
+              {vocabulary.noteOf(entry.tag)}
+            </p>
+          {/if}
 
           <ul class="mt-2 flex flex-col gap-0.5">
             {#each entry.urls as url (url)}

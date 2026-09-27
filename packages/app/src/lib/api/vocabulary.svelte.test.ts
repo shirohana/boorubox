@@ -9,9 +9,9 @@ afterEach(() => {
   clearMocks()
 })
 
-const kantoku: TagEntry = { name: 'kantoku', category: 'artist', pinnedGroup: null }
-const tagme: TagEntry = { name: 'tagme', category: 'general', pinnedGroup: 1 }
-const zebra: TagEntry = { name: 'zebra', category: 'general', pinnedGroup: 1 }
+const kantoku: TagEntry = { name: 'kantoku', category: 'artist', pinnedGroup: null, note: null }
+const tagme: TagEntry = { name: 'tagme', category: 'general', pinnedGroup: 1, note: null }
+const zebra: TagEntry = { name: 'zebra', category: 'general', pinnedGroup: 1, note: null }
 
 it('reads the exceptions list', async () => {
   const calls = vi.fn()
@@ -66,10 +66,10 @@ it('pinned is the groups flattened', async () => {
 })
 
 it('pinnedGroups orders groups then category then name', async () => {
-  const tagmeMeta: TagEntry = { name: 'tagme', category: 'meta', pinnedGroup: 1 }
-  const kantokuArtist: TagEntry = { name: 'kantoku', category: 'artist', pinnedGroup: 1 }
-  const girl: TagEntry = { name: '1girl', category: 'general', pinnedGroup: 2 }
-  const azurLane: TagEntry = { name: 'azur_lane', category: 'copyright', pinnedGroup: 1 }
+  const tagmeMeta: TagEntry = { name: 'tagme', category: 'meta', pinnedGroup: 1, note: null }
+  const kantokuArtist: TagEntry = { name: 'kantoku', category: 'artist', pinnedGroup: 1, note: null }
+  const girl: TagEntry = { name: '1girl', category: 'general', pinnedGroup: 2, note: null }
+  const azurLane: TagEntry = { name: 'azur_lane', category: 'copyright', pinnedGroup: 1, note: null }
   mockIPC(() => [tagmeMeta, kantokuArtist, girl, azurLane])
 
   const store = new Vocabulary()
@@ -87,6 +87,17 @@ it('groupOf reads the group and null for unpinned', async () => {
   expect(store.groupOf('tagme')).toBe(1)
   expect(store.groupOf('kantoku')).toBeNull()
   expect(store.groupOf('ghost')).toBeNull()
+})
+
+it('noteOf reads the note and null for a tag without one', async () => {
+  const sky: TagEntry = { name: 'sky', category: 'general', pinnedGroup: null, note: 'whole background only' }
+  mockIPC(() => [sky, kantoku])
+  const store = new Vocabulary()
+  await store.refresh()
+
+  expect(store.noteOf('sky')).toBe('whole background only')
+  expect(store.noteOf('kantoku')).toBeNull()
+  expect(store.noteOf('ghost')).toBeNull()
 })
 
 it('reports a list that could not be read, and clears the reason on the next one', async () => {
@@ -134,6 +145,38 @@ it('place calls the command and replaces the list with its answer', async () => 
 
   expect(calls).toHaveBeenCalledWith('set_tag_pinned_group', { name: 'tagme', target: { group: 1 } })
   expect(store.entries).toEqual(next)
+})
+
+it('setNote calls the command and replaces the list with its answer, answering true', async () => {
+  const calls = vi.fn()
+  const sky: TagEntry = { name: 'sky', category: 'general', pinnedGroup: null, note: 'whole background only' }
+  const next = [sky]
+  mockIPC((cmd, args) => {
+    calls(cmd, args)
+    return next
+  })
+
+  const store = new Vocabulary()
+  const landed = await store.setNote('sky', 'whole background only')
+
+  expect(calls).toHaveBeenCalledWith('set_tag_note', { name: 'sky', note: 'whole background only' })
+  expect(store.entries).toEqual(next)
+  expect(landed).toBe(true)
+})
+
+it('setNote reports a refusal, answers false, and leaves entries as they were', async () => {
+  mockIPC(() => [kantoku])
+  const store = new Vocabulary()
+  await store.refresh()
+
+  mockIPC(() => {
+    throw new Error('no such tag')
+  })
+  const landed = await store.setNote('ghost', 'a note')
+
+  expect(store.error).toBe('no such tag')
+  expect(store.entries).toEqual([kantoku])
+  expect(landed).toBe(false)
 })
 
 it('setCategory reports a refusal instead of throwing, and leaves entries as they were', async () => {

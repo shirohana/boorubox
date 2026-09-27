@@ -378,6 +378,15 @@ export function setTagPinnedGroup(name: string, target: PinTarget): Promise<TagE
 }
 
 /**
+ * Writes `name`'s note from its context menu (`tag-notes` design D4); an
+ * empty or blank text clears it. Refused when `name` is not a tag at all.
+ * Same answer shape as {@link setTagCategory}.
+ */
+export function setTagNote(name: string, note: string | null): Promise<TagEntry[]> {
+  return invoke('set_tag_note', { name, note })
+}
+
+/**
  * Writes `ids` to a zip at `path`, emitting `export:progress` as it runs
  * (design D11–D13). The entries are dated by capture time in this webview's
  * zone: a zip timestamp has no zone and is shown as local time, and Rust
