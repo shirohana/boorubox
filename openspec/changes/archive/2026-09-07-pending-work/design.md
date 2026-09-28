@@ -134,6 +134,13 @@ lightbox and the keyboard map; prepending rows would shift them all, and a place
 filtered search would claim to match a query it has not been tested against. Rejected: a toast
 or the sidebar. The owner watches the grid; a toast is where the eye is not.
 
+*Amended 2026-09-28 (owner):* the band's tile edge is `min(tile, GRID_TILE_DEFAULT)`. Staying
+in view is the point of sitting outside the scroll container, and at the 640 cap a band that
+stays in view was most of an 800 px window; below the default nothing changes and the tiles
+still line up with the grid's first row. Un-sticking the band was the other way and was not
+taken: the grid window positions rows from the scroll offset, so the band would have become a
+top inset of it, and an import run's tile would scroll away for the length of the run.
+
 **D8. Two tiles.** `PendingCaptureTile` is a square at the grid's tile size with a `skeleton`
 pulse, the site name from the adapter record when there is one, and the page title truncated —
 no image: loading `imageUrl` in the webview would be a second download of the same bytes, and

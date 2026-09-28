@@ -9,8 +9,9 @@ action registered before its image exists.
 
 ### Requirement: Work in flight is shown where the result will appear
 The library screen SHALL show every capture the app has been told is coming and every import
-run that is running or waiting, as tiles at the grid's tile size placed above the grid's first
-row, and SHALL show a new one within the same interaction that started it, before any bytes
+run that is running or waiting, as tiles placed above the grid's first row at the grid's tile
+size up to the default size — above it the tiles stay at the default, so a band that stays in
+view while the grid scrolls never takes most of the window — and SHALL show a new one within the same interaction that started it, before any bytes
 have arrived. The tiles SHALL be shown whether or not the library holds images and whether or
 not the current search has results, and SHALL still be shown when the user leaves the library
 screen and comes back while the work is going.
