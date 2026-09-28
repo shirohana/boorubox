@@ -52,10 +52,11 @@ A search box SHALL accept the legacy extension's query syntax: space-separated t
 `a or b` is OR, `-tag` excludes, and the metatags `rating:`, `is:`, `tagcount:` and `account:`
 filter as they do in the legacy viewer. A tag term SHALL match without regard to case: tag
 names are stored lowercase (`tag-vocabulary`), and a term is lowercased before it is
-matched, so `Cat` finds what `cat` finds. Free text in `page title` and URLs SHALL be
-searchable. The metatag `collection:<name>` SHALL match images in the collection whose name,
-lower-cased with spaces as underscores, is `<name>`; `-collection:<name>` SHALL exclude them;
-a name no collection has SHALL match nothing.
+matched, so `Cat` finds what `cat` finds. Free text SHALL match an image whose page title or
+URL contains the text, ignoring case, whether or not the text starts or ends at a word: `ビーム`
+finds `かにビーム的插畫` and `yoto` finds `kyoto`. The metatag `collection:<name>` SHALL match
+images in the collection whose name, lower-cased with spaces as underscores, is `<name>`;
+`-collection:<name>` SHALL exclude them; a name no collection has SHALL match nothing.
 
 The metatags `gentags:`, `arttags:`, `chartags:`, `copytags:` and `metatags:` SHALL count an
 image's tags in one category — general, artist, character, copyright and meta respectively —
@@ -141,6 +142,14 @@ query standing.
 #### Scenario: A sidebar click keeps the keyword
 - **WHEN** the query is `collection:none` and the user excludes `Queue` from the collections list
 - **THEN** the query reads `collection:none -collection:queue`
+
+#### Scenario: Free text inside a CJK title
+- **WHEN** an image's page title is `かにビーム的插畫` and the free-text box reads `かにビーム`
+- **THEN** the image is in the result
+
+#### Scenario: Free text of two characters
+- **WHEN** the free-text box reads `ky` and an image's page title contains `Kyoto`
+- **THEN** the image is in the result
 
 ### Requirement: Lightbox
 Activating a thumbnail — by double click, Enter, Space, or a single click on the thumbnail

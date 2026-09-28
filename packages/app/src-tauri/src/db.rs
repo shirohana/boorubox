@@ -384,6 +384,35 @@ const SCHEMA_V13: &str = r"
 ALTER TABLE tags ADD COLUMN note TEXT;
 ";
 
+/// Schema v14 (`text-search-substring` design D2): `images_fts` recreated with
+/// the `trigram` tokenizer, so free text matches a substring inside a token
+/// instead of only a whole one — `unicode61` (v1) made a CJK run or a word one
+/// token, which is why `ビーム` inside `かにビーム的插畫` found nothing and
+/// `yoto` missed `kyoto`. FTS5 has no ALTER for a virtual table's tokenizer, so
+/// the table is dropped and recreated rather than migrated in place. The three
+/// triggers on `images` (`images_fts_insert`, `images_fts_delete`,
+/// `images_fts_update`, still v1) only name `images_fts` in their bodies, and
+/// SQLite does not bind a trigger body to the table it names until the trigger
+/// fires — they survive the drop untouched and write straight into the new
+/// table. `rebuild` repopulates it from `images`, the source of truth an
+/// external-content table always defers to; a library built from sidecars runs
+/// this migration too, so it gets the trigram index the same way. `SCHEMA_V1`
+/// is not edited: a shipped schema is never rewritten.
+const SCHEMA_V14: &str = r"
+DROP TABLE images_fts;
+
+CREATE VIRTUAL TABLE images_fts USING fts5 (
+    page_title,
+    page_url,
+    image_url,
+    content = 'images',
+    content_rowid = 'rowid',
+    tokenize = 'trigram'
+);
+
+INSERT INTO images_fts (images_fts) VALUES ('rebuild');
+";
+
 /// One schema version's step: plain SQL for every version but the one
 /// `merge_case_duplicates` is (its own doc comment says why that one has to be
 /// Rust).
@@ -408,6 +437,7 @@ const MIGRATIONS: &[Migration] = &[
     Migration::Sql(SCHEMA_V11),
     Migration::Sql(SCHEMA_V12),
     Migration::Sql(SCHEMA_V13),
+    Migration::Sql(SCHEMA_V14),
 ];
 
 /// Open (creating if needed) the library database with the pragmas D2 fixes,
@@ -1017,6 +1047,41 @@ mod tests {
             .unwrap();
         assert_eq!(note, None);
         assert_eq!(fts_matches(&conn, "kyoto"), vec!["a".to_string()]);
+    }
+
+    /// `text-search-substring` task 1.1: a v13 database with a CJK title
+    /// migrates to the trigram index, and a quoted substring that is not a
+    /// whole token — `unicode61` would have tokenized the title as one run and
+    /// missed it — now finds the row.
+    #[test]
+    fn a_v13_library_with_a_cjk_title_migrates_to_a_trigram_index() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("library.sqlite");
+
+        let conn = Connection::open(&path).unwrap();
+        conn.execute_batch(SCHEMA_V1).unwrap();
+        conn.execute_batch(SCHEMA_V2).unwrap();
+        conn.execute_batch(SCHEMA_V3).unwrap();
+        conn.execute_batch(SCHEMA_V4).unwrap();
+        conn.execute_batch(SCHEMA_V5).unwrap();
+        conn.execute_batch(SCHEMA_V6).unwrap();
+        conn.execute_batch(SCHEMA_V7).unwrap();
+        conn.execute_batch(SCHEMA_V8).unwrap();
+        conn.execute_batch(SCHEMA_V10).unwrap();
+        conn.execute_batch(SCHEMA_V11).unwrap();
+        conn.execute_batch(SCHEMA_V12).unwrap();
+        conn.execute_batch(SCHEMA_V13).unwrap();
+        conn.pragma_update(None, "user_version", 13i64).unwrap();
+        insert_bare_image(&conn, "a", "かにビーム的插畫");
+        drop(conn);
+
+        let conn = open(&path).unwrap();
+
+        let version: i64 = conn
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, MIGRATIONS.len() as i64);
+        assert_eq!(fts_matches(&conn, "\"ビーム\""), vec!["a".to_string()]);
     }
 
     /// The `CHECK` design D1 adds (task 1.1's "why the CHECK"): a category

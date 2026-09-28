@@ -1,6 +1,7 @@
 //! Compiles a `ParsedTagSearch` into SQL — AND tags, OR groups, exclusions,
-//! rating, `is:`, `tagcount:`, `account:` and the FTS5 free-text match — and
-//! owns the `x_account()` scalar those account filters need (design D3).
+//! rating, `is:`, `tagcount:`, `account:` and the FTS5 substring free-text
+//! match — and owns the `x_account()` scalar those account filters need
+//! (design D3).
 //!
 //! It also compiles the sort and the grouping (design D6, D7), so nothing in
 //! the webview decides membership of a result, its order or its groups.
@@ -833,15 +834,48 @@ fn has_any_tag(count: usize) -> String {
     )
 }
 
+/// `text-search-substring` design D3: the `trigram` tokenizer (design D1)
+/// cannot answer a MATCH of fewer than three characters — it returns no rows,
+/// by FTS5's own design, rather than erroring — so text that short falls back
+/// to a `LIKE` scan of the same three columns. `chars().count()`, not byte
+/// length: `かに` is two characters (six UTF-8 bytes), and the box must not go
+/// dead for a two-character CJK query any more than for `AI`.
+const TRIGRAM_MINIMUM_CHARS: usize = 3;
+
 fn push_text(filter: &mut Filter, text: &str) {
     let text = text.trim();
     if text.is_empty() {
+        return;
+    }
+    if text.chars().count() < TRIGRAM_MINIMUM_CHARS {
+        let pattern = format!("%{}%", like_literal(text));
+        filter.add_bound(
+            r"(page_title LIKE ? ESCAPE '\' OR page_url LIKE ? ESCAPE '\' OR image_url LIKE ? ESCAPE '\')",
+            [
+                Value::Text(pattern.clone()),
+                Value::Text(pattern.clone()),
+                Value::Text(pattern),
+            ],
+        );
         return;
     }
     filter.add_bound(
         "images.rowid IN (SELECT rowid FROM images_fts WHERE images_fts MATCH ?)",
         [Value::Text(fts_string(text))],
     );
+}
+
+/// Escape `\`, `%` and `_` in `text` with `\` so it can be dropped into a
+/// `LIKE ... ESCAPE '\'` pattern as literal data. Does not add the `%`
+/// wildcards itself — the caller wraps the escaped text in whatever match it
+/// wants (`push_text` wraps it in `%...%` for "contains"; `source-filter`
+/// maps its own `*` to `%` before wrapping). Order matters: `\` is escaped
+/// first, so escaping `%` and `_` afterward never doubles an escape they
+/// introduced.
+pub(crate) fn like_literal(text: &str) -> String {
+    text.replace('\\', "\\\\")
+        .replace('%', "\\%")
+        .replace('_', "\\_")
 }
 
 /// Wrap what the user typed as one FTS5 string literal. Unquoted, `-`, `:`,
@@ -1844,6 +1878,63 @@ mod tests {
         );
     }
 
+    /// The base fixture plus one CJK-titled image, for the substring tests
+    /// (`text-search-substring` task 1.2) that need a title no ASCII test
+    /// touches. A separate helper rather than a row in `fixture()` itself: that
+    /// fixture is shared by every test in this module, most of them asserting
+    /// an exact total, and a sixth row would silently shift every one of them.
+    fn fixture_with_cjk_title() -> Fixture {
+        let fixture = fixture();
+        store(
+            &fixture.library,
+            "crab-beam",
+            &png_bytes(4, 4),
+            &[],
+            None,
+            Some("https://beam.test/crab/1"),
+            "かにビーム的插畫",
+            700,
+        );
+        fixture
+    }
+
+    #[test]
+    fn free_text_matches_inside_a_cjk_title() {
+        let fixture = fixture_with_cjk_title();
+
+        assert_eq!(
+            found(&fixture, &text_request("かにビーム")),
+            vec!["crab-beam"]
+        );
+        assert_eq!(found(&fixture, &text_request("ビーム")), vec!["crab-beam"]);
+    }
+
+    #[test]
+    fn free_text_matches_inside_a_word() {
+        let fixture = fixture();
+
+        assert_eq!(found(&fixture, &text_request("yoto")), vec!["cat-s"]);
+    }
+
+    #[test]
+    fn free_text_ignores_case() {
+        let fixture = fixture();
+
+        assert_eq!(found(&fixture, &text_request("KYOTO")), vec!["cat-s"]);
+    }
+
+    #[test]
+    fn free_text_of_two_characters_matches_by_like() {
+        let fixture = fixture_with_cjk_title();
+
+        assert_eq!(found(&fixture, &text_request("ky")), vec!["cat-s"]);
+        assert_eq!(found(&fixture, &text_request("かに")), vec!["crab-beam"]);
+        assert!(
+            found(&fixture, &text_request("k_")).is_empty(),
+            "`_` is LIKE data, not a wildcard"
+        );
+    }
+
     #[test]
     fn free_text_is_data_not_fts_syntax() {
         let fixture = fixture();
@@ -1856,7 +1947,12 @@ mod tests {
                 "{text:?} reached FTS5 as syntax: {result:?}"
             );
         }
-        assert_eq!(found(&fixture, &text_request("\"kyoto\"")), vec!["cat-s"]);
+        // Under `unicode61` the quotes were punctuation the tokenizer dropped,
+        // so a matched pair searched the same as the bare word. Trigram
+        // indexes every character, quotes included, so a typed pair is now
+        // literal substring data: no title carries an actual `"`, and the text
+        // is still safe, just no longer equivalent to the unquoted search.
+        assert!(found(&fixture, &text_request("\"kyoto\"")).is_empty());
     }
 
     #[test]
