@@ -22,12 +22,15 @@
 
 {#if note}
   <!--
-    `delayDuration={400}` overrides the frame's own `Tooltip.Provider
+    `delayDuration={150}` overrides the frame's own `Tooltip.Provider
     delayDuration={0}` (`ui/sidebar/sidebar-provider.svelte`, which suits the
     sidebar's icon buttons and not a text that pops over a dense list); no new
     provider is mounted here — the frame's already wraps every mount point.
+    150 ms, down from 400 (owner, 2026-09-28: too slow to read a note in
+    passing) — enough that a pointer crossing the list does not pop every
+    note it passes, short enough that a pause on one reads at once.
   -->
-  <Tooltip.Root delayDuration={400}>
+  <Tooltip.Root delayDuration={150}>
     <Tooltip.Trigger tabindex={-1}>
       {#snippet child({ props })}
         <!--

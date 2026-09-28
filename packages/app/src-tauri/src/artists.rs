@@ -131,7 +131,7 @@ pub fn artist_tag(adapter: &SiteAdapterRecord) -> Option<String> {
 /// The record's own profile URL (design D4): `x` from `handle`, `pixiv` from
 /// `userId` (see [`PROFILE_URLS`]) — `None` for a site with no profile field
 /// the app reads, a missing field, or one that is not text.
-fn profile_url(adapter: &SiteAdapterRecord) -> Option<String> {
+fn record_profile_url(adapter: &SiteAdapterRecord) -> Option<String> {
     let (_, field, template) = PROFILE_URLS
         .iter()
         .find(|(site, _, _)| *site == adapter.site)?;
@@ -139,19 +139,53 @@ fn profile_url(adapter: &SiteAdapterRecord) -> Option<String> {
     Some(template.replace("{}", value))
 }
 
-/// The one candidate a capture's record offers for matching (design D4): its
-/// own profile URL ([`profile_url`]), normalised — `None` for a site with no
+/// The X account an image's page URL names, read by the rule the Account row
+/// and the `account:` filter already trust (`query::x_account`) — `None` for
+/// a page that is not an account's (X's own pages, any other site) or no
+/// page at all. Consulted only for an image stored with **no** adapter record
+/// (see [`profile_url`]).
+fn page_handle(page_url: Option<&str>) -> Option<&str> {
+    crate::query::x_account(page_url?)
+}
+
+/// The image's own profile URL: the record's ([`record_profile_url`]) when
+/// the image has a record, else — a legacy-bundle import, a capture whose page
+/// never answered the context ask — the X account its page URL names
+/// ([`page_handle`]). A record's fields are the author's while the page is
+/// the tab's address (`artist-entries` design D4), so the page is never read
+/// beside a record; with no record it is the one fact left, and a clicked
+/// image's address on X names its author — the addresses that do not (the
+/// timeline, search) are the reserved segments `x_account` refuses (D4,
+/// amended 2026-09-28).
+fn profile_url(adapter: Option<&SiteAdapterRecord>, page_url: Option<&str>) -> Option<String> {
+    match adapter {
+        Some(adapter) => record_profile_url(adapter),
+        None => page_handle(page_url).map(|handle| format!("https://x.com/{handle}")),
+    }
+}
+
+/// The artist tag a capture with this profile derives, entries aside:
+/// [`artist_tag`]'s reading of the record, or the page handle spelled as a
+/// tag for an image with no record — the same choice [`profile_url`] makes.
+pub fn derived_tag(adapter: Option<&SiteAdapterRecord>, page_url: Option<&str>) -> Option<String> {
+    match adapter {
+        Some(adapter) => artist_tag(adapter),
+        None => page_handle(page_url)
+            .map(tags::underscored)
+            .filter(|spelled| !spelled.is_empty()),
+    }
+}
+
+/// The one candidate an image offers for matching (design D4): its own
+/// profile URL ([`profile_url`]), normalised — `None` for a record with no
 /// profile field the app reads, a missing or non-text field, a URL that does
-/// not normalise, or no record at all (`preview`'s own call, over a tag with
-/// no entry or a menu opened with no image in scope). The page URL and the
-/// record's `postUrl`
-/// are not read here: the page URL is the tab's address, which on X is often
-/// the timeline or another user's profile when a repost is captured, and the
-/// post URL names the same handle the profile URL already does — an entry
-/// made to own either would tag every later capture from that page, or add
-/// nothing a profile-URL match does not already give.
-pub fn candidate(adapter: Option<&SiteAdapterRecord>) -> Option<String> {
-    normalized(&profile_url(adapter?)?)
+/// not normalise, or neither a record nor an account page (`preview`'s own
+/// call over a tag with no entry, or a menu opened with no image in scope).
+/// A record's `postUrl` is not read here: it names the same handle the
+/// profile URL already does, and an entry made to own it would add nothing
+/// a profile-URL match does not already give.
+pub fn candidate(adapter: Option<&SiteAdapterRecord>, page_url: Option<&str>) -> Option<String> {
+    normalized(&profile_url(adapter, page_url)?)
 }
 
 /// The entry that owns `candidate` (already normalised) — among several
@@ -180,7 +214,7 @@ pub fn derive(
     adapter: &SiteAdapterRecord,
     entries: &[ArtistEntry],
 ) -> Result<Option<String>> {
-    let Some(candidate) = candidate(Some(adapter)) else {
+    let Some(candidate) = candidate(Some(adapter), None) else {
         return Ok(artist_tag(adapter));
     };
     let owned_by_an_artist_tag = match owning_entry(&candidate, entries) {
@@ -341,7 +375,7 @@ pub fn preview(conn: &Connection, input: &ArtistPreviewInput) -> Result<ArtistPr
                 .collect()
         })
         .unwrap_or_default();
-    let candidate = candidate(input.adapter.as_ref())
+    let candidate = candidate(input.adapter.as_ref(), input.page_url.as_deref())
         .filter(|candidate| owning_entry(candidate, &entries).is_none());
     Ok(ArtistPreview {
         carriers,
@@ -351,14 +385,19 @@ pub fn preview(conn: &Connection, input: &ArtistPreviewInput) -> Result<ArtistPr
 }
 
 /// The image's own profile URL, the entry that owns it (if any), and the
-/// artist tag a capture from this record derives regardless of any entry
-/// (`artist-workflow` design D5) — `None` when the record yields no profile
-/// URL at all. Ownership does not consult the owning entry's category the way
+/// artist tag a capture from this image derives regardless of any entry
+/// (`artist-workflow` design D5) — `None` when the image yields no profile
+/// URL at all ([`candidate`]: its record, or its page URL for an image stored
+/// with none). Ownership does not consult the owning entry's category the way
 /// [`derive`] does: the row this backs names who owns the URL as the
 /// vocabulary has it today, and a stale category is fixed where it is listed
 /// (Settings → Artists), not hidden from the chip.
-pub fn artist_match(conn: &Connection, adapter: &SiteAdapterRecord) -> Result<Option<ArtistMatch>> {
-    let Some(candidate) = candidate(Some(adapter)) else {
+pub fn artist_match(
+    conn: &Connection,
+    adapter: Option<&SiteAdapterRecord>,
+    page_url: Option<&str>,
+) -> Result<Option<ArtistMatch>> {
+    let Some(candidate) = candidate(adapter, page_url) else {
         return Ok(None);
     };
     let entries = list(conn)?;
@@ -366,7 +405,7 @@ pub fn artist_match(conn: &Connection, adapter: &SiteAdapterRecord) -> Result<Op
     Ok(Some(ArtistMatch {
         url: format!("https://{candidate}"),
         owner,
-        derived: artist_tag(adapter),
+        derived: derived_tag(adapter, page_url),
     }))
 }
 
@@ -535,26 +574,29 @@ pub fn rename(library: &Library, input: &RenameArtistInput) -> Result<RenameArti
 // Applying an entry to stored images (`artist-workflow` design D6)
 // ---------------------------------------------------------------------------
 
-/// Every non-deleted image whose record's own profile URL (design D4) some
-/// URL in `owned_urls` (already normalised) owns — the one scan
-/// [`apply_preview`] and [`apply`] both read, so "images from these URLs" has
-/// one answer. A record that does not parse as JSON, or yields no candidate,
-/// is skipped rather than failing the scan.
+/// Every non-deleted image whose own profile URL ([`candidate`]: its record,
+/// or its page URL for an image stored with none) some URL in `owned_urls`
+/// (already normalised) owns — the one scan [`apply_preview`] and [`apply`]
+/// both read, so "images from these URLs" has one answer. A record that does
+/// not parse as JSON is read as no record; an image yielding no candidate is
+/// skipped rather than failing the scan.
 fn from_profiles(conn: &Connection, owned_urls: &[String]) -> Result<Vec<String>> {
-    let mut stmt = conn.prepare("SELECT id, adapter_json FROM images WHERE deleted_at IS NULL")?;
+    let mut stmt =
+        conn.prepare("SELECT id, adapter_json, page_url FROM images WHERE deleted_at IS NULL")?;
     let rows = stmt.query_map([], |row| {
-        Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?))
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, Option<String>>(1)?,
+            row.get::<_, Option<String>>(2)?,
+        ))
     })?;
     let mut ids = Vec::new();
     for row in rows {
-        let (id, adapter_json) = row?;
-        let Some(adapter_json) = adapter_json else {
-            continue;
-        };
-        let Ok(adapter) = serde_json::from_str::<SiteAdapterRecord>(&adapter_json) else {
-            continue;
-        };
-        let Some(candidate) = candidate(Some(&adapter)) else {
+        let (id, adapter_json, page_url) = row?;
+        let adapter = adapter_json
+            .as_deref()
+            .and_then(|json| serde_json::from_str::<SiteAdapterRecord>(json).ok());
+        let Some(candidate) = candidate(adapter.as_ref(), page_url.as_deref()) else {
             continue;
         };
         if owned_urls.iter().any(|url| owns(url, &candidate)) {
@@ -806,7 +848,7 @@ mod tests {
         );
 
         assert_eq!(
-            candidate(Some(&record)),
+            candidate(Some(&record), None),
             Some("pixiv.net/users/3439325".to_string())
         );
     }
@@ -815,7 +857,56 @@ mod tests {
     fn a_record_without_a_user_id_yields_no_pixiv_profile_candidate() {
         let record = adapter("pixiv", serde_json::json!({ "artist": "someone" }));
 
-        assert_eq!(candidate(Some(&record)), None);
+        assert_eq!(candidate(Some(&record), None), None);
+    }
+
+    /// An image stored with no record — a legacy-bundle import, a capture
+    /// whose page never answered — offers the X account its page URL names,
+    /// the account the Account row already shows for it.
+    #[test]
+    fn an_image_without_a_record_offers_its_x_page_as_a_profile_candidate() {
+        assert_eq!(
+            candidate(
+                None,
+                Some("https://x.com/Alice_Art/status/1984922180078211565/photo/1")
+            ),
+            normalized("https://x.com/alice_art"),
+        );
+        assert_eq!(
+            candidate(None, Some("https://twitter.com/alice_art/status/1")),
+            normalized("https://x.com/alice_art"),
+        );
+        assert_eq!(
+            derived_tag(None, Some("https://x.com/Alice_Art/status/1")),
+            Some("alice_art".to_string()),
+        );
+    }
+
+    #[test]
+    fn an_image_without_a_record_off_an_account_page_offers_no_candidate() {
+        assert_eq!(candidate(None, Some("https://x.com/home")), None);
+        assert_eq!(candidate(None, Some("https://x.com/i/status/1")), None);
+        assert_eq!(
+            candidate(None, Some("https://www.pixiv.net/artworks/1")),
+            None
+        );
+        assert_eq!(candidate(None, None), None);
+        assert_eq!(derived_tag(None, Some("https://x.com/home")), None);
+    }
+
+    /// The page is the tab's address, not the author's (design D4): a record
+    /// that yields no profile URL never falls back to it.
+    #[test]
+    fn a_record_never_defers_to_the_page_url() {
+        let record = adapter("pixiv", serde_json::json!({ "artist": "someone" }));
+        assert_eq!(
+            candidate(Some(&record), Some("https://x.com/alice_art/status/1")),
+            None
+        );
+        assert_eq!(
+            derived_tag(Some(&record), Some("https://x.com/alice_art/status/1")),
+            Some("someone".to_string())
+        );
     }
 
     // ---- the store (task 1.4) ----
@@ -1487,6 +1578,7 @@ mod tests {
             &ArtistPreviewInput {
                 tag: "metaljelly".to_string(),
                 adapter: None,
+                page_url: None,
             },
         )
         .unwrap();
@@ -1500,6 +1592,24 @@ mod tests {
     }
 
     #[test]
+    fn artist_preview_offers_the_page_url_of_an_image_without_a_record() {
+        let (_dir, library) = library();
+        let preview = preview(
+            &library.conn,
+            &ArtistPreviewInput {
+                tag: "alice".to_string(),
+                adapter: None,
+                page_url: Some("https://x.com/Alice_Art/status/1/photo/1".to_string()),
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            preview.candidate,
+            Some("https://x.com/alice_art".to_string())
+        );
+    }
+
+    #[test]
     fn artist_preview_offers_an_unowned_candidate() {
         let (_dir, library) = library();
         let record = adapter("x", serde_json::json!({ "handle": "alice_art" }));
@@ -1509,6 +1619,7 @@ mod tests {
             &ArtistPreviewInput {
                 tag: "alice_art".to_string(),
                 adapter: Some(record),
+                page_url: None,
             },
         )
         .unwrap();
@@ -1534,6 +1645,7 @@ mod tests {
             &ArtistPreviewInput {
                 tag: "metaljelly".to_string(),
                 adapter: Some(record),
+                page_url: None,
             },
         )
         .unwrap();
@@ -1552,6 +1664,7 @@ mod tests {
             &ArtistPreviewInput {
                 tag: "alice".to_string(),
                 adapter: Some(record),
+                page_url: None,
             },
         )
         .unwrap();
@@ -1569,6 +1682,7 @@ mod tests {
             &ArtistPreviewInput {
                 tag: "someone".to_string(),
                 adapter: None,
+                page_url: None,
             },
         )
         .unwrap();
@@ -1587,6 +1701,7 @@ mod tests {
             &ArtistPreviewInput {
                 tag: "someone".to_string(),
                 adapter: Some(record),
+                page_url: None,
             },
         )
         .unwrap();
@@ -1606,7 +1721,9 @@ mod tests {
         .unwrap();
         let record = adapter("x", serde_json::json!({ "handle": "MetalJelly0811" }));
 
-        let matched = artist_match(&library.conn, &record).unwrap().unwrap();
+        let matched = artist_match(&library.conn, Some(&record), None)
+            .unwrap()
+            .unwrap();
 
         assert_eq!(matched.url, "https://x.com/metaljelly0811");
         assert_eq!(matched.owner, Some("metaljelly".to_string()));
@@ -1618,7 +1735,9 @@ mod tests {
         let (_dir, library) = library();
         let record = adapter("x", serde_json::json!({ "handle": "alice_art" }));
 
-        let matched = artist_match(&library.conn, &record).unwrap().unwrap();
+        let matched = artist_match(&library.conn, Some(&record), None)
+            .unwrap()
+            .unwrap();
 
         assert_eq!(matched.owner, None);
         assert_eq!(matched.derived, Some("alice_art".to_string()));
@@ -1632,7 +1751,9 @@ mod tests {
             serde_json::json!({ "artist": "someone", "userId": "3439325" }),
         );
 
-        let matched = artist_match(&library.conn, &record).unwrap().unwrap();
+        let matched = artist_match(&library.conn, Some(&record), None)
+            .unwrap()
+            .unwrap();
 
         assert_eq!(matched.url, "https://pixiv.net/users/3439325");
         assert_eq!(matched.derived, Some("someone".to_string()));
@@ -1651,7 +1772,9 @@ mod tests {
             serde_json::json!({ "artist": "someone", "userId": "3439325" }),
         );
 
-        let matched = artist_match(&library.conn, &record).unwrap().unwrap();
+        let matched = artist_match(&library.conn, Some(&record), None)
+            .unwrap()
+            .unwrap();
 
         assert_eq!(matched.owner, Some("kani_beam".to_string()));
         assert_eq!(matched.derived, Some("someone".to_string()));
@@ -1676,7 +1799,9 @@ mod tests {
             serde_json::json!({ "artist": "someone", "userId": "3439325" }),
         );
 
-        let matched = artist_match(&library.conn, &record).unwrap().unwrap();
+        let matched = artist_match(&library.conn, Some(&record), None)
+            .unwrap()
+            .unwrap();
 
         assert_eq!(matched.owner, Some("kani_beam".to_string()));
     }
@@ -1685,10 +1810,53 @@ mod tests {
     fn artist_match_is_none_without_a_profile_url() {
         let (_dir, library) = library();
         let pixiv = adapter("pixiv", serde_json::json!({ "artist": "someone" }));
-        assert_eq!(artist_match(&library.conn, &pixiv).unwrap(), None);
+        assert_eq!(
+            artist_match(&library.conn, Some(&pixiv), None).unwrap(),
+            None
+        );
 
         let danbooru = adapter("danbooru", serde_json::json!({ "artist": "someone" }));
-        assert_eq!(artist_match(&library.conn, &danbooru).unwrap(), None);
+        assert_eq!(
+            artist_match(&library.conn, Some(&danbooru), None).unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn artist_match_of_an_image_without_a_record_reads_its_page_url() {
+        let (_dir, library) = library();
+        upsert(&library, &entry("alice", &["https://x.com/alice_art"])).unwrap();
+
+        let matched = artist_match(
+            &library.conn,
+            None,
+            Some("https://x.com/Alice_Art/status/1984922180078211565/photo/1"),
+        )
+        .unwrap()
+        .unwrap();
+
+        assert_eq!(matched.url, "https://x.com/alice_art");
+        assert_eq!(matched.owner, Some("alice".to_string()));
+        assert_eq!(matched.derived, Some("alice_art".to_string()));
+    }
+
+    #[test]
+    fn artist_match_is_none_for_an_image_without_a_record_off_an_account_page() {
+        let (_dir, library) = library();
+        assert_eq!(
+            artist_match(&library.conn, None, Some("https://x.com/home")).unwrap(),
+            None
+        );
+        assert_eq!(
+            artist_match(
+                &library.conn,
+                None,
+                Some("https://www.pixiv.net/artworks/1")
+            )
+            .unwrap(),
+            None
+        );
+        assert_eq!(artist_match(&library.conn, None, None).unwrap(), None);
     }
 
     // ---- apply / apply_preview (task 1.4) ----
@@ -1713,6 +1881,55 @@ mod tests {
                 params![json, id],
             )
             .unwrap();
+    }
+
+    /// Stores an image with no adapter record at all and the page it came
+    /// from — the shape of a legacy-bundle import.
+    fn store_at_page(library: &Library, id: &str, page_url: &str, tags: &[&str]) {
+        store_captured(library, id, tags);
+        library
+            .conn
+            .execute(
+                "UPDATE images SET page_url = ?1 WHERE id = ?2",
+                params![page_url, id],
+            )
+            .unwrap();
+    }
+
+    #[test]
+    fn apply_tags_an_image_without_a_record_by_its_page_url() {
+        let (_dir, library) = library();
+        store_at_page(
+            &library,
+            "a",
+            "https://x.com/Alice_Art/status/1/photo/1",
+            &[],
+        );
+        store_at_page(
+            &library,
+            "b",
+            "https://x.com/someone_else/status/2/photo/1",
+            &[],
+        );
+        store_at_page(&library, "c", "https://x.com/home", &[]);
+        upsert(&library, &entry("alice", &["https://x.com/alice_art"])).unwrap();
+
+        let preview =
+            apply_preview(&library.conn, &["https://x.com/alice_art".to_string()]).unwrap();
+        assert_eq!(preview.images, 1);
+
+        let report = apply(&library, "alice").unwrap();
+        assert_eq!(
+            report,
+            ArtistApplyReport {
+                tagged: 1,
+                skipped: 0
+            }
+        );
+        let tags_of = |id: &str| ingest::require_record(&library.conn, id).unwrap().tags;
+        assert_eq!(tags_of("a"), vec!["alice".to_string()]);
+        assert!(tags_of("b").is_empty());
+        assert!(tags_of("c").is_empty());
     }
 
     #[test]

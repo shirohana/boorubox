@@ -327,15 +327,18 @@ pub struct ArtistEntry {
 }
 
 /// What `artist_preview` takes: the tag being edited and, when the dialog was
-/// opened from an image, that image's own record (`artist-workflow` design
-/// D3) — `adapter` carries `null` rather than being omitted when there is
-/// none, and is `null` whenever the dialog opens from the sidebar row or the
-/// pinned chip, which have no image in scope.
+/// opened from an image, that image's own record and page URL
+/// (`artist-workflow` design D3) — both carry `null` rather than being
+/// omitted when there is none, and both are `null` whenever the dialog opens
+/// from the sidebar row or the pinned chip, which have no image in scope.
+/// `page_url` is what an image stored with no record (a legacy-bundle import)
+/// is matched by (`artists::candidate`).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ArtistPreviewInput {
     pub tag: String,
     pub adapter: Option<SiteAdapterRecord>,
+    pub page_url: Option<String>,
 }
 
 /// What `artist_preview` answers with (`artist-workflow` design D3):
@@ -1437,18 +1440,21 @@ mod tests {
                 site: "x".to_string(),
                 fields: serde_json::json!({ "handle": "metaljelly0811" }),
             }),
+            page_url: Some("https://x.com/metaljelly0811/status/1".to_string()),
         };
         assert_eq!(
             serde_json::to_value(&preview_input).unwrap(),
             serde_json::json!({
                 "tag": "metaljelly0811",
                 "adapter": { "site": "x", "fields": { "handle": "metaljelly0811" } },
+                "pageUrl": "https://x.com/metaljelly0811/status/1",
             }),
         );
         assert_eq!(
             serde_json::from_value::<ArtistPreviewInput>(serde_json::json!({
                 "tag": "metaljelly0811",
                 "adapter": { "site": "x", "fields": { "handle": "metaljelly0811" } },
+                "pageUrl": "https://x.com/metaljelly0811/status/1",
             }))
             .unwrap(),
             preview_input,
@@ -1457,14 +1463,15 @@ mod tests {
         let no_adapter = ArtistPreviewInput {
             tag: "someone".to_string(),
             adapter: None,
+            page_url: None,
         };
         assert_eq!(
             serde_json::to_value(&no_adapter).unwrap(),
-            serde_json::json!({ "tag": "someone", "adapter": null }),
+            serde_json::json!({ "tag": "someone", "adapter": null, "pageUrl": null }),
         );
         assert_eq!(
             serde_json::from_value::<ArtistPreviewInput>(serde_json::json!({
-                "tag": "someone", "adapter": null,
+                "tag": "someone", "adapter": null, "pageUrl": null,
             }))
             .unwrap(),
             no_adapter,

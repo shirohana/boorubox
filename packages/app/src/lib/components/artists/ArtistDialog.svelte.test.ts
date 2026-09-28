@@ -69,7 +69,7 @@ async function submit() {
   await settle()
 }
 
-const edit: ArtistDialogRequest = { mode: 'edit', tag: 'alice', adapter: null }
+const edit: ArtistDialogRequest = { mode: 'edit', tag: 'alice', adapter: null, pageUrl: null }
 
 it('after a landed rename, a refused apply keeps the dialog open and the retry runs only the apply', async () => {
   const calls = ipc({ artists_apply: ['disk full'] })

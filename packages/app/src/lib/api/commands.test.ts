@@ -751,6 +751,7 @@ it('artist_preview passes the input and returns the preview', async () => {
   const input: ArtistPreviewInput = {
     tag: 'metaljelly',
     adapter: null,
+    pageUrl: null,
   }
   const preview: ArtistPreview = {
     carriers: 120,
@@ -773,8 +774,15 @@ it('artist_match passes the adapter and returns the match', async () => {
     derived: 'metaljelly0811',
   }
   const calls = spyIPC(matched)
-  await expect(artistMatch(adapter)).resolves.toEqual(matched)
-  expect(calls).toHaveBeenCalledWith('artist_match', { adapter })
+  const pageUrl = 'https://x.com/metaljelly0811/status/1'
+  await expect(artistMatch(adapter, pageUrl)).resolves.toEqual(matched)
+  expect(calls).toHaveBeenCalledWith('artist_match', { adapter, pageUrl })
+})
+
+it('artist_match passes a record-less image as its page URL alone', async () => {
+  const calls = spyIPC(null)
+  await expect(artistMatch(null, 'https://x.com/alice/status/1')).resolves.toBeNull()
+  expect(calls).toHaveBeenCalledWith('artist_match', { adapter: null, pageUrl: 'https://x.com/alice/status/1' })
 })
 
 it('artists_apply_preview passes the urls and returns the preview', async () => {

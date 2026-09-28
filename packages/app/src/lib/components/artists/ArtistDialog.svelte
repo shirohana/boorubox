@@ -106,7 +106,11 @@
 
   async function readSeed(request: ArtistDialogRequest): Promise<Seed> {
     if (request.mode === 'edit') {
-      const preview = await artistPreview({ tag: request.tag, adapter: request.adapter })
+      const preview = await artistPreview({
+        tag: request.tag,
+        adapter: request.adapter,
+        pageUrl: request.pageUrl,
+      })
       return {
         carriers: preview.carriers,
         urls: [...preview.urls, ...(preview.candidate ? [preview.candidate] : [])],
@@ -116,7 +120,7 @@
     }
     const [entries, preview] = await Promise.all([
       artistsList(),
-      artistPreview({ tag: request.tag, adapter: null }),
+      artistPreview({ tag: request.tag, adapter: null, pageUrl: null }),
     ])
     return { carriers: preview.carriers, urls: [], initialUrls: [], entries }
   }

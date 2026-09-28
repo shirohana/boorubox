@@ -37,7 +37,7 @@ the inspector's badge — SHALL offer "Edit artist…", and no tag of another ca
 offer it (a tag of another category is renamed through bulk edit — owner, 2026-09-25). The
 dialog SHALL show, before anything is written: the name, prefilled with the tag; the profile
 URLs the tag's entry owns, editable, one per line, empty for a tag with no entry; when opened
-from an image whose record yields a profile URL that no entry owns yet, that URL appended as
+from an image that yields a profile URL that no entry owns yet, that URL appended as
 the last line; and how many images carry the tag, trash included. A profile URL an entry
 already owns — this one or another — SHALL NOT be appended. The confirming button SHALL read
 "Save" while the name is unchanged and "Rename N images" once it differs, and SHALL be
@@ -148,14 +148,16 @@ show nothing there. The note is edited from the tag's own context menu, not from
 - **THEN** its entry reads `alice`, then its URLs, with nothing between
 
 ### Requirement: The inspector names the artist who owns the author
-For an image whose adapter record yields a profile URL — an X record's handle, a Pixiv
-record's user id — the inspector SHALL show a row of the image's facts labelled Artist,
-directly above the Account row's place. When an entry owns that URL, the row SHALL show the
+For an image that yields a profile URL — an X record's handle, a Pixiv record's user id, or
+for an image stored with no record at all (a legacy-bundle import) the X account its page URL
+names, read by the rule the Account row reads it by — the inspector SHALL show a row of the
+image's facts labelled Artist, directly above the Account row's place. An image with a record
+SHALL NOT be matched by its page URL: the page is the tab's address, not the author's. When an entry owns that URL, the row SHALL show the
 entry's tag in the artist colour, and acting on it SHALL toggle that tag in the tag search
 exactly as acting on a tag badge does, showing the same included or excluded marking. When
 no entry owns it, the row SHALL offer "Create artist…". The row SHALL be absent for an image
-whose record yields no profile URL: another site, a file import, or a Pixiv capture stored
-before the record carried the user id. The row SHALL be read for the image the panel shows
+that yields no profile URL: another site, a file import, a Pixiv capture stored before the
+record carried the user id, or an image with no record whose page is not an X account's. The row SHALL be read for the image the panel shows
 when it changes, and again after an artist is saved from the dialog, and an answer for an
 image the panel has since left SHALL NOT be shown. The row SHALL NOT add or remove a tag
 until the user confirms a dialog.
@@ -174,6 +176,14 @@ until the user confirms a dialog.
 
 #### Scenario: An old Pixiv capture
 - **WHEN** the panel shows a Pixiv capture whose record has no `userId`
+- **THEN** no Artist row is shown
+
+#### Scenario: A legacy import from X
+- **WHEN** no entry owns `https://x.com/alice_art` and the panel shows an image imported from a legacy bundle, stored with no record, whose page URL is `https://x.com/Alice_Art/status/1/photo/1`
+- **THEN** the Artist row offers "Create artist…", and the dialog it opens prefills `alice_art` and `https://x.com/alice_art`
+
+#### Scenario: A legacy import off an account page
+- **WHEN** the panel shows an image stored with no record whose page URL is `https://x.com/home`
 - **THEN** no Artist row is shown
 
 #### Scenario: Moving on before the answer
@@ -215,9 +225,10 @@ image unchanged.
 
 ### Requirement: An entry is applied to stored images on request
 Applying an artist entry SHALL add its tag, as an artist tag, to every stored image outside
-the trash whose record's profile URL the entry owns, keeping every tag the image already has;
+the trash whose profile URL the entry owns — its record's, or for an image stored with no
+record the X account its page URL names — keeping every tag the image already has;
 an image already carrying the tag SHALL be left unchanged, so applying twice changes nothing
-the second time. Images whose record yields no profile URL SHALL NOT be touched. The
+the second time. Images that yield no profile URL SHALL NOT be touched. The
 application SHALL be one transaction, SHALL record the change as each tagged image's last
 change, and SHALL answer with how many images it tagged and how many it left because they
 already carried the tag. Applying SHALL happen only when the user asks for it — from Create

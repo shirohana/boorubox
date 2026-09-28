@@ -617,11 +617,15 @@ export function artistPreview(input: ArtistPreviewInput): Promise<ArtistPreview>
 
 /**
  * The image's own profile URL, the entry that owns it (if any), and the
- * artist tag a capture from this record derives — `null` for a record with
- * no profile URL at all (`artist-workflow` design D5, D8).
+ * artist tag a capture from this image derives — `null` for an image with no
+ * profile URL at all. `adapter` is the image's record; `pageUrl` is what an
+ * image stored with none is matched by (`artist-workflow` design D5, D8).
  */
-export function artistMatch(adapter: SiteAdapterRecord): Promise<ArtistMatch | null> {
-  return invoke('artist_match', { adapter })
+export function artistMatch(
+  adapter: SiteAdapterRecord | null,
+  pageUrl: string | null,
+): Promise<ArtistMatch | null> {
+  return invoke('artist_match', { adapter, pageUrl })
 }
 
 /**

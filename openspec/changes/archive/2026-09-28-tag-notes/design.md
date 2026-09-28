@@ -113,7 +113,9 @@ becomes "… with no note".
 props `{ note: string | null, portalTo?: Element }`, renders nothing for `null`. Otherwise a
 `Tooltip.Root delayDuration={400}` (overriding the frame provider's `0`, which suits the
 sidebar's icon buttons and not a text that pops over a dense list; no new provider — the
-frame's covers every mount point) around `StickyNoteIcon` (`size-3 shrink-0
+frame's covers every mount point; *2026-09-28: 150 ms — 400 was too slow to read a note in
+passing, owner's call; long enough that a pointer crossing the list does not pop every note it
+passes*) around `StickyNoteIcon` (`size-3 shrink-0
 text-muted-foreground`, `aria-label="Tag note"`). `StickyNote` rather than `NotebookPen`:
 the glyph says "there is a note", not "edit"; the pen reads as an action on a row full of
 actions. The trigger renders through `child` as a `<span>`: the default `<button>` would nest
@@ -152,6 +154,11 @@ while open logs `derived_inert`): `TagSidebar` one, no `portalTo`; `Inspector` o
 chips of both strips and the badges, with `{portalTo}`, whose `onclose` also calls
 `onrelease?.()` as the rename dialog's does. The prop is required so a fourth mount that
 forgets it fails typecheck rather than offering a dead item.
+
+*Amended 2026-09-28:* "Edit note…" sits **before** the Danbooru look-up, not after it, so the
+two edit items ("Edit artist…" when shown, "Edit note…") are adjacent: both open a dialog in
+the app, the look-up leaves for the browser, and the owner's hand read the look-up between
+them as a break (owner, 2026-09-28).
 
 **D11. The dialog.** `components/tags/TagNoteDialog.svelte`, props `{ open, name, portalTo?,
 onclose }`, the `CollectionNameDialog` shape. On an `open` transition: `text =

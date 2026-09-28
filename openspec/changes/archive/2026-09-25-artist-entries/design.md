@@ -73,6 +73,19 @@ before (owner, 2026-09-25: "make sure every save got one auto-tagged artist"). A
 any other site yields none, entries or not (`capture-ingest`, "A site with no author field the
 app reads").
 
+*Amended 2026-09-28 (`artist-workflow` follow-up, owner's ask):* the page URL stays out of
+the candidate **beside a record**, for the reason above — but an image stored with no record
+at all (a legacy-bundle import, a capture whose page never answered the context ask; 199 of
+the owner's 200 imported images) has no other fact, and the app already reads that fact for
+it: the Account row and the `account:` filter both take the X account from the page URL
+(`query::x_account`), which refuses the timeline, search and X's other own pages. So
+`artists::candidate(adapter, page_url)` falls back to `https://x.com/<account>` **only when
+`adapter` is `None`**, and `derived_tag` to that handle spelled as a tag; `artist_match`,
+`artist_preview` and the apply scan read it, so the Artist row, Create artist and Apply reach
+imported images. `derive` at capture time still passes no page (every capture the extension
+sends carries a record; a capture without one gains no artist tag, as before). The reason a
+record never defers to the page stands and is pinned by a test.
+
 **D5. `rename_artist` is one transaction: the entry, then the retag.**
 `RenameArtistInput { from: string, to: string, urls: string[] }` →
 `RenameArtistReport { retagged: number, merged: boolean }`. Steps, refusing before any write:

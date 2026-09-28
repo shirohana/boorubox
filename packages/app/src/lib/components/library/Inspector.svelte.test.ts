@@ -309,6 +309,24 @@ it('the Artist row\'s owner toggles the owner\'s tag in the query', async () => 
   unmount(instance)
 })
 
+it('the Artist row asks by page URL for an image stored with no record, and offers Create artist…', async () => {
+  const payloads: unknown[] = []
+  const ipc = (cmd: string, payload: unknown) => {
+    if (cmd !== 'artist_match') return null
+    payloads.push(payload)
+    return { url: 'https://x.com/alice_art', owner: null, derived: 'alice_art' } satisfies ArtistMatch
+  }
+  const pageUrl = 'https://x.com/Alice_Art/status/1/photo/1'
+  const { target, instance } = setup(img({ id: 'legacy', adapter: undefined, pageUrl }), { ipc })
+  flushSync()
+  await settle()
+
+  expect(payloads).toEqual([{ adapter: null, pageUrl }])
+  expect(artistOwnerButton(target, 'Create artist…')).toBeDefined()
+
+  unmount(instance)
+})
+
 it('the Artist row re-reads when an artist entry is written elsewhere', async () => {
   const { held, calls, ipc } = heldArtistMatches()
   const { target, instance } = setup(xImage('a', 'alice_x'), { ipc })

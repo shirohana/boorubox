@@ -229,6 +229,15 @@ The scan parses every non-deleted record's JSON inside the same `with_library` c
 library sizes the owner has this is well under a second, and no progress events are sent.
 `artists_apply` runs through `with_library_off_main_thread`, like every artist command.
 
+*Amended 2026-09-28 (owner: imported images showed no Create artist):* an image stored with
+no adapter record is matched by the X account its page URL names, the way the Account row
+already reads it — the argument and the "only without a record" gate are in `artist-entries`
+D4's amendment. Shapes: `ArtistPreviewInput` gains `pageUrl: string | null` (D3);
+`artist_match(adapter: SiteAdapterRecord | null, pageUrl: string | null)` (D5; the inspector
+sends both, untracked, and skips the call only when it has neither); the scan reads
+`id, adapter_json, page_url` and a record that does not parse is read as no record (D6);
+`ArtistDialogRequest`'s edit mode carries `pageUrl` beside `adapter` (D4).
+
 **D7. Settings → Artists: "Apply…" per entry, the FIXME closed.** Each entry's row gains an
 "Apply…" action beside edit and delete; it runs `artistsApplyPreview(entry.urls)` and opens a
 confirmation: "N images come from these URLs; M of them carry no artist tag. Applying adds

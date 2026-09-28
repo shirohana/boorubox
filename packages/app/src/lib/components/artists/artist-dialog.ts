@@ -6,13 +6,14 @@ import type { ArtistEntry, RenameArtistInput } from '@boorubox/shared'
 
 /**
  * What the dialog opens for (`artist-workflow` design D4): an existing tag's own URLs and
- * carrier count (`adapter` is the image's record, `null` when the dialog was
- * opened with no image in scope — the sidebar row and the pinned chip over a
- * selection), or a new artist prefilled from an image's derived name and
- * profile URL. `tag` in create mode is the derived name, not yet a tag.
+ * carrier count (`adapter` and `pageUrl` are the image's record and page,
+ * `null` when the dialog was opened with no image in scope — the sidebar row
+ * and the pinned chip over a selection), or a new artist prefilled from an
+ * image's derived name and profile URL. `tag` in create mode is the derived
+ * name, not yet a tag.
  */
 export type ArtistDialogRequest
-  = | { mode: 'edit', tag: string, adapter: import('@boorubox/shared').SiteAdapterRecord | null }
+  = | { mode: 'edit', tag: string, adapter: import('@boorubox/shared').SiteAdapterRecord | null, pageUrl: string | null }
     | { mode: 'create', tag: string, url: string }
 
 /**

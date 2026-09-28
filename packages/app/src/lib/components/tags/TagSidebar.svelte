@@ -176,7 +176,7 @@
             <TagVocabularyMenuItems
               {name}
               oneditnote={(tag) => (editingNote = tag)}
-              oneditartist={(tag) => (editingArtist = { mode: 'edit', tag, adapter: null })}
+              oneditartist={(tag) => (editingArtist = { mode: 'edit', tag, adapter: null, pageUrl: null })}
             />
           {/snippet}
         </FilterRow>

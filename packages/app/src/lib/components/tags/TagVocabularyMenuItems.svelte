@@ -18,7 +18,9 @@
   // tag menu shares it. `oneditnote` is required so a mount that forgets it
   // fails typecheck rather than offering a dead item — the dialog itself
   // cannot live here (this component's content unmounts on select), so each
-  // host owns one, mounted unconditionally beside its menu.
+  // host owns one, mounted unconditionally beside its menu. The two edit
+  // items sit together, above the look-up (owner, 2026-09-28): both open a
+  // dialog in the app, the look-up leaves for the browser.
   //
   // "Edit artist…" moved in here too (`artist-workflow` design D1, reversing
   // `artist-entries` D6): once an entry's own URLs, not an image's, are what
@@ -88,13 +90,13 @@
     Edit artist…
   </ContextMenu.Item>
 {/if}
-<ContextMenu.Item onSelect={() => openDanbooruLookup(lookup)}>
-  <ExternalLinkIcon />
-  {lookup.label}
-</ContextMenu.Item>
 <ContextMenu.Item onSelect={() => oneditnote(name)}>
   <StickyNoteIcon />
   Edit note…
+</ContextMenu.Item>
+<ContextMenu.Item onSelect={() => openDanbooruLookup(lookup)}>
+  <ExternalLinkIcon />
+  {lookup.label}
 </ContextMenu.Item>
 <ContextMenu.Separator />
 <ContextMenu.Item onSelect={() => void vocabulary.place(name, pinned ? 'unpin' : { group: 1 })}>

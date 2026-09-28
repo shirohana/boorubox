@@ -1177,15 +1177,17 @@ pub async fn artist_preview(
 }
 
 /// The image's own profile URL, the entry that owns it (if any), and the
-/// artist tag a capture from this record derives — `null` for a record with
-/// no profile URL at all (`artist-workflow` design D5, D8).
+/// artist tag a capture from this image derives — `null` for an image with
+/// no profile URL at all: `adapter` is the image's record, `page_url` what an
+/// image stored with none is matched by (`artist-workflow` design D5, D8).
 #[tauri::command]
 pub async fn artist_match(
-    adapter: SiteAdapterRecord,
+    adapter: Option<SiteAdapterRecord>,
+    page_url: Option<String>,
     state: State<'_, AppState>,
 ) -> Result<Option<ArtistMatch>> {
     with_library_off_main_thread(&state.library, move |library| {
-        artists::artist_match(&library.conn, &adapter)
+        artists::artist_match(&library.conn, adapter.as_ref(), page_url.as_deref())
     })
     .await
 }
@@ -3305,6 +3307,7 @@ mod tests {
             ArtistPreviewInput {
                 tag: "metaljelly0811".to_string(),
                 adapter: None,
+                page_url: None,
             },
             app.state(),
         ))
@@ -3348,10 +3351,11 @@ mod tests {
         .unwrap();
 
         let matched = now(artist_match(
-            SiteAdapterRecord {
+            Some(SiteAdapterRecord {
                 site: "x".to_string(),
                 fields: serde_json::json!({ "handle": "alice_art" }),
-            },
+            }),
+            None,
             app.state(),
         ))
         .unwrap()

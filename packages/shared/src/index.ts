@@ -403,13 +403,16 @@ export interface ArtistEntry {
 
 /**
  * What `artistPreview` takes: the tag being edited and, when the dialog was
- * opened from an image, that image's own record (`artist-workflow` design
- * D3). `adapter` is `null` rather than omitted when there is none — the
- * sidebar row and the pinned chip have no image in scope to read one from.
+ * opened from an image, that image's own record and page URL
+ * (`artist-workflow` design D3). Both are `null` rather than omitted when
+ * there is none — the sidebar row and the pinned chip have no image in scope
+ * to read one from. `pageUrl` is what an image stored with no record (a
+ * legacy-bundle import) is matched by: the X account its page names.
  */
 export interface ArtistPreviewInput {
   tag: string
   adapter: SiteAdapterRecord | null
+  pageUrl: string | null
 }
 
 /**
@@ -417,7 +420,7 @@ export interface ArtistPreviewInput {
  * is the tag's carrier count (trash included); `urls` is the tag's entry's
  * stored URLs, each shown with a scheme, empty for a tag with no entry;
  * `candidate` is the image's own profile URL, shown with a scheme, or `null`
- * when there is no adapter, no profile URL, or any entry — this one or
+ * when the image yields none, or any entry — this one or
  * another — already owns it.
  */
 export interface ArtistPreview {
@@ -428,11 +431,12 @@ export interface ArtistPreview {
 
 /**
  * What `artistMatch` answers with (`artist-workflow` design D5): `url` is the
- * image's own profile URL, shown with a scheme; `owner` is the tag of the
- * entry that owns it, `null` for nobody yet; `derived` is the artist tag a
- * capture from this record derives regardless of any entry. `artistMatch`
- * itself answers `null` — not this type — for a record with no profile URL
- * at all.
+ * image's own profile URL, shown with a scheme — its record's, or for an
+ * image stored with no record the X account its page URL names; `owner` is
+ * the tag of the entry that owns it, `null` for nobody yet; `derived` is the
+ * artist tag a capture from this image derives regardless of any entry.
+ * `artistMatch` itself answers `null` — not this type — for an image with no
+ * profile URL at all.
  */
 export interface ArtistMatch {
   url: string

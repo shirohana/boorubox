@@ -357,11 +357,14 @@
    * `image` is reassigned wholesale on every refresh (CLAUDE.md's `$effect`
    * rule), so an effect that read `image.adapter` as a tracked dependency
    * would refetch on a capture landing mid-view even though the id on screen
-   * has not moved. `adapter` is read through `untrack` inside the effect for
-   * the same reason.
+   * has not moved. `adapter` and `pageUrl` are read through `untrack` inside
+   * the effect for the same reason. The page URL goes along because an image
+   * stored with no record — a legacy-bundle import — is matched by the X
+   * account its page names, the account the Account row below shows.
    */
   const inspectedId = $derived(imageId ?? null)
   const inspectedAdapter = $derived(image?.adapter ?? null)
+  const inspectedPageUrl = $derived(image?.pageUrl ?? null)
 
   /**
    * Moves on every artist entry write, from any host — this panel's dialog,
@@ -383,10 +386,11 @@
     artistMatchError = null
     if (id === null) return
     const adapter = untrack(() => inspectedAdapter)
-    if (!adapter) return
+    const pageUrl = untrack(() => inspectedPageUrl)
+    if (!adapter && pageUrl === null) return
     void (async () => {
       try {
-        const result = await artistMatchTicket(fetchArtistMatch(adapter))
+        const result = await artistMatchTicket(fetchArtistMatch(adapter, pageUrl))
         if (result.current) {
           artistMatchAnswer = result.value
           artistMatchError = null
@@ -897,7 +901,7 @@
           <TagVocabularyMenuItems
             name={chip.tag}
             oneditnote={(name) => (editingNote = name)}
-            oneditartist={(tag) => (editingArtist = { mode: 'edit', tag, adapter: image?.adapter ?? null })}
+            oneditartist={(tag) => (editingArtist = { mode: 'edit', tag, adapter: image?.adapter ?? null, pageUrl: image?.pageUrl ?? null })}
           />
         {:else}
           <CollectionPinMenuItem collection={chip.collection} />
@@ -1119,7 +1123,7 @@
                     <TagVocabularyMenuItems
                       name={tag}
                       oneditnote={(name) => (editingNote = name)}
-                      oneditartist={(name) => (editingArtist = { mode: 'edit', tag: name, adapter: image?.adapter ?? null })}
+                      oneditartist={(name) => (editingArtist = { mode: 'edit', tag: name, adapter: image?.adapter ?? null, pageUrl: image?.pageUrl ?? null })}
                     />
                     <ContextMenu.Separator />
                     <ContextMenu.Item variant="destructive" onSelect={() => remove(tag)}>
@@ -1324,7 +1328,8 @@
         {#if artistMatchAnswer}
           <!--
             `artist-workflow` design D5: who the library says the image's
-            author is, from the adapter record and the artist entries — a
+            author is, from the adapter record (or, for an image stored with
+            none, the X account its page URL names) and the artist entries — a
             different fact from Account below, which it sits above (spec
             `tag-editing`'s own "does not replace it"). Read the same in both
             `editingFacts` states, like Account.
