@@ -56,6 +56,7 @@ describe('suggestionPrefix', () => {
     expect(suggestionPrefix('tagcount:2', 10)).toBeNull()
     expect(suggestionPrefix('account:foo', 11)).toBeNull()
     expect(suggestionPrefix('collection:favorites', 21)).toBeNull()
+    expect(suggestionPrefix('source:https://x', 17)).toBeNull()
   })
 
   // `tag-vocabulary` design D6: the same nine tokens `tags.rs` reads.

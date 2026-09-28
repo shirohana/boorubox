@@ -596,6 +596,7 @@ fn compile(req: &SearchRequest, rating: RatingClause, accounts: AccountClause) -
         push_accounts(&mut filter, query);
     }
     push_collections(&mut filter, query);
+    push_sources(&mut filter, query);
     push_tags(&mut filter, query);
     push_text(&mut filter, &req.text);
     filter
@@ -770,6 +771,56 @@ fn push_collections(filter: &mut Filter, query: &ParsedTagSearch) {
                 has_any_collection(query.exclude_collections.len())
             ),
             text_values(&query.exclude_collections),
+        );
+    }
+}
+
+/// The value `source:`/`-source:` matches (`source-filter` design D2): the
+/// page an image was captured from, or its own address when no page is
+/// known — the same value `upload-form.ts` prefills Source from ("never a
+/// local path" for a local import: it has neither). `ImageRecord.source_url`
+/// is this same expression, read once at load (`ingest::image_columns`), so
+/// the filter and the display cannot disagree.
+///
+/// Not `images.source`: that column is the capture origin (`extension` /
+/// `local` / `legacy-bundle`), a different question `source:` never answers.
+pub(crate) const SOURCE_URL_SQL: &str = "COALESCE(images.page_url, images.image_url)";
+
+/// `value`'s `*`s as `%` wildcards, everything else literal (`like_literal`),
+/// with one more `%` appended so the match is a prefix unless `*` said
+/// otherwise (design D3) — Danbooru's `ILIKE value + '*'`. A `*` at the very
+/// end of `value` therefore makes no difference: the trailing `%` was always
+/// going there.
+fn source_pattern(value: &str) -> String {
+    let escaped: Vec<String> = value.split('*').map(like_literal).collect();
+    format!("{}%", escaped.join("%"))
+}
+
+/// `source:<pattern>` / `-source:<pattern>` and `source:none` (design D1,
+/// D3): `LIKE ... ESCAPE '\'` against [`SOURCE_URL_SQL`], case folded by
+/// `LIKE`'s own ASCII-only collation — no `UPPER()`/`LOWER()` needed. One
+/// clause per term, ANDed, the way [`push_collections`] compiles a repeated
+/// slug; the exclude side keeps sourceless images, [`push_accounts`]'s
+/// `-account:` rule. `no_source` and `any_source` set together AND into a
+/// clause that is never true, which is what asking for both says — no
+/// special case, the same as `any_collection`/`no_collection`.
+fn push_sources(filter: &mut Filter, query: &ParsedTagSearch) {
+    if query.any_source {
+        filter.add(format!("{SOURCE_URL_SQL} IS NOT NULL"));
+    }
+    if query.no_source {
+        filter.add(format!("{SOURCE_URL_SQL} IS NULL"));
+    }
+    for pattern in &query.sources {
+        filter.add_bound(
+            format!(r"{SOURCE_URL_SQL} LIKE ? ESCAPE '\'"),
+            [Value::Text(source_pattern(pattern))],
+        );
+    }
+    for pattern in &query.exclude_sources {
+        filter.add_bound(
+            format!(r"({SOURCE_URL_SQL} IS NULL OR {SOURCE_URL_SQL} NOT LIKE ? ESCAPE '\')"),
+            [Value::Text(source_pattern(pattern))],
         );
     }
 }
@@ -1859,6 +1910,207 @@ mod tests {
         );
 
         assert!(ids.is_empty());
+    }
+
+    /// `fixture()` plus the two source shapes it has none of: an extension
+    /// capture with an image address but no page, and a local import with
+    /// neither. `store()` always gives a row both, so `source:`'s fallback
+    /// and its `none` keyword need rows `fixture()` itself cannot provide. A
+    /// separate helper for the reason `fixture_with_cjk_title` is one:
+    /// `fixture()` is shared by every test in this module, several asserting
+    /// an exact total.
+    fn fixture_with_source_edge_cases() -> Fixture {
+        let fixture = fixture();
+        store_image(
+            &fixture.library,
+            IngestInput {
+                id: "image-only",
+                bytes: &png_bytes(4, 4),
+                source: ImageSource::Extension,
+                source_ref: Some("x"),
+                image_url: Some("https://pbs.test/media/image-only.png"),
+                page_url: None,
+                page_title: Some("no page, just an image"),
+                adapter: None,
+                rating: None,
+                tags: &[],
+                captured_at: 800,
+                file_modified_at: None,
+                deleted_at: None,
+            },
+        )
+        .unwrap();
+        store_image(
+            &fixture.library,
+            IngestInput {
+                id: "no-source",
+                bytes: &png_bytes(4, 4),
+                source: ImageSource::Local,
+                source_ref: None,
+                image_url: None,
+                page_url: None,
+                page_title: None,
+                adapter: None,
+                rating: None,
+                tags: &[],
+                captured_at: 900,
+                file_modified_at: None,
+                deleted_at: None,
+            },
+        )
+        .unwrap();
+        fixture
+    }
+
+    #[test]
+    fn source_matches_a_prefix() {
+        let fixture = fixture();
+
+        let ids = found(
+            &fixture,
+            &request(ParsedTagSearch {
+                sources: vec!["https://example.test".to_string()],
+                ..Default::default()
+            }),
+        );
+
+        assert_eq!(ids, vec!["no-account"]);
+    }
+
+    #[test]
+    fn source_star_is_a_wildcard() {
+        let fixture = fixture();
+
+        let ids = found(
+            &fixture,
+            &request(ParsedTagSearch {
+                sources: vec!["https://*.test/gall*".to_string()],
+                ..Default::default()
+            }),
+        );
+
+        assert_eq!(ids, vec!["no-account"]);
+    }
+
+    #[test]
+    fn source_ignores_ascii_case() {
+        let fixture = fixture();
+
+        let ids = found(
+            &fixture,
+            &request(ParsedTagSearch {
+                sources: vec!["HTTPS://EXAMPLE.TEST/*".to_string()],
+                ..Default::default()
+            }),
+        );
+
+        assert_eq!(ids, vec!["no-account"]);
+    }
+
+    /// A `_` in the pattern must not act as SQL `LIKE`'s own single-character
+    /// wildcard: `no-account`'s source is `.../gallery/9`, and an unescaped
+    /// `_` in place of the `/` would still match it.
+    #[test]
+    fn source_underscore_is_literal() {
+        let fixture = fixture();
+
+        let ids = found(
+            &fixture,
+            &request(ParsedTagSearch {
+                sources: vec!["https://example.test/gallery_9".to_string()],
+                ..Default::default()
+            }),
+        );
+
+        assert!(ids.is_empty());
+    }
+
+    #[test]
+    fn source_falls_back_to_the_image_url() {
+        let fixture = fixture_with_source_edge_cases();
+
+        let ids = found(
+            &fixture,
+            &request(ParsedTagSearch {
+                sources: vec!["https://pbs.test/media/image-only*".to_string()],
+                ..Default::default()
+            }),
+        );
+
+        assert_eq!(ids, vec!["image-only"]);
+    }
+
+    #[test]
+    fn source_none_finds_images_with_no_source() {
+        let fixture = fixture_with_source_edge_cases();
+
+        let ids = found(
+            &fixture,
+            &request(ParsedTagSearch {
+                no_source: true,
+                ..Default::default()
+            }),
+        );
+
+        assert_eq!(ids, vec!["no-source"]);
+    }
+
+    #[test]
+    fn excluding_a_source_keeps_images_with_none() {
+        let fixture = fixture_with_source_edge_cases();
+
+        let ids = found(
+            &fixture,
+            &request(ParsedTagSearch {
+                exclude_sources: vec!["https://x.com/*".to_string()],
+                ..Default::default()
+            }),
+        );
+
+        assert_eq!(ids, vec!["no-source", "image-only", "dog-e", "no-account"]);
+    }
+
+    #[test]
+    fn none_and_any_source_together_match_nothing() {
+        let fixture = fixture();
+
+        let ids = found(
+            &fixture,
+            &request(ParsedTagSearch {
+                no_source: true,
+                any_source: true,
+                ..Default::default()
+            }),
+        );
+
+        assert!(ids.is_empty());
+    }
+
+    #[test]
+    fn search_returns_the_source_url() {
+        let fixture = fixture_with_source_edge_cases();
+
+        let images = search(&fixture.library.conn, &request(ParsedTagSearch::default()))
+            .unwrap()
+            .images;
+        let source_url = |id: &str| {
+            images
+                .iter()
+                .find(|record| record.id == id)
+                .unwrap()
+                .source_url
+                .clone()
+        };
+
+        assert_eq!(
+            source_url("cat-s"),
+            Some("https://x.com/alice/status/1".to_string())
+        );
+        assert_eq!(
+            source_url("image-only"),
+            Some("https://pbs.test/media/image-only.png".to_string())
+        );
+        assert_eq!(source_url("no-source"), None);
     }
 
     #[test]

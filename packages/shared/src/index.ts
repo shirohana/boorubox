@@ -135,6 +135,15 @@ export interface ImageRecord {
    * no X account.
    */
   account: string | null
+  /**
+   * The image's source (`source-filter` design D2): the page it was captured
+   * from, or its own address when no page is known — `null` for neither, a
+   * local import's usual case. Computed at load time from
+   * `query::SOURCE_URL_SQL`, the one expression `source:` matches on and the
+   * upload dialog prefills Source from, rather than each reader choosing
+   * between `pageUrl` and `imageUrl` on its own.
+   */
+  sourceUrl: string | null
   /** What the capturing client's site adapter extracted, as received. */
   adapter: SiteAdapterRecord | null
   rating: Rating | null
@@ -256,6 +265,25 @@ export interface ParsedTagSearch {
   includeUnrated: boolean
   accounts: string[]
   excludeAccounts: string[]
+  /**
+   * `source:<pattern>` (`source-filter` design D1): kept exactly as typed,
+   * never lower-cased — `query.rs` matches case-insensitively through SQL's
+   * own `LIKE` collation, not by folding the value here. No comma list: a URL
+   * may contain a comma, so several `source:` terms AND instead, one entry
+   * each.
+   */
+  sources: string[]
+  excludeSources: string[]
+  /**
+   * `source:none` (design D1): the image has no source. Independent of
+   * `anySource`, the same `collection:none`/`any` convention
+   * (`noCollection`/`anyCollection` below): both set compiles to a clause
+   * that matches nothing. Unlike `collection:`, there is no `source:any`
+   * keyword — only `-source:none` sets `anySource`.
+   */
+  noSource: boolean
+  /** `-source:none`: the image has a source. */
+  anySource: boolean
   /**
    * Slugs (design D6): `collection:my_favorites` compiles against
    * `collections.slug`, never the id — Rust never sees one from the webview.

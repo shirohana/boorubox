@@ -38,9 +38,11 @@ export function prefillUploadForm(image: ImageRecord): UploadFormValues {
   return {
     tags: sortTags(image.tags).join(' '),
     rating: image.rating,
-    // Never a path on this machine for a local import: no booru could reach it
-    // and it would put the library's location on a public post (design D3).
-    source: image.pageUrl ?? image.imageUrl ?? '',
+    // `sourceUrl` is Rust's `query::SOURCE_URL_SQL`, the value `source:`
+    // searches match on. Never fall back to `file` or any local path here: no
+    // booru could reach it, and it would put the library's location on a
+    // public post (booru-upload design D3).
+    source: image.sourceUrl ?? '',
     artist: candidate.artist ?? '',
     commentaryTitle: image.pageTitle ?? '',
     commentaryBody: '',

@@ -358,6 +358,62 @@ describe('parseTagSearch', () => {
     })
   })
 
+  describe('source filters', () => {
+    it('source: reads a URL prefix as typed', () => {
+      const result = parseTagSearch('source:https://x.com/*')
+      expect(result.sources).toEqual(['https://x.com/*'])
+      expect(result.excludeSources).toEqual([])
+      expect(result.includeTags).toEqual([])
+    })
+
+    it('a source: URL keeps a metatag word inside its query string', () => {
+      const result = parseTagSearch('source:https://a.test/?tags=rating:g account:x')
+      expect(result.sources).toEqual(['https://a.test/?tags=rating:g'])
+      expect(result.ratings).toEqual([])
+      expect(result.accounts).toEqual(['x'])
+      expect(result.includeTags).toEqual([])
+    })
+
+    it('-source: excludes', () => {
+      const result = parseTagSearch('-source:https://x.com/*')
+      expect(result.excludeSources).toEqual(['https://x.com/*'])
+      expect(result.sources).toEqual([])
+    })
+
+    it('two source terms both apply', () => {
+      const result = parseTagSearch('source:https://a.test/* source:https://b.test/*')
+      expect(result.sources).toEqual(['https://a.test/*', 'https://b.test/*'])
+    })
+
+    it('source:none and -source:none set the flags', () => {
+      expect(parseTagSearch('source:none').noSource).toBe(true)
+      expect(parseTagSearch('source:none').anySource).toBe(false)
+      expect(parseTagSearch('-source:none').anySource).toBe(true)
+      expect(parseTagSearch('-source:none').noSource).toBe(false)
+      // case-insensitive NONE
+      const result = parseTagSearch('source:NONE')
+      expect(result.noSource).toBe(true)
+      expect(result.sources).toEqual([])
+    })
+
+    it('a bare source: is source:none', () => {
+      const result = parseTagSearch('source:')
+      expect(result.noSource).toBe(true)
+      expect(result.sources).toEqual([])
+    })
+
+    it('source: with a comma keeps the comma in the value', () => {
+      const result = parseTagSearch('source:https://x.com/a,b')
+      expect(result.sources).toEqual(['https://x.com/a,b'])
+    })
+
+    it('a source: term leaves the tags around it alone', () => {
+      const result = parseTagSearch('cat source:https://a.b/x dog')
+      expect(result.includeTags).toEqual(['cat', 'dog'])
+      expect(result.sources).toEqual(['https://a.b/x'])
+    })
+  })
+
   describe('tag count filters', () => {
     const operators: [suffix: string, filter: TagCountFilter][] = [
       ['2', { operator: '=', value: 2 }],

@@ -39,7 +39,7 @@ const CATEGORY_PREFIXES = [
  * row there shuts the list here too.
  */
 const METATAG = new RegExp(
-  `^(rating|is|account|collection|${CATEGORY_PREFIXES.join('|')}|`
+  `^(rating|is|account|collection|source|${CATEGORY_PREFIXES.join('|')}|`
   + `${COUNT_METATAGS.map(([name]) => name).join('|')}):`,
   'i',
 )

@@ -58,6 +58,14 @@ finds `かにビーム的插畫` and `yoto` finds `kyoto`. The metatag `collecti
 images in the collection whose name, lower-cased with spaces as underscores, is `<name>`;
 `-collection:<name>` SHALL exclude them; a name no collection has SHALL match nothing.
 
+The metatag `source:<pattern>` SHALL match, as Danbooru's does, an image whose source URL —
+the page it was captured from, or its own address when no page is known — starts with
+`<pattern>`, ignoring ASCII case, with `*` matching any run of characters; `-source:<pattern>`
+SHALL exclude those images and keep images with no source. `source:none` SHALL match images
+with no source and `-source:none` images with one; the two together SHALL match nothing. A
+bare `source:` SHALL read as `source:none`. The value runs to the next space, so a URL's own
+punctuation is part of it and there is no comma list; several `source:` terms SHALL all apply.
+
 The metatags `gentags:`, `arttags:`, `chartags:`, `copytags:` and `metatags:` SHALL count an
 image's tags in one category — general, artist, character, copyright and meta respectively —
 where `tagcount:` counts all of them. Each SHALL take `tagcount:`'s syntax: a number for
@@ -150,6 +158,14 @@ query standing.
 #### Scenario: Free text of two characters
 - **WHEN** the free-text box reads `ky` and an image's page title contains `Kyoto`
 - **THEN** the image is in the result
+
+#### Scenario: A source wildcard
+- **WHEN** the query is `source:https://*fanbox.cc/*`
+- **THEN** images whose page URL is on any `fanbox.cc` host are shown and no other
+
+#### Scenario: Excluding a source keeps sourceless images
+- **WHEN** the query is `-source:https://x.com/*`
+- **THEN** images from X pages are hidden and a local import with no URL is still shown
 
 ### Requirement: Lightbox
 Activating a thumbnail — by double click, Enter, Space, or a single click on the thumbnail

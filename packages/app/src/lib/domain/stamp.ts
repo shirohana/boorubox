@@ -29,6 +29,7 @@ const SEARCH_ONLY_METATAGS = [
   'tagcount:',
   'account:',
   'posted:',
+  'source:',
   'gentags:',
   'arttags:',
   'chartags:',

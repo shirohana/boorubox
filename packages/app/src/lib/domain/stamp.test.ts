@@ -42,6 +42,13 @@ describe('parseStamp', () => {
     expect(parseStamp('posted:danbooru')).toEqual({ error: '“posted:danbooru” is not an edit.' })
   })
 
+  it('source:x is not an edit', () => {
+    expect(parseStamp('source:https://x.com/*')).toEqual({
+      error: '“source:https://x.com/*” is not an edit.',
+    })
+    expect(parseStamp('-source:none')).toEqual({ error: '“-source:none” is not an edit.' })
+  })
+
   // `category-count-search` design D6, spec `stamps` "A category count is not
   // an edit".
   it('names a category count metatag as not an edit', () => {

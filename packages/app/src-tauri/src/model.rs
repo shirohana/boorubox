@@ -489,6 +489,12 @@ pub struct ImageRecord {
     /// a second source for this would let the filter and the display
     /// disagree about what an image's account is.
     pub account: Option<String>,
+    /// The image's source (`source-filter` design D2): the page it was
+    /// captured from, or its own address when no page is known — `None` for
+    /// neither, a local import's usual case. Derived at load time from
+    /// `query::SOURCE_URL_SQL`, the one expression `source:` matches on and
+    /// the upload dialog prefills Source from, never a column of its own.
+    pub source_url: Option<String>,
     /// What the capturing client's site adapter extracted, as received
     /// (design D11). Storage only in this schema: nothing derives tags, a
     /// rating or an artist from it yet.
@@ -639,6 +645,19 @@ pub struct ParsedTagSearch {
     pub any_collection: bool,
     /// `collection:none` / `-collection:any`: the image is in no collection.
     pub no_collection: bool,
+    /// `source:<pattern>` (`source-filter` design D1): kept exactly as typed
+    /// by the webview, never lower-cased — `query::push_sources` matches it
+    /// case-insensitively through SQL's own `LIKE` collation. No comma list:
+    /// several `source:` terms AND instead, one entry each.
+    pub sources: Vec<String>,
+    pub exclude_sources: Vec<String>,
+    /// `source:none` (design D1): the image has no source. Independent of
+    /// `any_source`, the `collection:none`/`any` convention above — both set
+    /// compiles to a clause that matches nothing. Unlike `collection:`,
+    /// there is no `source:any` keyword; only `-source:none` sets this.
+    pub no_source: bool,
+    /// `-source:none`: the image has a source.
+    pub any_source: bool,
 }
 
 /// What the four sorts compare. An enum rather than the legacy's `field-direction`
@@ -1851,6 +1870,7 @@ mod tests {
             page_url: None,
             page_title: None,
             account: None,
+            source_url: None,
             adapter: None,
             rating: None,
             tags: Vec::new(),

@@ -41,6 +41,20 @@ function isCollectionKeyword(token: string): boolean {
 }
 
 /**
+ * `source:<pattern>` / `-source:<pattern>` (`source-filter` design D1), read
+ * before the tag tokenizer and before `collection:` so a URL's own `:`, `/`,
+ * `@`, `?` and `,` are all part of the value — there is no comma list, unlike
+ * `account:`/`collection:`. The value group is `\S*`, not `\S+`: a bare
+ * `source:` (nothing before the next space or the end) still matches, with an
+ * empty capture, so the loop below can read it as the `none` keyword rather
+ * than leaving `source:` standing to fall through to the tag tokenizer as a
+ * literal tag. `none`, compared ignoring case, is a keyword only as the whole
+ * value — matching `COLLECTION_KEYWORD`'s convention, though Danbooru gives
+ * `source:` no `any` keyword of its own, only `-source:none`.
+ */
+const SOURCE_METATAG = /(-?)source:(\S*)/gi
+
+/**
  * The count metatags, in the order `tagCountTerms` is built in
  * (`category-count-search` design D2): `tagcount:` counts every tag,
  * the other five count one category each. Module-level so a sixth count
@@ -106,7 +120,7 @@ function addUnique(values: string[], value: string): void {
 
 // Parse Danbooru-style tag search
 // Supports: tags (AND), tag1 or tag2 (OR), -tag (exclude), rating:, is:, tagcount:, account:,
-// collection:
+// collection:, source:
 export function parseTagSearch(query: string): ParsedTagSearch {
   const result: ParsedTagSearch = {
     includeTags: [],
@@ -122,6 +136,10 @@ export function parseTagSearch(query: string): ParsedTagSearch {
     excludeCollections: [],
     anyCollection: false,
     noCollection: false,
+    sources: [],
+    excludeSources: [],
+    noSource: false,
+    anySource: false,
   }
 
   if (!query.trim()) {
@@ -129,6 +147,26 @@ export function parseTagSearch(query: string): ParsedTagSearch {
   }
 
   let remainingQuery = query
+
+  // 0. Extract source: metatags (`source-filter` design D1), before every
+  // other step: a URL can contain `rating:g`, `account:x` or `is:png` in its
+  // query string, and the steps below have no leading boundary, so any of
+  // them run first would cut that word out of the URL and add a stray filter. `none`, read only as the term's whole value, sets
+  // `noSource`/`anySource` rather than joining `sources`/`excludeSources` —
+  // the `collection:none`/`any` convention above, minus the `any` keyword
+  // `source:` does not have. Every other value is kept exactly as typed: no
+  // lower-casing, since `query.rs` matches it case-insensitively through
+  // SQL's own `LIKE` collation instead.
+  for (const [, sign, value] of remainingQuery.matchAll(SOURCE_METATAG)) {
+    const isExclusion = sign === '-'
+    if (value === '' || value.toLowerCase() === 'none') {
+      if (isExclusion) result.anySource = true
+      else result.noSource = true
+    } else {
+      addUnique(isExclusion ? result.excludeSources : result.sources, value)
+    }
+  }
+  remainingQuery = remainingQuery.replace(SOURCE_METATAG, '').trim()
 
   // 1. Extract count metatags: `tagcount:` and the five category counts
   // (`category-count-search` design D2). One regex per `COUNT_METATAGS` row,

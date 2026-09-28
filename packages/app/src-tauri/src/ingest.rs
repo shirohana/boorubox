@@ -65,10 +65,19 @@ impl Ingested {
 }
 
 /// The columns `row_to_record` reads, in the order it reads them. Any SELECT
-/// feeding that function must use this list.
-pub const IMAGE_COLUMNS: &str = "id, ext, mime, size, width, height, source, source_ref, \
-     image_url, page_url, page_title, adapter_json, rating, captured_at, created_at, updated_at, \
-     deleted_at, missing, file_modified_at";
+/// feeding that function must use this list. Append a new column, never slot
+/// it in: `row_to_record` reads by index. The last column is
+/// `query::SOURCE_URL_SQL` aliased `source_url`; interpolate it, never retype
+/// it, or the `source:` filter and the record's `source_url` drift apart
+/// (`source-filter` design D2).
+pub fn image_columns() -> String {
+    format!(
+        "id, ext, mime, size, width, height, source, source_ref, \
+         image_url, page_url, page_title, adapter_json, rating, captured_at, created_at, updated_at, \
+         deleted_at, missing, file_modified_at, {} AS source_url",
+        crate::query::SOURCE_URL_SQL,
+    )
+}
 
 struct Decoded {
     width: u32,
@@ -317,7 +326,7 @@ fn resolve_tag_text(conn: &Connection, input: &IngestInput) -> Result<ResolvedTa
     })
 }
 
-/// Map a row selected with [`IMAGE_COLUMNS`]. `tags` comes back empty: tags are
+/// Map a row selected with [`image_columns`]. `tags` comes back empty: tags are
 /// a second query, so that a hundred records cost two statements, not a hundred.
 pub fn row_to_record(row: &Row) -> rusqlite::Result<ImageRecord> {
     let id: String = row.get(0)?;
@@ -356,6 +365,7 @@ pub fn row_to_record(row: &Row) -> rusqlite::Result<ImageRecord> {
         deleted_at: row.get(16)?,
         missing: row.get(17)?,
         file_modified_at: row.get(18)?,
+        source_url: row.get(19)?,
         posts: Vec::new(),
         collections: Vec::new(),
     })
@@ -386,12 +396,13 @@ pub fn load_records(conn: &Connection, ids: &[String]) -> Result<Vec<ImageRecord
         return Ok(Vec::new());
     }
     let mut by_id: HashMap<String, ImageRecord> = HashMap::new();
+    let columns = image_columns();
 
     for chunk in ids.chunks(ID_CHUNK) {
         let in_list = placeholders(chunk.len());
 
         let mut stmt = conn.prepare(&format!(
-            "SELECT {IMAGE_COLUMNS} FROM images WHERE id IN ({in_list})"
+            "SELECT {columns} FROM images WHERE id IN ({in_list})"
         ))?;
         by_id.extend(
             stmt.query_map(params_from_iter(chunk), row_to_record)?
@@ -736,7 +747,7 @@ mod tests {
         assert_eq!(record.id, "id-1");
     }
 
-    /// Design D11: the column is appended to `IMAGE_COLUMNS`, not slotted in
+    /// Design D11: the column is appended in `image_columns`, not slotted in
     /// the middle, so this is the guarantee that a record round-trips whether
     /// or not it carries a file's modification time.
     #[test]

@@ -7,6 +7,7 @@ it('fills the form from the image, tags in the library order', () => {
     tags: ['zebra', 'Apple', 'blue_sky'],
     rating: 's',
     pageUrl: 'https://x.com/alice/status/1',
+    sourceUrl: 'https://x.com/alice/status/1',
     pageTitle: 'a drawing',
   }))
 
@@ -27,10 +28,11 @@ it('preselects no rating for an unrated image, and refuses to send without one',
   expect(checkUploadForm(values)).toEqual({ ok: false, refusal: 'This upload needs a rating.' })
 })
 
-it('falls back to the image address when there is no page, and proposes no artist', () => {
+it('prefills Source from sourceUrl, and proposes no artist without a page', () => {
   const values = prefillUploadForm(img({
     pageUrl: null,
     imageUrl: 'https://cdn.example.test/a.png',
+    sourceUrl: 'https://cdn.example.test/a.png',
   }))
 
   expect(values.source).toBe('https://cdn.example.test/a.png')
@@ -38,7 +40,7 @@ it('falls back to the image address when there is no page, and proposes no artis
 })
 
 it('leaves the source empty for an image with no address at all', () => {
-  expect(prefillUploadForm(img({ pageUrl: null, imageUrl: null })).source).toBe('')
+  expect(prefillUploadForm(img({ pageUrl: null, imageUrl: null, sourceUrl: null })).source).toBe('')
 })
 
 it('names both missing values when neither is given', () => {

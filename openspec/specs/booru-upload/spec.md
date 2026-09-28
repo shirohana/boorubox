@@ -29,11 +29,12 @@ choose which one.
 
 ### Requirement: The form is prefilled from the image
 The upload form SHALL open prefilled with: the image's tags in the library's tag order; the
-image's rating; a source address, being the page the image was captured from, or the image's own
-address when no page address is known; an artist candidate derived from the page address for the
-sites whose address form is known, empty otherwise; and an optional commentary title and body,
-with the title prefilled from the page title. Every prefilled value SHALL be editable before
-sending, and edits SHALL NOT change the image in the library.
+image's rating; a source address, being the image's source URL as the library reports it — the
+page the image was captured from, or the image's own address when no page address is known,
+the same value the `source:` search metatag matches; an artist candidate derived from the page
+address for the sites whose address form is known, empty otherwise; and an optional commentary
+title and body, with the title prefilled from the page title. Every prefilled value SHALL be
+editable before sending, and edits SHALL NOT change the image in the library.
 
 #### Scenario: Captured image
 - **WHEN** the form opens for an image captured from a page
