@@ -51,6 +51,15 @@ candidate.starts_with(&format!("{entry_url}/"))` — the boundary is what keeps
 `query.rs` into this module (or a tiny shared `urls.rs`) and `query::x_account` calls it there;
 one splitter, two readers.
 
+*Amended 2026-09-28 (`artist-url-any-site`, owner's ask):* the empty-path refusal — "a bare
+`x.com` would own every X capture" — was right while every profile URL the app knew carried its
+identity in the path, and stopped being right at the first subdomain-identity site: Fanbox's
+`kanibiimu.fanbox.cc` *is* the profile, so refusing it named a reason that was not the reason.
+The argument now applies to `path_identity_hosts()` only — `x.com`, `pixiv.net` today, derived
+from `PROFILE_URLS` rather than listed twice, so the two readers cannot disagree — and a
+host-only URL of any other site is stored as its host and matched once the app reads that site
+(`artists::normalized`, `artist-url-any-site` D1–D3).
+
 **D4. Derivation: the entry that owns the profile URL first, the field second.**
 `artists::derive(adapter, entries) -> Option<String>` builds the one candidate — the author's
 profile URL from the record (`PROFILE_URLS`: `x` → `https://x.com/{handle}`, `pixiv` →

@@ -45,32 +45,40 @@ pub(crate) fn host_and_path(url: &str) -> Option<(&str, &str)> {
     Some((host, path))
 }
 
-/// Normalise `url` for ownership comparison (design D3): the text is trimmed
-/// first, so a value pasted with surrounding whitespace still matches; a
-/// missing scheme is then read as `https://`; a host is required, with a dot
-/// in it and no whitespace — a bare name like `metaljelly` is an artist's
-/// name, not a URL, and a bare `x.com` would own every X capture — the host
-/// is lower-cased and a leading `www.`, `mobile.` or `m.` is dropped;
-/// `twitter.com` reads as `x.com`; the query and fragment are already gone by
-/// the time [`host_and_path`] hands back a path; every trailing `/` is
-/// dropped, and an empty path left after that is refused the same way an
-/// empty host is (`x.com/` and `x.com` both name no one); the path is
-/// lower-cased too — right for the sites this reads today (X handles are
-/// case-insensitive, Pixiv ids are digits) and merely harmless for a
-/// case-sensitive path on a site the app does not read yet. The result is
-/// `host` with `path` appended and no scheme, so `http` and `https` compare
-/// equal — this is the string `artist_urls.url` stores.
-pub fn normalized(url: &str) -> Option<String> {
-    let trimmed = url.trim();
-    let with_scheme = if trimmed.contains("://") {
-        trimmed.to_string()
-    } else {
-        format!("https://{trimmed}")
-    };
-    let (host, path) = host_and_path(&with_scheme)?;
-    if host.is_empty() || !host.contains('.') || host.chars().any(char::is_whitespace) {
-        return None;
+/// Why [`normalized`] refuses `url` (design D2, `artist-url-any-site`): two
+/// shapes, kept apart so the caller can say why instead of showing one
+/// generic "not a URL" for both.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum UrlRefusal {
+    /// No host, a host without a dot, or whitespace in the host — not a URL
+    /// at all, never mind one this app reads.
+    NotAUrl,
+    /// A host alone, and the host is one whose account identity lives in the
+    /// path (see [`path_identity_hosts`]): the bare host would own every
+    /// account on that site, so the paste is refused naming it rather than
+    /// stored as a host that owns everyone.
+    BareProfileHost(String),
+}
+
+impl UrlRefusal {
+    /// The message shown for the pasted `url` — `normalize_all`'s
+    /// `BadRequest` text, the dialog's refusal line, verbatim.
+    pub fn message(&self, url: &str) -> String {
+        match self {
+            UrlRefusal::NotAUrl => format!("{url:?} does not look like a URL"),
+            UrlRefusal::BareProfileHost(host) => format!(
+                "{url:?} names {host} alone, which would own every {host} account; add the account's path"
+            ),
+        }
     }
+}
+
+/// Canonicalise a host the same way [`normalized`] canonicalises a pasted
+/// one: lower-cased, a leading `www.`, `mobile.` or `m.` dropped,
+/// `twitter.com` read as `x.com`. [`path_identity_hosts`] runs each
+/// `PROFILE_URLS` template's host through this same function, so the table
+/// and a pasted host cannot disagree about which host owns a path identity.
+pub(crate) fn canonical_host(host: &str) -> String {
     let mut host = host.to_lowercase();
     for prefix in ["www.", "mobile.", "m."] {
         if let Some(rest) = host.strip_prefix(prefix) {
@@ -81,11 +89,51 @@ pub fn normalized(url: &str) -> Option<String> {
     if host == "twitter.com" {
         host = "x.com".to_string();
     }
+    host
+}
+
+/// Normalise `url` for ownership comparison (design D3; host-only handling
+/// amended by `artist-url-any-site` D1–D3): the text is trimmed first, so a
+/// value pasted with surrounding whitespace still matches; a missing scheme
+/// is then read as `https://`; a host is required, with a dot in it and no
+/// whitespace — a bare name like `metaljelly` is an artist's name, not a
+/// URL — the host is canonicalised ([`canonical_host`]); the query and
+/// fragment are already gone by the time [`host_and_path`] hands back a
+/// path; every trailing `/` is dropped; the path is lower-cased too — right
+/// for the sites this reads today (X handles are case-insensitive, Pixiv ids
+/// are digits) and merely harmless for a case-sensitive path on a site the
+/// app does not read yet. An empty path left after that is refused, naming
+/// the host, only when the host is one [`path_identity_hosts`] lists: on
+/// those sites the app already knows an account lives at a path under the
+/// host, so a bare host would own every account there — the same argument
+/// as before, now scoped to exactly the hosts it is about. Every other
+/// host-only URL — its account identity is the subdomain itself (Fanbox), or
+/// the app does not read the site at all — is stored as the host alone and
+/// matches nothing until an adapter for it produces a candidate, which
+/// always carries a path. The result is `host` with `path` appended and no
+/// scheme, so `http` and `https` compare equal — this is the string
+/// `artist_urls.url` stores.
+pub fn normalized(url: &str) -> std::result::Result<String, UrlRefusal> {
+    let trimmed = url.trim();
+    let with_scheme = if trimmed.contains("://") {
+        trimmed.to_string()
+    } else {
+        format!("https://{trimmed}")
+    };
+    let (host, path) = host_and_path(&with_scheme).ok_or(UrlRefusal::NotAUrl)?;
+    if host.is_empty() || !host.contains('.') || host.chars().any(char::is_whitespace) {
+        return Err(UrlRefusal::NotAUrl);
+    }
+    let host = canonical_host(host);
     let path = path.trim_end_matches('/').to_lowercase();
     if path.is_empty() {
-        return None;
+        return if path_identity_hosts().contains(&host) {
+            Err(UrlRefusal::BareProfileHost(host))
+        } else {
+            Ok(host)
+        };
     }
-    Some(format!("{host}{path}"))
+    Ok(format!("{host}{path}"))
 }
 
 /// Whether `entry_url` (already normalised) owns `candidate` (already
@@ -111,6 +159,23 @@ const PROFILE_URLS: [(&str, &str, &str); 2] = [
     ("x", "handle", "https://x.com/{}"),
     ("pixiv", "userId", "https://www.pixiv.net/users/{}"),
 ];
+
+/// Hosts whose account identity lives in the path, not the subdomain (design
+/// D1, `artist-url-any-site`): every [`PROFILE_URLS`] template's host,
+/// canonicalised ([`canonical_host`]) the same way a pasted host is —
+/// `x.com`, `pixiv.net` today. [`normalized`] refuses a host-only URL only
+/// for a host in this set, so the old rule's argument ("a bare `x.com` would
+/// own every X capture") stays true for exactly the hosts it was about; the
+/// next adapter with a path identity adds itself by adding its
+/// `PROFILE_URLS` row, nothing here.
+pub(crate) fn path_identity_hosts() -> std::collections::HashSet<String> {
+    PROFILE_URLS
+        .iter()
+        .filter_map(|(_, _, template)| {
+            host_and_path(template).map(|(host, _)| canonical_host(host))
+        })
+        .collect()
+}
 
 /// The artist name `adapter` names, spelled as [`tags::underscored`] spells
 /// every tag (`auto-artist-tag` design D1) — `None` for a site with no author
@@ -185,7 +250,7 @@ pub fn derived_tag(adapter: Option<&SiteAdapterRecord>, page_url: Option<&str>) 
 /// profile URL already does, and an entry made to own it would add nothing
 /// a profile-URL match does not already give.
 pub fn candidate(adapter: Option<&SiteAdapterRecord>, page_url: Option<&str>) -> Option<String> {
-    normalized(&profile_url(adapter, page_url)?)
+    normalized(&profile_url(adapter, page_url)?).ok()
 }
 
 /// The entry that owns `candidate` (already normalised) — among several
@@ -272,8 +337,7 @@ fn normalize_all(urls: &[String]) -> Result<Vec<String>> {
     let mut seen = std::collections::HashSet::new();
     let mut out = Vec::with_capacity(urls.len());
     for url in urls {
-        let one = normalized(url)
-            .ok_or_else(|| AppError::BadRequest(format!("{url:?} does not look like a URL")))?;
+        let one = normalized(url).map_err(|refusal| AppError::BadRequest(refusal.message(url)))?;
         if seen.insert(one.clone()) {
             out.push(one);
         }
@@ -611,7 +675,7 @@ fn from_profiles(conn: &Connection, owned_urls: &[String]) -> Result<Vec<String>
 /// gives them — typed into a form, mid-edit — so a line that does not
 /// normalise is ignored rather than refusing the whole preview.
 pub fn apply_preview(conn: &Connection, urls: &[String]) -> Result<ArtistApplyPreview> {
-    let owned: Vec<String> = urls.iter().filter_map(|url| normalized(url)).collect();
+    let owned: Vec<String> = urls.iter().filter_map(|url| normalized(url).ok()).collect();
     let ids = from_profiles(conn, &owned)?;
     let untagged = count_carrying_no_artist_tag(conn, &ids)?;
     Ok(ArtistApplyPreview {
@@ -751,30 +815,75 @@ mod tests {
 
     #[test]
     fn a_url_with_no_host_is_none() {
-        assert_eq!(normalized("https:///no-host"), None);
+        assert_eq!(normalized("https:///no-host"), Err(UrlRefusal::NotAUrl));
     }
 
     #[test]
     fn a_bare_name_is_none() {
-        assert_eq!(normalized("metaljelly"), None, "a name is not a URL");
+        assert_eq!(
+            normalized("metaljelly"),
+            Err(UrlRefusal::NotAUrl),
+            "a name is not a URL"
+        );
     }
 
     #[test]
     fn text_with_whitespace_and_no_scheme_is_none() {
-        assert_eq!(normalized("hello world"), None);
+        assert_eq!(normalized("hello world"), Err(UrlRefusal::NotAUrl));
     }
 
     #[test]
-    fn a_host_with_no_path_is_none() {
-        assert_eq!(normalized("https://x.com/"), None, "trailing slash only");
-        assert_eq!(normalized("https://x.com"), None, "no path at all");
+    fn a_bare_path_identity_host_is_refused_naming_it() {
+        for (url, host) in [
+            ("https://x.com/", "x.com"),
+            ("x.com", "x.com"),
+            ("https://www.pixiv.net", "pixiv.net"),
+        ] {
+            let refusal = normalized(url).unwrap_err();
+            assert_eq!(
+                refusal,
+                UrlRefusal::BareProfileHost(host.to_string()),
+                "{url}"
+            );
+            let message = refusal.message(url);
+            assert!(message.contains(host), "{message}");
+            assert!(message.contains("add the account's path"), "{message}");
+        }
+    }
+
+    #[test]
+    fn a_host_only_url_elsewhere_is_stored_as_its_host() {
+        assert_eq!(
+            normalized("https://kanibiimu.fanbox.cc/"),
+            Ok("kanibiimu.fanbox.cc".to_string())
+        );
+        assert_eq!(
+            normalized("KANIBIIMU.fanbox.cc"),
+            Ok("kanibiimu.fanbox.cc".to_string())
+        );
+    }
+
+    #[test]
+    fn a_host_only_entry_owns_its_own_pages_and_not_a_longer_host() {
+        assert!(owns("kanibiimu.fanbox.cc", "kanibiimu.fanbox.cc/posts/1"));
+        assert!(!owns("kanibiimu.fanbox.cc", "kanibiimu.fanbox.cc.evil"));
+    }
+
+    #[test]
+    fn path_identity_hosts_follow_the_profile_url_table() {
+        let hosts: std::collections::HashSet<String> = ["x.com", "pixiv.net"]
+            .into_iter()
+            .map(str::to_string)
+            .collect();
+
+        assert_eq!(path_identity_hosts(), hosts);
     }
 
     #[test]
     fn surrounding_whitespace_is_trimmed_first() {
         assert_eq!(
             normalized(" https://x.com/a \r\n"),
-            Some("x.com/a".to_string())
+            Ok("x.com/a".to_string())
         );
     }
 
@@ -782,7 +891,7 @@ mod tests {
     fn a_mobile_twitter_subdomain_and_a_query_string_both_fold_away() {
         assert_eq!(
             normalized("mobile.twitter.com/A?s=20"),
-            Some("x.com/a".to_string())
+            Ok("x.com/a".to_string())
         );
     }
 
@@ -870,11 +979,11 @@ mod tests {
                 None,
                 Some("https://x.com/Alice_Art/status/1984922180078211565/photo/1")
             ),
-            normalized("https://x.com/alice_art"),
+            normalized("https://x.com/alice_art").ok(),
         );
         assert_eq!(
             candidate(None, Some("https://twitter.com/alice_art/status/1")),
-            normalized("https://x.com/alice_art"),
+            normalized("https://x.com/alice_art").ok(),
         );
         assert_eq!(
             derived_tag(None, Some("https://x.com/Alice_Art/status/1")),
@@ -1129,6 +1238,36 @@ mod tests {
             entries[0].urls,
             vec!["x.com/metaljelly0811".to_string()],
             "the same URL under two spellings is stored once"
+        );
+    }
+
+    /// A host-only Fanbox profile and the `fanbox.cc/@name` path spelling
+    /// both save on one entry (design D3, `artist-url-any-site`): Fanbox is
+    /// not a `path_identity_hosts` host, so neither line is refused.
+    #[test]
+    fn upsert_accepts_a_fanbox_profile() {
+        let (_dir, library) = library();
+
+        let entries = upsert(
+            &library,
+            &entry(
+                "kanibiimu",
+                &[
+                    "https://kanibiimu.fanbox.cc/",
+                    "https://www.fanbox.cc/@kanibiimu",
+                ],
+            ),
+        )
+        .unwrap();
+
+        let mut urls = entries[0].urls.clone();
+        urls.sort();
+        assert_eq!(
+            urls,
+            vec![
+                "fanbox.cc/@kanibiimu".to_string(),
+                "kanibiimu.fanbox.cc".to_string(),
+            ]
         );
     }
 

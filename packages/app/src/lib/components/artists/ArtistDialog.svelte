@@ -365,6 +365,10 @@
           class="min-h-16 font-mono text-xs"
           spellcheck={false}
         />
+        <p class="text-xs text-muted-foreground">
+          One per line. A URL from a site the app does not read yet is kept, and matched once it
+          does.
+        </p>
       </div>
 
       {#if request && request.mode === 'edit' && (leftToRun('rename') || leftToRun('upsert'))}

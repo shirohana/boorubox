@@ -14,10 +14,14 @@ keeps an artist's URLs. A URL SHALL have one owner; giving a URL another artist 
 refused naming that artist. URLs SHALL be compared normalised — scheme ignored, host
 lower-cased with a leading `www.`, `mobile.` or `m.` dropped and `twitter.com` read as `x.com`,
 query and fragment dropped, trailing slashes dropped, path lower-cased — and an entry's URL
-SHALL own a URL that equals it or continues it past a `/`. A URL with no host, a host without a dot, or no path SHALL be
-refused, and an entry naming a tag that exists under a category other than artist SHALL be
-refused. Entries SHALL be stored with the library, carried in its describing file, and
-restored on rebuild; a describing file written before entries existed SHALL restore none.
+SHALL own a URL that equals it or continues it past a `/`. A URL with no host or a host without
+a dot SHALL be refused as not a URL. A URL that is a host alone SHALL be refused, naming the
+host and asking for the account's path, only when the host is one the app reads an account's
+profile from by its path (`x.com`, `pixiv.net`); a host-only URL of any other site SHALL be
+stored as its host and matched once the app reads that site. An entry naming a tag that exists
+under a category other than artist SHALL be refused. Entries SHALL be stored with the library,
+carried in its describing file, and restored on rebuild; a describing file written before
+entries existed SHALL restore none.
 
 #### Scenario: A prefix owns the post
 - **WHEN** `metaljelly` owns `https://x.com/metaljelly0811`
@@ -30,6 +34,18 @@ restored on rebuild; a describing file written before entries existed SHALL rest
 #### Scenario: Entries survive a rebuild
 - **WHEN** `metaljelly` owns two URLs and the library is rebuilt from its folder
 - **THEN** `metaljelly` owns the same two URLs afterwards
+
+#### Scenario: A Fanbox profile, either spelling
+- **WHEN** an entry is saved with `https://kanibiimu.fanbox.cc/` and `https://www.fanbox.cc/@kanibiimu`
+- **THEN** it is saved and lists `kanibiimu.fanbox.cc` and `fanbox.cc/@kanibiimu`
+
+#### Scenario: A bare X host
+- **WHEN** an entry is saved with `x.com`
+- **THEN** it is refused, the message names `x.com` and asks for the account's path
+
+#### Scenario: A name is not a URL
+- **WHEN** an entry is saved with `metaljelly`
+- **THEN** it is refused as not looking like a URL
 
 ### Requirement: An artist is edited from any of its tags
 Every context menu of a tag of the artist category — the sidebar's row, the pinned chip and
@@ -251,3 +267,11 @@ changes no image (owner, 2026-09-28: no migration by default).
 #### Scenario: Editing without applying
 - **WHEN** the user adds a URL in Edit artist and saves with "Apply to existing images" unchecked
 - **THEN** no stored image changes
+
+### Requirement: The artist dialog explains an unread site
+The artist dialog SHALL say, beside the profile URLs, that a URL from a site the app does not
+read yet is kept and matched once it does.
+
+#### Scenario: Reading the hint
+- **WHEN** the dialog is open
+- **THEN** the hint is visible under the Profile URLs field
