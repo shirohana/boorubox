@@ -40,6 +40,7 @@ gated on the legacy repo shipping Phase 0.
 - An `$effect` that reads a field off a store object reassigned wholesale (the shape of
   `library.status?.libraryPath`) re-runs on every status refresh. Derive the field with
   `$derived` and depend on that. Three reviews in a row flagged the effect form.
+- A comment or doc comment says what the code does or warns the next editor; it never tells how the code got there ("lifted from", "replaced the old", "before this change", "same as tagCount used to") and never cites a design number without its change name (`D2` alone reads as whichever change the file was born in). Four of five reviews in one run cut such comments; write the reason into the code or the spec and leave the history to git.
 
 ## Storage rules (from §7)
 
