@@ -151,7 +151,8 @@ export function parseTagSearch(query: string): ParsedTagSearch {
   // 0. Extract source: metatags (`source-filter` design D1), before every
   // other step: a URL can contain `rating:g`, `account:x` or `is:png` in its
   // query string, and the steps below have no leading boundary, so any of
-  // them run first would cut that word out of the URL and add a stray filter. `none`, read only as the term's whole value, sets
+  // them run first would cut that word out of the URL and add a stray filter.
+  // `none`, read only as the term's whole value, sets
   // `noSource`/`anySource` rather than joining `sources`/`excludeSources` —
   // the `collection:none`/`any` convention above, minus the `any` keyword
   // `source:` does not have. Every other value is kept exactly as typed: no

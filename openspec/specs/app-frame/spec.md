@@ -113,8 +113,14 @@ feature that is not built SHALL be absent, not empty.
 ### Requirement: One inspector panel, two placements
 The app SHALL show the facts of the current image in an inspector panel that is the same in
 both of its placements: beside the main content region, and inside the full-size viewer. The
-panel SHALL show at least the title, source, page address, image address, pixel dimensions,
-file size, file type, capture time and tags of that image. The title, the page address and the
+panel SHALL show at least the title, origin, page address, image address, pixel dimensions,
+file size, file type, capture time and tags of that image. The rows SHALL be named for the
+reader, in Danbooru's vocabulary: the capture origin is "Origin"; the page address is
+"Source"; the image address is "Source file"; pixel dimensions, file size and file type are
+one "Size" row reading `<size> .<extension> (<width>×<height>)`, the extension taken from
+the stored file's name and omitted when it has none; the times are one "Date" row reading
+how long ago the image was captured (`3 days ago`, `2 years ago`), and hovering it SHALL show
+the absolute captured, imported and file-modified times. The title, the page address and the
 image address SHALL be editable behind one edit action that turns those three rows into a form
 with save and cancel; every other fact SHALL be read-only. Saving SHALL write all three, SHALL
 record the image as changed at that moment, and SHALL show the new values everywhere the image
@@ -125,7 +131,7 @@ the panel's other writes do.
 
 For one image the panel SHALL read, top to bottom, in the order the owner uses them (2026-09-24):
 the title row; the rating; the tags; the collections; the upload action, when a booru is
-configured; the facts (source, addresses, dimensions, size, type, times, id) and where the image
+configured; the facts (origin, source, source file, size, date, id) and where the image
 has been posted; the move-to-trash action, at the foot; and, only when no booru is configured,
 the note that says so and where to add one, last of all. The rating sits first below the title
 because its height never changes; the facts sit low because they are seldom read; the trash
@@ -179,6 +185,14 @@ where the action is, rather than doing nothing.
 #### Scenario: Clearing an address
 - **WHEN** the user empties the page address and saves
 - **THEN** the image has no page address, its row shows none, and no account entry is shown
+
+#### Scenario: The size row
+- **WHEN** the panel shows a 1.3 MB JPEG of 1200 by 2200 pixels
+- **THEN** its Size row reads `1.3 MB .jpg (1200×2200)`
+
+#### Scenario: The date row
+- **WHEN** the panel shows an image captured three days ago and the user hovers its Date row
+- **THEN** the row reads `3 days ago` and the hover shows the captured, imported and file-modified times in full
 
 ### Requirement: One keyboard map
 The app SHALL bind the following keys, and SHALL NOT act on any of them while the focus is in

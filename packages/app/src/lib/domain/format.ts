@@ -34,3 +34,56 @@ export function ratingLabel(rating: Rating | null): string {
   if (rating === null) return 'unrated'
   return { g: 'general', s: 'sensitive', q: 'questionable', e: 'explicit' }[rating]
 }
+
+interface SizeFacts {
+  size: number
+  file: string
+  width: number
+  height: number
+}
+
+/**
+ * The inspector's Size row, Danbooru's form (`inspector-facts-relabel`
+ * design D2): bytes, the stored file's extension, pixel dimensions. The
+ * extension is read from `file`'s own name rather than `mime`, so it reads
+ * `.jpg` and not `image/jpeg`, and is omitted — with its leading space —
+ * when the name has none.
+ */
+export function formatSizeLine({ size, file, width, height }: SizeFacts): string {
+  const name = file.slice(file.lastIndexOf('/') + 1)
+  const dot = name.lastIndexOf('.')
+  const ext = dot === -1 ? '' : name.slice(dot + 1).toLowerCase()
+  const dimensions = `(${width}×${height})`
+  return ext ? `${formatBytes(size)} .${ext} ${dimensions}` : `${formatBytes(size)} ${dimensions}`
+}
+
+const MINUTE = 60 * 1000
+const HOUR = 60 * MINUTE
+const DAY = 24 * HOUR
+
+/** Largest unit first, so the first one whose magnitude is at least one wins. */
+const RELATIVE_UNITS: [Intl.RelativeTimeFormatUnit, number][] = [
+  ['year', 365 * DAY],
+  ['month', 30 * DAY],
+  ['day', DAY],
+  ['hour', HOUR],
+  ['minute', MINUTE],
+]
+
+const relativeFormat = new Intl.RelativeTimeFormat('en', { numeric: 'auto' })
+
+/**
+ * How long ago an epoch-millisecond column reads (`inspector-facts-relabel`
+ * design D3), Danbooru's form: `yesterday`, `3 days ago`, `2 years ago`,
+ * computed once against `now` rather than ticking. `now` defaults to the
+ * call time and is a parameter so a test can fix it.
+ */
+export function formatRelative(ms: number, now: number = Date.now()): string {
+  if (!Number.isFinite(ms)) return '—'
+  const diff = ms - now
+  for (const [unit, unitMs] of RELATIVE_UNITS) {
+    const value = diff / unitMs
+    if (Math.abs(value) >= 1) return relativeFormat.format(Math.round(value), unit)
+  }
+  return 'just now'
+}

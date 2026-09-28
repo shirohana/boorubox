@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { formatBytes, formatTimestamp, ratingLabel } from './format'
+import { formatBytes, formatRelative, formatSizeLine, formatTimestamp, ratingLabel } from './format'
 
 describe('formatBytes', () => {
   it('leaves byte counts whole', () => {
@@ -48,5 +48,50 @@ describe('ratingLabel', () => {
 
   it('calls no rating "unrated", the state `is:unrated` searches for', () => {
     expect(ratingLabel(null)).toBe('unrated')
+  })
+})
+
+describe('formatSizeLine', () => {
+  it('reads bytes, extension and pixel dimensions as one line', () => {
+    expect(
+      formatSizeLine({ size: 1_300_000, file: 'images/a1/b2/abc123.jpg', width: 1200, height: 2200 }),
+    ).toBe('1.3 MB .jpg (1200×2200)')
+  })
+
+  it('omits the extension, and its leading space, for a file with none', () => {
+    expect(formatSizeLine({ size: 1_300_000, file: 'images/a1/b2/abc123', width: 1200, height: 2200 })).toBe(
+      '1.3 MB (1200×2200)',
+    )
+  })
+
+  it('lower-cases an upper-case extension', () => {
+    expect(
+      formatSizeLine({ size: 1_300_000, file: 'images/a1/b2/abc123.JPG', width: 1200, height: 2200 }),
+    ).toBe('1.3 MB .jpg (1200×2200)')
+  })
+})
+
+describe('formatRelative', () => {
+  const now = new Date('2026-09-28T12:00:00Z').getTime()
+  const DAY = 24 * 60 * 60 * 1000
+
+  it('reads under a minute as "just now"', () => {
+    expect(formatRelative(now - 30_000, now)).toBe('just now')
+  })
+
+  it('reads one day ago as "yesterday"', () => {
+    expect(formatRelative(now - DAY, now)).toBe('yesterday')
+  })
+
+  it('reads three days ago', () => {
+    expect(formatRelative(now - 3 * DAY, now)).toBe('3 days ago')
+  })
+
+  it('reads two years ago', () => {
+    expect(formatRelative(now - 2 * 365 * DAY, now)).toBe('2 years ago')
+  })
+
+  it('says nothing rather than something wrong for a time that is not one', () => {
+    expect(formatRelative(Number.NaN, now)).toBe('—')
   })
 })

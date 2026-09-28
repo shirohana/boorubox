@@ -39,7 +39,8 @@
   import * as ContextMenu from '$lib/components/ui/context-menu'
   import * as DropdownMenu from '$lib/components/ui/dropdown-menu'
   import { Input } from '$lib/components/ui/input'
-  import { formatBytes, formatTimestamp } from '$lib/domain/format'
+  import * as Tooltip from '$lib/components/ui/tooltip'
+  import { formatRelative, formatSizeLine, formatTimestamp } from '$lib/domain/format'
   import { groupByCategory } from '$lib/domain/tag-categories'
   import { editorText } from '$lib/domain/tag-input'
   import {
@@ -1322,7 +1323,7 @@
           <dd class="wrap-break-word">{image.pageTitle ?? '—'}</dd>
         {/if}
 
-        <dt class="text-muted-foreground">Source</dt>
+        <dt class="text-muted-foreground">Origin</dt>
         <dd class="wrap-break-word">{origin}</dd>
 
         {#if artistMatchAnswer}
@@ -1404,13 +1405,13 @@
           </dd>
         {/if}
 
-        <dt class="text-muted-foreground">Page</dt>
+        <dt class="text-muted-foreground">Source</dt>
         {#if editingFacts}
           <dd>
             <Input
               bind:value={draftPageUrl}
               class="h-6 px-1.5 text-xs"
-              aria-label="Page address"
+              aria-label="Source address"
               placeholder="https://…"
               onkeydown={onFactsKeydown}
             />
@@ -1423,13 +1424,13 @@
           </dd>
         {/if}
 
-        <dt class="text-muted-foreground">Image</dt>
+        <dt class="text-muted-foreground">Source file</dt>
         {#if editingFacts}
           <dd>
             <Input
               bind:value={draftImageUrl}
               class="h-6 px-1.5 text-xs"
-              aria-label="Image address"
+              aria-label="Source file address"
               placeholder="https://…"
               onkeydown={onFactsKeydown}
             />
@@ -1453,28 +1454,34 @@
           {/if}
         {/if}
 
-        <dt class="text-muted-foreground">Dimensions</dt>
-        <dd>{image.width} × {image.height}</dd>
-
         <dt class="text-muted-foreground">Size</dt>
-        <dd>{formatBytes(image.size)}</dd>
+        <dd>{formatSizeLine(image)}</dd>
 
-        <dt class="text-muted-foreground">Type</dt>
-        <dd>{image.mime}</dd>
-
-        <dt class="text-muted-foreground">Captured</dt>
-        <dd>{formatTimestamp(image.capturedAt)}</dd>
-
-        <dt class="text-muted-foreground">Imported</dt>
-        <dd>{formatTimestamp(image.createdAt)}</dd>
-
-        <!--
-          `formatTimestamp` already reads a non-finite number as `—`; passing
-          `NaN` for an image with no file behind it reuses that fallback instead
-          of a second one written here (design D11).
-        -->
-        <dt class="text-muted-foreground">File modified</dt>
-        <dd>{formatTimestamp(image.fileModifiedAt ?? Number.NaN)}</dd>
+        <dt class="text-muted-foreground">Date</dt>
+        <dd>
+          <!--
+            A tooltip, not a `title` attribute (`inspector-facts-relabel`
+            design D3): the native one is slow and unstyled, and the app
+            already has this styled one — same mount `TagNoteIndicator` uses,
+            so it portals into the viewer placement too. `formatTimestamp`
+            already reads a non-finite number as `—`; passing `NaN` for an
+            image with no file behind it reuses that fallback instead of a
+            second one written here (design D11, moved from the old File
+            modified row).
+          -->
+          <Tooltip.Root delayDuration={150}>
+            <Tooltip.Trigger tabindex={-1}>
+              {#snippet child({ props })}
+                <span {...props}>{formatRelative(image.capturedAt)}</span>
+              {/snippet}
+            </Tooltip.Trigger>
+            <Tooltip.Content portalProps={{ to: portalTo }} class="block text-left">
+              <p>Captured {formatTimestamp(image.capturedAt)}</p>
+              <p>Imported {formatTimestamp(image.createdAt)}</p>
+              <p>File modified {formatTimestamp(image.fileModifiedAt ?? Number.NaN)}</p>
+            </Tooltip.Content>
+          </Tooltip.Root>
+        </dd>
 
         <dt class="text-muted-foreground">ID</dt>
         <dd class="font-mono wrap-break-word">{image.id}</dd>

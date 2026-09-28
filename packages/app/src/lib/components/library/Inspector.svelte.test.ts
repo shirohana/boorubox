@@ -8,11 +8,33 @@ import { flushSync, mount, tick, unmount } from 'svelte'
 import { afterEach, expect, it, vi } from 'vitest'
 import { img } from '$lib/domain/image-fixture'
 import Inspector from './Inspector.svelte'
+import CaptureTooltipContext from './Inspector.test-harness.svelte'
 import type { TrashActions } from './trash-actions'
 
 afterEach(() => {
   clearMocks()
 })
+
+/**
+ * The Date row's tooltip (`inspector-facts-relabel` design D3) reads its
+ * `Tooltip.Provider` from context and throws without one; in the running
+ * app that provider is the frame's, an ancestor no unit test mounts. Captured
+ * once — `Inspector.test-harness.svelte`'s own doc comment says why a real
+ * `Tooltip.Provider` has to sit here rather than wrapping Inspector itself —
+ * and handed to every `mount(Inspector, …)` below as `context`
+ * (`getAllContexts`'s documented use), so Inspector stays the mounted root
+ * and `instance.startEditTags()` keeps working the instant `mount()`
+ * returns, several tests below.
+ */
+let tooltipContext: Map<unknown, unknown> | undefined
+function captureTooltipContext(): Map<unknown, unknown> {
+  if (tooltipContext) return tooltipContext
+  mount(CaptureTooltipContext, {
+    target: document.createElement('div'),
+    props: { oncaptured: (context: Map<unknown, unknown>) => (tooltipContext = context) },
+  })
+  return tooltipContext!
+}
 
 function stubResults(): SearchResults {
   return {
@@ -56,7 +78,7 @@ function setup(
     onrelease: options.onrelease,
     onartistsaved: () => {},
   })
-  const instance = mount(Inspector, { target, props })
+  const instance = mount(Inspector, { target, props, context: captureTooltipContext() })
   return { target, props, instance }
 }
 
