@@ -101,6 +101,17 @@ mod tests {
     }
 
     #[test]
+    fn first_frame_of_the_hevc_fixture_is_16_by_16() {
+        let frame = first_frame(Path::new(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/fixtures/video/hvc1.mp4"
+        )))
+        .unwrap();
+
+        assert_eq!((frame.width(), frame.height()), (16, 16));
+    }
+
+    #[test]
     fn a_file_ffmpeg_cannot_read_is_an_error_naming_its_last_line() {
         let error = first_frame(Path::new("/no/such/video.mp4")).unwrap_err();
 

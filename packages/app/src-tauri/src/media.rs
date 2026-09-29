@@ -75,14 +75,10 @@ fn unsupported_codec(name: &str) -> AppError {
 /// with a rotation matrix reports its stored dimensions, not the displayed ones.
 ///
 /// `mp4parse` names H.264, MPEG-4 Part 2, VP8, VP9, AV1 and H.263 sample entries and reports
-/// every other one, HEVC's `hvc1`/`hev1` included, as `Unknown`.
-///
-/// FIXME: an HEVC mp4 (an iPhone recording) is refused as `unknown` although the sidecar and
-/// both webviews decode it. The right shape is a parser that names the sample entry's fourcc
-/// (the `mp4` crate reads `hvc1`/`hev1` but drops every entry it does not know, so a refusal
-/// could not name its codec) or a targeted read of the first `stsd` entry's fourcc when
-/// `mp4parse` says `Unknown`. Not built because the owner's clips are H.264 and they asked to
-/// raise unsupported formats as they hit them (`video-files` design D1).
+/// every other one as `Unknown` without its fourcc or dimensions. For those,
+/// `first_video_sample_entry` answers the one question left (what is the entry's type): HEVC
+/// (`hvc1`/`hev1`) is accepted with its dimensions from the track header, any other type is
+/// refused by name. The walk is not a second parser: it never runs on a codec `mp4parse` names.
 fn probe_mp4(bytes: &[u8]) -> Result<Probed> {
     use mp4parse::{CodecType, SampleEntry, TrackType};
 
@@ -97,17 +93,24 @@ fn probe_mp4(bytes: &[u8]) -> Result<Probed> {
         .stsd
         .as_ref()
         .and_then(|stsd| stsd.descriptions.iter().next());
-    let Some(SampleEntry::Video(video)) = entry else {
-        return Err(unsupported_codec("unknown"));
+    let named = match entry {
+        Some(SampleEntry::Video(video)) => {
+            let codec = match video.codec_type {
+                CodecType::H264 => Some("avc1"),
+                CodecType::VP9 => Some("vp09"),
+                CodecType::MP4V => return Err(unsupported_codec("mp4v")),
+                CodecType::AV1 => return Err(unsupported_codec("av01")),
+                CodecType::VP8 => return Err(unsupported_codec("vp08")),
+                CodecType::H263 => return Err(unsupported_codec("s263")),
+                _ => None,
+            };
+            codec.map(|codec| (codec, u64::from(video.width), u64::from(video.height)))
+        }
+        _ => None,
     };
-    let codec = match video.codec_type {
-        CodecType::H264 => "avc1",
-        CodecType::VP9 => "vp09",
-        CodecType::MP4V => return Err(unsupported_codec("mp4v")),
-        CodecType::AV1 => return Err(unsupported_codec("av01")),
-        CodecType::VP8 => return Err(unsupported_codec("vp08")),
-        CodecType::H263 => return Err(unsupported_codec("s263")),
-        _ => return Err(unsupported_codec("unknown")),
+    let (codec, width, height) = match named {
+        Some(named) => named,
+        None => unnamed_video_entry(bytes, track)?,
     };
     let duration_ms = match (&track.duration, &track.timescale) {
         (Some(duration), Some(timescale)) if timescale.0 > 0 => {
@@ -115,11 +118,7 @@ fn probe_mp4(bytes: &[u8]) -> Result<Probed> {
         }
         _ => None,
     };
-    let (width, height) = checked_dimensions(
-        u64::from(video.width),
-        u64::from(video.height),
-        "unreadable mp4 header",
-    )?;
+    let (width, height) = checked_dimensions(width, height, "unreadable mp4 header")?;
     Ok(Probed {
         kind: Kind::Video,
         ext: "mp4",
@@ -129,6 +128,85 @@ fn probe_mp4(bytes: &[u8]) -> Result<Probed> {
         duration_ms,
         codec: Some(codec),
     })
+}
+
+/// The codec and pixel size of a video entry `mp4parse` left `Unknown`: the entry's fourcc from
+/// the box walk, the size from the track header (16.16 fixed point).
+fn unnamed_video_entry(bytes: &[u8], track: &mp4parse::Track) -> Result<(&'static str, u64, u64)> {
+    let Some(fourcc) = first_video_sample_entry(bytes) else {
+        return Err(unsupported_codec("unknown"));
+    };
+    let codec = match &fourcc {
+        b"hvc1" => "hvc1",
+        b"hev1" => "hev1",
+        other => {
+            let name: String = other
+                .iter()
+                .map(|&byte| {
+                    if byte.is_ascii_graphic() {
+                        char::from(byte)
+                    } else {
+                        '?'
+                    }
+                })
+                .collect();
+            return Err(unsupported_codec(&name));
+        }
+    };
+    let (width, height) = track
+        .tkhd
+        .as_ref()
+        .map_or((0, 0), |tkhd| (tkhd.width >> 16, tkhd.height >> 16));
+    Ok((codec, u64::from(width), u64::from(height)))
+}
+
+/// The type of the first sample entry of the first `vide` track (`moov` > `trak` > `mdia` >
+/// `minf` > `stbl` > `stsd`), or `None` on any box that is missing or does not fit its parent.
+fn first_video_sample_entry(bytes: &[u8]) -> Option<[u8; 4]> {
+    let moov = child(bytes, b"moov")?;
+    let mdia = boxes(moov)
+        .filter(|(kind, _)| kind == b"trak")
+        .find_map(|(_, trak)| {
+            let mdia = child(trak, b"mdia")?;
+            // hdlr payload: version and flags, pre_defined, then the handler type.
+            (child(mdia, b"hdlr")?.get(8..12)? == b"vide").then_some(mdia)
+        })?;
+    let stsd = child(child(child(mdia, b"minf")?, b"stbl")?, b"stsd")?;
+    // stsd is a full box: version and flags, entry count, then the entries.
+    let (kind, _, _) = next_box(stsd.get(8..)?)?;
+    Some(kind)
+}
+
+/// The boxes laid end to end in `data`; iteration stops at the first one that does not fit.
+fn boxes(mut data: &[u8]) -> impl Iterator<Item = ([u8; 4], &[u8])> {
+    std::iter::from_fn(move || {
+        let (kind, payload, rest) = next_box(data)?;
+        data = rest;
+        Some((kind, payload))
+    })
+}
+
+fn child<'a>(data: &'a [u8], kind: &[u8; 4]) -> Option<&'a [u8]> {
+    boxes(data)
+        .find(|(k, _)| k == kind)
+        .map(|(_, payload)| payload)
+}
+
+/// The first box in `data` as its type, payload and the bytes after it. Size 1 is followed by a
+/// 64-bit size, size 0 runs to the end of `data`.
+fn next_box(data: &[u8]) -> Option<([u8; 4], &[u8], &[u8])> {
+    let size = u32::from_be_bytes(data.get(..4)?.try_into().ok()?);
+    let kind: [u8; 4] = data.get(4..8)?.try_into().ok()?;
+    let (header, total) = match size {
+        0 => (8, data.len()),
+        1 => (
+            16,
+            usize::try_from(u64::from_be_bytes(data.get(8..16)?.try_into().ok()?)).ok()?,
+        ),
+        size => (8, usize::try_from(size).ok()?),
+    };
+    (total >= header).then_some(())?;
+    Some((kind, data.get(header..total)?, data.get(total..)?))
 }
 
 /// A zero duration is no duration: a fragmented mp4 keeps its length in the fragments and states
@@ -247,6 +325,73 @@ mod tests {
             matches!(&error, AppError::Unsupported(reason) if reason == "video codec mp4v is not supported"),
             "unexpected error: {error:?}"
         );
+    }
+
+    fn hevc_fixture_is_probed(name: &str, codec: &str) {
+        let probed = probe(&fixture(name)).unwrap();
+
+        assert_eq!(probed.kind, Kind::Video);
+        assert_eq!((probed.ext, probed.mime), ("mp4", "video/mp4"));
+        assert_eq!((probed.width, probed.height), (16, 16));
+        assert_eq!(probed.codec, Some(codec));
+        assert_within_a_millisecond(probed.duration_ms);
+    }
+
+    #[test]
+    fn hvc1_mp4_is_probed_as_hevc_video() {
+        hevc_fixture_is_probed("hvc1.mp4", "hvc1");
+    }
+
+    #[test]
+    fn hev1_mp4_is_probed_as_hevc_video() {
+        hevc_fixture_is_probed("hev1.mp4", "hev1");
+    }
+
+    #[test]
+    fn an_unknown_fourcc_is_named_in_the_refusal() {
+        let mut bytes = fixture("hvc1.mp4");
+        let entry = bytes.windows(4).rposition(|w| w == b"hvc1").unwrap();
+        bytes[entry..entry + 4].copy_from_slice(b"zzzz");
+
+        let error = probe(&bytes).unwrap_err();
+
+        assert!(
+            matches!(&error, AppError::Unsupported(reason) if reason == "video codec zzzz is not supported"),
+            "unexpected error: {error:?}"
+        );
+    }
+
+    #[test]
+    fn a_non_ascii_fourcc_prints_as_question_marks() {
+        let mut bytes = fixture("hvc1.mp4");
+        let entry = bytes.windows(4).rposition(|w| w == b"hvc1").unwrap();
+        bytes[entry..entry + 4].copy_from_slice(&[b'a', 0xFF, 0x01, b'b']);
+
+        let error = probe(&bytes).unwrap_err();
+
+        assert!(
+            matches!(&error, AppError::Unsupported(reason) if reason == "video codec a??b is not supported"),
+            "unexpected error: {error:?}"
+        );
+    }
+
+    #[test]
+    fn a_truncated_moov_is_refused_not_panicked() {
+        let bytes = fixture("hvc1.mp4");
+        let moov = bytes.windows(4).position(|w| w == b"moov").unwrap();
+
+        for cut in [moov + 4, moov + 40, bytes.len() - 1] {
+            let error = probe(&bytes[..cut]).unwrap_err();
+
+            assert!(matches!(error, AppError::Unsupported(_)), "{error:?}");
+        }
+    }
+
+    #[test]
+    fn the_walk_answers_none_for_garbage() {
+        assert_eq!(first_video_sample_entry(&[]), None);
+        assert_eq!(first_video_sample_entry(&[0xFF; 64]), None);
+        assert_eq!(first_video_sample_entry(b"\0\0\0\x01moov"), None);
     }
 
     #[test]
