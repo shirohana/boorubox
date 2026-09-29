@@ -8,6 +8,7 @@ use std::path::{Path, PathBuf};
 use image::{DynamicImage, ImageEncoder, codecs::jpeg::JpegEncoder};
 
 use crate::error::{AppError, Result};
+use crate::ffmpeg;
 use crate::ingest;
 use crate::library::{LibraryPaths, SharedLibrary, with_library, with_library_if_open};
 use crate::model::{ImageRecord, ThumbsReport};
@@ -39,13 +40,15 @@ pub fn ensure_thumbnail(paths: &LibraryPaths, record: &ImageRecord) -> Result<Pa
         return Ok(thumb);
     }
     // FIXME: the source is read and decoded a second time here — `ingest` had
-    // the decoded image in hand a moment earlier. The right shape is a variant
-    // taking the already-decoded `DynamicImage`, with this path kept for the
-    // on-demand regeneration `thumbnail_path` needs. Not built yet: the store
-    // now hands the bytes back before the thumbnail, so the double read costs
-    // the caller's thread and not the library lock.
+    // the decoded image in hand a moment earlier (a video's poster costs a
+    // process spawn on top). The right shape is a variant taking the
+    // already-decoded `DynamicImage`, with this path kept for the on-demand
+    // regeneration `thumbnail_path` needs. Not built yet: the store hands the
+    // bytes back before the thumbnail, so the double read costs the caller's
+    // thread and not the library lock.
     write_through_part(
         &paths.image_path(&record.id, &record.ext),
+        &record.mime,
         &part_path(paths, &record.id),
         &thumb,
     )?;
@@ -116,6 +119,7 @@ pub fn regenerate_all(
         }
         match write_through_part(
             &paths.image_path(&record.id, &record.ext),
+            &record.mime,
             &part_path(&paths, &record.id),
             &thumbnail_path(&paths, &record.id),
         ) {
@@ -151,9 +155,16 @@ fn bucketed_thumbs_path(paths: &LibraryPaths, id: &str, file_name: &str) -> Path
 /// Encode to a part file, fsync, rename — the same shape as [`crate::ingest`],
 /// for the same reason: a crash mid-encode must not leave `<id>.jpg` holding
 /// half a JPEG, which every later call would accept as a finished thumbnail.
-fn write_through_part(source: &Path, part: &Path, dest: &Path) -> Result<()> {
+/// `mime` picks the decoder: a video's first frame comes from the bundled
+/// extractor, anything else from the `image` crate.
+fn write_through_part(source: &Path, mime: &str, part: &Path, dest: &Path) -> Result<()> {
     let encode = || -> Result<()> {
-        let thumb = downscale(image::load_from_memory(&fs::read(source)?)?);
+        let frame = if mime.starts_with("video/") {
+            ffmpeg::first_frame(source)?
+        } else {
+            image::load_from_memory(&fs::read(source)?)?
+        };
+        let thumb = downscale(frame);
         // `.thumbs/` is the user's to delete at any moment, so it is recreated
         // here rather than assumed to survive from `Library::open_or_create`.
         if let Some(dir) = dest.parent() {
@@ -240,6 +251,70 @@ mod tests {
         .unwrap();
         let record = ingested.record().clone();
         (dir, library, record)
+    }
+
+    fn library_with_video() -> (tempfile::TempDir, Library, ImageRecord) {
+        let dir = tempfile::tempdir().unwrap();
+        let library = Library::open_or_create(dir.path()).unwrap();
+        let bytes = fs::read(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/fixtures/video/h264.mp4"
+        ))
+        .unwrap();
+        let ingested = ingest::store_image(
+            &library,
+            IngestInput {
+                id: "video-1",
+                bytes: &bytes,
+                source: ImageSource::Local,
+                source_ref: None,
+                image_url: None,
+                page_url: None,
+                page_title: None,
+                adapter: None,
+                rating: None,
+                tags: &[],
+                captured_at: 0,
+                file_modified_at: None,
+                deleted_at: None,
+            },
+        )
+        .unwrap();
+        let record = ingested.record().clone();
+        (dir, library, record)
+    }
+
+    #[test]
+    fn a_video_thumbnail_is_a_jpeg_at_the_source_size() {
+        let (_dir, library, record) = library_with_video();
+
+        let thumb = ensure_thumbnail(&library.paths, &record).unwrap();
+
+        assert_eq!(
+            image::guess_format(&fs::read(&thumb).unwrap()).unwrap(),
+            image::ImageFormat::Jpeg
+        );
+        assert_eq!(
+            dimensions(&thumb),
+            (16, 16),
+            "a small frame is not upscaled"
+        );
+    }
+
+    #[test]
+    fn regenerate_all_counts_a_video_it_cannot_render_as_failed() {
+        let (_dir, library, record) = library_with_video();
+        fs::write(
+            library.paths.image_path(&record.id, &record.ext),
+            b"not a video",
+        )
+        .unwrap();
+        let root = library.paths.root.clone();
+        let shared = shared(library);
+
+        let report = regenerate_all(&shared, &root, &mut |_, _| {}).unwrap();
+
+        assert_eq!((report.regenerated, report.failed), (0, 1));
     }
 
     fn dimensions(path: &Path) -> (u32, u32) {

@@ -14,6 +14,7 @@ use crate::artists;
 use crate::db;
 use crate::error::{AppError, Result};
 use crate::library::Library;
+use crate::media::{self, Probed};
 use crate::model::{ImageRecord, ImageSource, PostRef, SiteAdapterRecord};
 use crate::query::{ID_CHUNK, placeholders};
 use crate::rules;
@@ -66,24 +67,17 @@ impl Ingested {
 
 /// The columns `row_to_record` reads, in the order it reads them. Any SELECT
 /// feeding that function must use this list. Append a new column, never slot
-/// it in: `row_to_record` reads by index. The last column is
-/// `query::SOURCE_URL_SQL` aliased `source_url`; interpolate it, never retype
-/// it, or the `source:` filter and the record's `source_url` drift apart
+/// it in: `row_to_record` reads by index. `source_url` is
+/// `query::SOURCE_URL_SQL` aliased; interpolate it, never retype it, or the
+/// `source:` filter and the record's `source_url` drift apart
 /// (`source-filter` design D2).
 pub fn image_columns() -> String {
     format!(
         "id, ext, mime, size, width, height, source, source_ref, \
          image_url, page_url, page_title, adapter_json, rating, captured_at, created_at, updated_at, \
-         deleted_at, missing, file_modified_at, {} AS source_url",
+         deleted_at, missing, file_modified_at, {} AS source_url, duration_ms",
         crate::query::SOURCE_URL_SQL,
     )
-}
-
-struct Decoded {
-    width: u32,
-    height: u32,
-    ext: &'static str,
-    mime: &'static str,
 }
 
 /// Store `input` and return as soon as its row exists.
@@ -110,7 +104,7 @@ pub fn store_image(library: &Library, input: IngestInput) -> Result<Ingested> {
         return Ok(Ingested::Existing(existing));
     }
 
-    let decoded = decode(input.bytes)?;
+    let decoded = media::probe(input.bytes)?;
     let path = library.paths.image_path(input.id, decoded.ext);
     write_through_inbox(library, input.id, input.bytes, &path)?;
 
@@ -137,19 +131,6 @@ pub fn store_image(library: &Library, input: IngestInput) -> Result<Ingested> {
 /// built from the record the caller is handed back cannot disagree with it.
 fn write_sidecar(library: &Library, record: &ImageRecord) -> Result<()> {
     crate::sidecar::write(&library.paths, &crate::sidecar::Sidecar::from(record))
-}
-
-/// Undecodable bytes are an error before anything is written, so a rejected
-/// capture leaves no file, no part file and no row.
-fn decode(bytes: &[u8]) -> Result<Decoded> {
-    let format = image::guess_format(bytes)?;
-    let image = image::load_from_memory_with_format(bytes, format)?;
-    Ok(Decoded {
-        width: image.width(),
-        height: image.height(),
-        ext: format.extensions_str().first().copied().unwrap_or("bin"),
-        mime: format.to_mime_type(),
-    })
 }
 
 /// Write, fsync, rename. A crash before the rename leaves at most a stray
@@ -185,7 +166,7 @@ fn write_through_inbox(library: &Library, id: &str, bytes: &[u8], dest: &Path) -
 fn insert_rows(
     library: &Library,
     input: &IngestInput,
-    decoded: &Decoded,
+    decoded: &Probed,
 ) -> Result<(Ingested, bool)> {
     // `unchecked_transaction` because `store_image` takes `&Library`: the
     // exclusive access rusqlite normally wants is provided one level up, by the
@@ -207,8 +188,8 @@ fn insert_rows(
     let inserted = tx.execute(
         "INSERT INTO images (id, ext, mime, size, width, height, source, source_ref, image_url,
                              page_url, page_title, adapter_json, rating, captured_at, created_at,
-                             updated_at, file_modified_at, deleted_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)
+                             updated_at, file_modified_at, deleted_at, duration_ms)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)
          ON CONFLICT (id) DO NOTHING",
         params![
             input.id,
@@ -229,6 +210,7 @@ fn insert_rows(
             now,
             input.file_modified_at,
             input.deleted_at,
+            decoded.duration_ms,
         ],
     )?;
 
@@ -366,6 +348,7 @@ pub fn row_to_record(row: &Row) -> rusqlite::Result<ImageRecord> {
         missing: row.get(17)?,
         file_modified_at: row.get(18)?,
         source_url: row.get(19)?,
+        duration_ms: row.get(20)?,
         posts: Vec::new(),
         collections: Vec::new(),
     })

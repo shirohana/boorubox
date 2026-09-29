@@ -413,6 +413,13 @@ CREATE VIRTUAL TABLE images_fts USING fts5 (
 INSERT INTO images_fts (images_fts) VALUES ('rebuild');
 ";
 
+/// Schema v15 (`video-files` design D3): a video's duration in milliseconds,
+/// read from the container header. Nullable: an image has none, and neither
+/// does a video whose container states no duration.
+const SCHEMA_V15: &str = r"
+ALTER TABLE images ADD COLUMN duration_ms INTEGER;
+";
+
 /// One schema version's step: plain SQL for every version but the one
 /// `merge_case_duplicates` is (its own doc comment says why that one has to be
 /// Rust).
@@ -438,6 +445,7 @@ const MIGRATIONS: &[Migration] = &[
     Migration::Sql(SCHEMA_V12),
     Migration::Sql(SCHEMA_V13),
     Migration::Sql(SCHEMA_V14),
+    Migration::Sql(SCHEMA_V15),
 ];
 
 /// Open (creating if needed) the library database with the pragmas D2 fixes,
@@ -1082,6 +1090,40 @@ mod tests {
             .unwrap();
         assert_eq!(version, MIGRATIONS.len() as i64);
         assert_eq!(fts_matches(&conn, "\"ビーム\""), vec!["a".to_string()]);
+    }
+
+    /// `video-files` design D3: a v14 database with an image row migrates
+    /// gaining a `duration_ms` column that is `NULL` for the row it already
+    /// holds.
+    #[test]
+    fn a_v14_library_migrates_gaining_a_null_duration() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("library.sqlite");
+
+        let conn = Connection::open(&path).unwrap();
+        for schema in [
+            SCHEMA_V1, SCHEMA_V2, SCHEMA_V3, SCHEMA_V4, SCHEMA_V5, SCHEMA_V6, SCHEMA_V7, SCHEMA_V8,
+            SCHEMA_V10, SCHEMA_V11, SCHEMA_V12, SCHEMA_V13, SCHEMA_V14,
+        ] {
+            conn.execute_batch(schema).unwrap();
+        }
+        conn.pragma_update(None, "user_version", 14i64).unwrap();
+        insert_bare_image(&conn, "a", "sunset over kyoto");
+        drop(conn);
+
+        let conn = open(&path).unwrap();
+
+        let version: i64 = conn
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, MIGRATIONS.len() as i64);
+        assert!(column_names(&conn, "images").contains(&"duration_ms".to_string()));
+        let duration: Option<i64> = conn
+            .query_row("SELECT duration_ms FROM images WHERE id = 'a'", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(duration, None);
     }
 
     /// The `CHECK` design D1 adds (task 1.1's "why the CHECK"): a category

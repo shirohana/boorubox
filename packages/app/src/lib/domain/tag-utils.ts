@@ -205,7 +205,7 @@ export function parseTagSearch(query: string): ParsedTagSearch {
   }
 
   // 3. Extract is: metatags
-  const isRegex = /is:(unrated|jpg|jpeg|png|webp|gif|svg)/gi
+  const isRegex = /is:(unrated|jpg|jpeg|png|webp|gif|svg|video|mp4|webm)/gi
   const isMatches = remainingQuery.match(isRegex)
   if (isMatches) {
     isMatches.forEach((match) => {
@@ -224,6 +224,13 @@ export function parseTagSearch(query: string): ParsedTagSearch {
         addUnique(result.fileTypes, 'image/gif')
       } else if (value === 'svg') {
         addUnique(result.fileTypes, 'image/svg+xml')
+      } else if (value === 'video') {
+        addUnique(result.fileTypes, 'video/mp4')
+        addUnique(result.fileTypes, 'video/webm')
+      } else if (value === 'mp4') {
+        addUnique(result.fileTypes, 'video/mp4')
+      } else if (value === 'webm') {
+        addUnique(result.fileTypes, 'video/webm')
       }
     })
     remainingQuery = remainingQuery.replace(isRegex, '').trim()

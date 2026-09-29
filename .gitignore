@@ -6,3 +6,6 @@ target/
 .vite/
 .svelte-kit/
 .claude/worktrees/
+# The ffmpeg sidecar `scripts/build-ffmpeg.sh` builds (video-files design D2): a
+# 3 MB binary per target triple, rebuilt from pinned source, never committed.
+packages/app/src-tauri/binaries/

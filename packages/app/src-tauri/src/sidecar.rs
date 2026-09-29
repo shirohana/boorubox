@@ -76,6 +76,11 @@ pub struct Sidecar {
     pub captured_at: i64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub file_modified_at: Option<i64>,
+    /// Videos only; an image's sidecar has no such key, and a reader that does
+    /// not know the field ignores it, so the format stays 1 (`video-files`
+    /// design D3).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duration_ms: Option<i64>,
     pub created_at: i64,
     pub updated_at: i64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -109,6 +114,7 @@ impl From<&ImageRecord> for Sidecar {
             tags: record.tags.clone(),
             captured_at: record.captured_at,
             file_modified_at: record.file_modified_at,
+            duration_ms: record.duration_ms,
             created_at: record.created_at,
             updated_at: record.updated_at,
             deleted_at: record.deleted_at,
@@ -409,6 +415,7 @@ mod tests {
             tags: vec!["artist:foo".to_string(), "landscape".to_string()],
             captured_at: 1_757_000_000_000,
             file_modified_at: None,
+            duration_ms: None,
             created_at: 1_757_000_000_000,
             updated_at: 1_757_000_000_123,
             deleted_at: None,
@@ -607,6 +614,7 @@ mod tests {
         let mut sidecar = full_sidecar("a");
         sidecar.file_modified_at = Some(1_757_000_000_001);
         sidecar.deleted_at = Some(1_757_000_000_002);
+        sidecar.duration_ms = Some(8_033);
         let serialised = serde_json::to_value(&sidecar).unwrap();
         let fields: Vec<&String> = serialised.as_object().unwrap().keys().collect();
 

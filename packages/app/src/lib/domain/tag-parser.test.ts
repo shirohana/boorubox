@@ -219,6 +219,19 @@ describe('parseTagSearch', () => {
       expect(result.includeUnrated).toBe(true)
     })
 
+    it('should parse is:video as both video containers', () => {
+      expect(sorted(parseTagSearch('is:video').fileTypes)).toEqual(sorted(['video/mp4', 'video/webm']))
+    })
+
+    it('should parse is:mp4 and is:webm as one container each', () => {
+      expect(parseTagSearch('is:mp4').fileTypes).toEqual(['video/mp4'])
+      expect(parseTagSearch('is:webm').fileTypes).toEqual(['video/webm'])
+    })
+
+    it('should combine is:webm with is:png', () => {
+      expect(sorted(parseTagSearch('is:webm is:png').fileTypes)).toEqual(sorted(['video/webm', 'image/png']))
+    })
+
     it('should list jpg and jpeg once, not twice (they map to one MIME type)', () => {
       const result = parseTagSearch('is:jpg is:jpeg')
       expect(result.fileTypes).toEqual(['image/jpeg'])

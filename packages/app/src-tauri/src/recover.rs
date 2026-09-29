@@ -542,8 +542,8 @@ fn insert_sidecar(
     conn.execute(
         "INSERT INTO images (id, ext, mime, size, width, height, source, source_ref, image_url,
                              page_url, page_title, adapter_json, rating, captured_at, created_at,
-                             updated_at, file_modified_at, deleted_at, missing)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)",
+                             updated_at, file_modified_at, deleted_at, missing, duration_ms)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20)",
         params![
             sidecar.id,
             sidecar.ext,
@@ -564,6 +564,7 @@ fn insert_sidecar(
             sidecar.file_modified_at,
             sidecar.deleted_at,
             missing,
+            sidecar.duration_ms,
         ],
     )?;
 
@@ -725,6 +726,74 @@ mod tests {
             .collect();
         ids.sort();
         ids
+    }
+
+    fn store_video(library: &Library, id: &str) {
+        let bytes = std::fs::read(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/fixtures/video/h264.mp4"
+        ))
+        .unwrap();
+        store_image(
+            library,
+            IngestInput {
+                id,
+                bytes: &bytes,
+                source: ImageSource::Local,
+                source_ref: None,
+                image_url: None,
+                page_url: None,
+                page_title: None,
+                adapter: None,
+                rating: None,
+                tags: &[],
+                captured_at: 0,
+                file_modified_at: None,
+                deleted_at: None,
+            },
+        )
+        .unwrap();
+    }
+
+    fn duration_after_rebuild(paths: &crate::library::LibraryPaths, id: &str) -> Option<i64> {
+        rebuild(paths, &mut |_, _| {}).unwrap();
+        let rebuilt = Library::open_existing(paths.root.as_path()).unwrap();
+        crate::ingest::require_record(&rebuilt.conn, id)
+            .unwrap()
+            .duration_ms
+    }
+
+    /// `video-files` design D3: the sidecar carries `durationMs` and a rebuild
+    /// restores the column from it.
+    #[test]
+    fn a_sidecar_carrying_a_duration_restores_the_column() {
+        let (_dir, library) = library();
+        store_video(&library, "v");
+        let stored = crate::ingest::require_record(&library.conn, "v")
+            .unwrap()
+            .duration_ms;
+        assert!(stored.is_some(), "the fixture states its duration");
+        let paths = library.paths.clone();
+        drop(library);
+
+        assert_eq!(duration_after_rebuild(&paths, "v"), stored);
+    }
+
+    /// A sidecar with no `durationMs` key (an image's, or a video's from a
+    /// build that did not read it) restores `NULL`.
+    #[test]
+    fn a_sidecar_without_a_duration_restores_null() {
+        let (_dir, library) = library();
+        store_video(&library, "v");
+        let paths = library.paths.clone();
+        drop(library);
+        let file = crate::sidecar::path(&paths, "v");
+        let mut json: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&file).unwrap()).unwrap();
+        assert!(json.as_object_mut().unwrap().remove("durationMs").is_some());
+        std::fs::write(&file, serde_json::to_vec_pretty(&json).unwrap()).unwrap();
+
+        assert_eq!(duration_after_rebuild(&paths, "v"), None);
     }
 
     /// Task 2.4: a full round trip. Everything the library held before the

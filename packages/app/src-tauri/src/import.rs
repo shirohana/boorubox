@@ -230,6 +230,12 @@ fn is_symlink(path: &Path) -> bool {
 /// Read the file and hand it to `ingest::store_image` with a fresh id. Phase 1
 /// does not deduplicate, so the same file imported twice becomes two images
 /// (spec `local-file-import`). The original is only ever read.
+///
+/// FIXME: the whole file is read into memory, then written and fsynced inside `with_library`,
+/// so a 500 MB clip is a 500 MB allocation with the library lock held. The right shape is a
+/// streaming copy through the inbox, with the probe reading only the header bytes it needs.
+/// Not built: every door (import, capture, drop) hands `store_image` bytes today, and the
+/// probe of an image is a full decode that needs them all.
 fn import_file(library: &SharedLibrary, path: &Path) -> ImportOutcome {
     let bytes = match std::fs::read(path) {
         Ok(bytes) => bytes,
@@ -278,7 +284,9 @@ fn import_file(library: &SharedLibrary, path: &Path) -> ImportOutcome {
         // text file in a dropped folder is skipped and named in the report,
         // never counted as a failure. `failed` is for a real attempt the
         // machine stopped — unreadable bytes, a full disk, a database error.
-        Err(AppError::Decode(error)) => skipped(path, error.to_string()),
+        Err(error @ (AppError::Decode(_) | AppError::Unsupported(_))) => {
+            skipped(path, error.to_string())
+        }
         Err(error) => failed(path, error.to_string()),
     }
 }
@@ -451,6 +459,35 @@ mod tests {
         );
         assert!(skipped[0].reason.is_some());
         assert_eq!(image_count(&library), 5);
+    }
+
+    fn video_fixture(name: &str) -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("fixtures/video")
+            .join(name)
+    }
+
+    /// `local-file-import`, "A refused video is named with its reason".
+    #[test]
+    fn a_refused_video_is_skipped_and_named_with_its_codec() {
+        let (_dir, library) = library();
+        let paths = vec![video_fixture("h264.mp4"), video_fixture("mpeg4.mp4")];
+
+        let (report, _) = run(&library, &paths);
+
+        assert_eq!(
+            (report.imported, report.skipped, report.failed),
+            (1, 1, 0),
+            "{:?}",
+            report.items
+        );
+        let skipped = items_with(&report, ImportStatus::Skipped);
+        assert!(skipped[0].path.ends_with("mpeg4.mp4"), "{:?}", skipped[0]);
+        assert_eq!(
+            skipped[0].reason.as_deref(),
+            Some("video codec mp4v is not supported")
+        );
+        assert_eq!(image_count(&library), 1);
     }
 
     #[test]

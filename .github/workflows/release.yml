@@ -98,7 +98,7 @@ jobs:
               repo: context.repo.repo,
               tag_name: tag,
               name: '${{ steps.name.outputs.value }}',
-              body: 'Alpha. Unsigned: macOS shows an unidentified-developer warning, Windows shows SmartScreen. `boorubox.exe` is a portable copy of the Windows build; taking an update from it runs the NSIS installer and turns it into an installed copy.',
+              body: 'Alpha. Unsigned: macOS shows an unidentified-developer warning, Windows shows SmartScreen. `boorubox.exe` is a portable copy of the Windows build; taking an update from it runs the NSIS installer and turns it into an installed copy. The portable copy shows no video thumbnails (videos still import and play).',
               draft: true,
               prerelease: false,
             })
@@ -133,6 +133,28 @@ jobs:
         with:
           rust: 'true'
       - run: pnpm install --frozen-lockfile
+      # The sidecar ffmpeg (`video-files` design D2). A configure-and-make build, so it
+      # runs under bash on macOS and under MSYS2 on Windows (PowerShell cannot run it). The
+      # triple is passed explicitly: Tauri looks a sidecar up by the Rust host triple, and
+      # the Windows file is named for the MSVC one although MinGW built it. Before
+      # tauri-action, which fails without the file. The stamp makes a cache hit skip the build.
+      - uses: actions/cache@v4.3.0
+        with:
+          path: packages/app/src-tauri/binaries
+          key: ${{ runner.os }}-ffmpeg-${{ hashFiles('scripts/build-ffmpeg.sh') }}
+      - name: Build the ffmpeg sidecar
+        if: runner.os == 'macOS'
+        run: scripts/build-ffmpeg.sh aarch64-apple-darwin
+      - uses: msys2/setup-msys2@v2.33.0
+        if: runner.os == 'Windows'
+        with:
+          msystem: MINGW64
+          update: false
+          install: mingw-w64-x86_64-gcc mingw-w64-x86_64-zlib make diffutils
+      - name: Build the ffmpeg sidecar
+        if: runner.os == 'Windows'
+        shell: msys2 {0}
+        run: scripts/build-ffmpeg.sh x86_64-pc-windows-msvc
       - uses: tauri-apps/tauri-action@v1.0.0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

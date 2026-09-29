@@ -138,7 +138,7 @@ pub async fn start(state: HttpState, port: u16) -> (ListenerStatus, Option<Liste
 pub fn error_response(error: &AppError) -> Response {
     let status = match error {
         AppError::BadRequest(_) => StatusCode::BAD_REQUEST,
-        AppError::Decode(_) => StatusCode::UNPROCESSABLE_ENTITY,
+        AppError::Decode(_) | AppError::Unsupported(_) => StatusCode::UNPROCESSABLE_ENTITY,
         AppError::NoLibrary => StatusCode::SERVICE_UNAVAILABLE,
         AppError::NotFound(_) => StatusCode::NOT_FOUND,
         _ => StatusCode::INTERNAL_SERVER_ERROR,

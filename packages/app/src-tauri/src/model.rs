@@ -508,6 +508,9 @@ pub struct ImageRecord {
     /// The file's own modification time, epoch milliseconds; `None` for an
     /// image that never came from a file (design D11).
     pub file_modified_at: Option<i64>,
+    /// Milliseconds, read from the container header; `None` for an image
+    /// (`video-files` design D3).
+    pub duration_ms: Option<i64>,
     pub created_at: i64,
     pub updated_at: i64,
     pub deleted_at: Option<i64>,
@@ -1876,6 +1879,7 @@ mod tests {
             tags: Vec::new(),
             captured_at: 0,
             file_modified_at: None,
+            duration_ms: None,
             created_at: 0,
             updated_at: 0,
             deleted_at: None,

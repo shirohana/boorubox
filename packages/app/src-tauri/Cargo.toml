@@ -62,6 +62,14 @@ reqwest = { version = "0.12", features = ["multipart", "json", "default-tls"] }
 # the file, because a duplicate is otherwise merged into the original post
 # rather than refused (`booru-upload` design D12).
 md-5 = "0.10"
+# Container header parsers for mp4 and webm (`video-files` design D1), not the
+# ffmpeg sidecar's own `-i` output: a video's dimensions and duration are read
+# with the library lock held, where a process spawn per file is not affordable.
+# Pure Rust, no decode, no build cost. `mp4parse` and not the `mp4` crate: `mp4`
+# drops a sample entry it does not know (mpeg4, av01), so a refusal could not
+# name the codec.
+mp4parse = "0.17"
+matroska = "0.30"
 
 # `tauri-plugin-updater` and `tauri-plugin-process` are unavailable on mobile
 # (`app-update` design D1); guarded per the plugins' own install docs so a

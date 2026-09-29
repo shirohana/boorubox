@@ -39,8 +39,12 @@ run = "pnpm typecheck"
 [tasks.clippy]
 run = "cargo clippy --manifest-path packages/app/src-tauri/Cargo.toml --all-targets -- -D warnings"
 
+[tasks.ffmpeg]
+description = "Build the bundled ffmpeg sidecar (cached by a stamp; cargo build and cargo test need it)"
+run = "scripts/build-ffmpeg.sh"
+
 [tasks.check]
 description = "Full gate: lint, typecheck, tests, rust clippy, builds"
 # Sequential on purpose: typecheck, test and build all regenerate packages/app/.svelte-kit,
 # and running them in parallel (depends = [...]) races on those files.
-run = ["mise run lint", "mise run typecheck", "mise run test", "mise run clippy", "mise run build"]
+run = ["mise run ffmpeg", "mise run lint", "mise run typecheck", "mise run test", "mise run clippy", "mise run build"]

@@ -9,7 +9,9 @@ All entry points are mise tasks (`mise tasks`). `mise run check` is the gate: li
 typecheck, tests, clippy, builds. Tests run per package (`pnpm -r test`), never from a root
 vitest config: the SvelteKit plugin pins vite `root` to `process.cwd()`, so a root runner
 scans every package under the app project. Formatting is ESLint Stylistic (`mise run format`
-runs `eslint --fix` and `cargo fmt`); there is no Prettier.
+runs `eslint --fix` and `cargo fmt`); there is no Prettier. `cargo build` and `cargo test`
+need the ffmpeg sidecar in `packages/app/src-tauri/binaries/` (tauri-build refuses to build
+without it); `mise run ffmpeg` builds it once, cached by a stamp.
 
 ## Planning
 

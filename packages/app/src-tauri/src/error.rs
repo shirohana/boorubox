@@ -2,7 +2,7 @@
 //! commands (which can only reject with something `Serialize`).
 
 /// Every failure the core can hand back. The HTTP layer maps these to status
-/// codes: `BadRequest` → 400, `Decode` → 422, `NoLibrary` → 503.
+/// codes: `BadRequest` → 400, `Decode` and `Unsupported` → 422, `NoLibrary` → 503.
 #[derive(Debug, thiserror::Error)]
 pub enum AppError {
     /// The database is damaged (design D8): `db::open`'s `PRAGMA
@@ -25,6 +25,12 @@ pub enum AppError {
 
     #[error("not an image this app can decode: {0}")]
     Decode(#[from] image::ImageError),
+
+    /// A file in a container the app knows whose content it cannot show: a video codec outside
+    /// the accepted table, or no video track (`video-files` design D1). The message is the
+    /// reason the import report prints; `Decode` is for bytes that are no known file at all.
+    #[error("{0}")]
+    Unsupported(String),
 
     #[error("no library is open")]
     NoLibrary,

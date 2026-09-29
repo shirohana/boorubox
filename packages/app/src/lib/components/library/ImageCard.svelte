@@ -13,7 +13,7 @@
   import { Button } from '$lib/components/ui/button'
   import { Checkbox } from '$lib/components/ui/checkbox'
   import * as ContextMenu from '$lib/components/ui/context-menu'
-  import { ratingLabel } from '$lib/domain/format'
+  import { formatDuration, ratingLabel } from '$lib/domain/format'
   import { groupByCategory } from '$lib/domain/tag-categories'
   import type { CollectionTarget } from './collection-actions'
   import CollectionMenuItems from './CollectionMenuItems.svelte'
@@ -489,6 +489,21 @@
                 <span class="block truncate text-xs text-white">{title}</span>
                 <span class="block text-[0.7rem] text-white/70">{capturedOn} · {image.source}</span>
               </span>
+
+              <!-- Lifted clear of the caption while the caption shows over the tile's foot. -->
+              {#if image.durationMs != null}
+                <span
+                  class="
+                    absolute bottom-1 left-1 z-10 flex h-5 items-center rounded-md bg-background/80
+                    px-1.5 text-xs font-semibold shadow-sm
+                    group-hover:bottom-13
+                    group-focus-visible:bottom-13
+                    {focused ? 'bottom-13' : ''}
+                  "
+                >
+                  {formatDuration(image.durationMs)}
+                </span>
+              {/if}
 
               {#if stampLabel !== undefined}
                 <!--

@@ -119,15 +119,30 @@
    * `null` while no zoom is in flight.
    */
   let zoomFrame: number | null = null
-  /** Set from the `<img>`'s `load` event; `null` until then (see Handoff). */
+  /** Set by the `<img>` load or `<video>` loadedmetadata event; `null` until then (Handoff). */
   let naturalSize = $state<Size | null>(null)
   let viewportWidth = $state(0)
   let viewportHeight = $state(0)
   /** The last pointer position inside the viewport, the pan anchor (design D5). */
   let pointer = $state<Point | null>(null)
 
-  const image = $derived(results.at(index))
+  const live = $derived(results.at(index))
+  /**
+   * `results.refresh()` empties the page for a moment after every write; the
+   * last record stays on screen meanwhile so the `<video>` is not unmounted
+   * (which would restart it and drop focus).
+   */
+  let shown = $state<{ index: number, record: NonNullable<typeof live> } | null>(null)
+  $effect(() => {
+    if (live) shown = { index, record: live }
+  })
+  const image = $derived(live ?? (shown?.index === index ? shown.record : undefined))
   const src = $derived(image && libraryPath ? imageUrl(libraryPath, image) : null)
+  /** Played, never zoomed (`video-files` design D5): every zoom entry point checks this. */
+  const isVideo = $derived(image?.mime.startsWith('video/') ?? false)
+  /** The id of the record whose `<video>` fired `error`; any other record is untried. */
+  let failedId = $state<string | null>(null)
+  const videoFailed = $derived(failedId === image?.id)
   const title = $derived(image?.pageTitle || image?.imageUrl || image?.id || '')
   const previous = $derived(offsetIndexBounded(index, -1, results.total))
   const next = $derived(offsetIndexBounded(index, 1, results.total))
@@ -187,6 +202,11 @@
     naturalSize = { width: el.naturalWidth, height: el.naturalHeight }
   }
 
+  function onvideometadata(event: Event) {
+    const el = event.currentTarget as HTMLVideoElement
+    naturalSize = { width: el.videoWidth, height: el.videoHeight }
+  }
+
   function updatePointer(event: { clientX: number, clientY: number }) {
     if (!viewport) return
     const rect = viewport.getBoundingClientRect()
@@ -231,7 +251,7 @@
     // Always taken, even before the image is measured: otherwise the page
     // behind scrolls out from under the still-loading picture.
     event.preventDefault()
-    if (!naturalSize || !viewportSize) return
+    if (isVideo || !naturalSize || !viewportSize) return
     // WebKit reports a trackpad pinch twice: as the gesture events below, whose
     // `scale` is absolute from the gesture's start, and as a ctrl-wheel whose
     // delta is relative. Applied both, every frame would compound the relative
@@ -283,9 +303,10 @@
   let gestureActive = false
 
   function ongesturestart(event: GestureEvent) {
-    gestureActive = true
     // WebKit zooms the page itself unless every gesture event is prevented.
     event.preventDefault()
+    if (isVideo) return
+    gestureActive = true
     stopZoom()
     updatePointer(event)
     gestureStartScale = displayScale
@@ -293,7 +314,7 @@
 
   function ongesturechange(event: GestureEvent) {
     event.preventDefault()
-    if (!naturalSize || !viewportSize) return
+    if (isVideo || !naturalSize || !viewportSize) return
     updatePointer(event)
     scale = zoomBy(gestureStartScale, event.scale, fit)
   }
@@ -458,7 +479,39 @@
           onpointermove={onviewportpointermove}
           class="absolute inset-0 flex items-center justify-center overflow-hidden"
         >
-          {#if src}
+          {#if src && isVideo && videoFailed}
+            <p class="text-sm text-white/60">This video cannot be played on this machine</p>
+          {:else if src && isVideo}
+            <!--
+              Keyed on the record so the next item mounts a fresh element and
+              plays from its start. `tabindex="-1"` keeps Tab off the element:
+              the platform controls are pointer targets, and Tab reaches only
+              the inspector's controls.
+            -->
+            <!--
+              A click on the video or its controls focuses the element, and a
+              focused video swallows the view's keys and Space; handing the
+              focus back to the surface keeps them working.
+            -->
+            {#key image?.id}
+              <video
+                {src}
+                autoplay
+                loop
+                muted
+                playsinline
+                controls
+                tabindex="-1"
+                draggable="false"
+                aria-label={title}
+                onloadedmetadata={onvideometadata}
+                onerror={() => (failedId = image?.id ?? null)}
+                onpointerup={() => surface?.focus()}
+                class={measured ? 'max-w-none' : 'max-h-full max-w-full object-contain'}
+                style={measured ? imgStyle : undefined}
+              ></video>
+            {/key}
+          {:else if src}
             <!--
               Undraggable for the same reason as the tile's thumbnail (design
               D1). The click toggling the zoom is mouse-only, same as the div

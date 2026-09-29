@@ -35,11 +35,20 @@ export function ratingLabel(rating: Rating | null): string {
   return { g: 'general', s: 'sensitive', q: 'questionable', e: 'explicit' }[rating]
 }
 
+/** A clip's length as `m:ss`, rounded to the nearest second; minutes are unpadded. */
+export function formatDuration(ms: number): string {
+  if (!Number.isFinite(ms) || ms < 0) return '—'
+  const total = Math.round(ms / 1000)
+  return `${Math.floor(total / 60)}:${String(total % 60).padStart(2, '0')}`
+}
+
 interface SizeFacts {
   size: number
   file: string
   width: number
   height: number
+  /** Milliseconds; present on a video only. */
+  durationMs?: number | null
 }
 
 /**
@@ -49,11 +58,13 @@ interface SizeFacts {
  * `.jpg` and not `image/jpeg`, and is omitted — with its leading space —
  * when the name has none.
  */
-export function formatSizeLine({ size, file, width, height }: SizeFacts): string {
+export function formatSizeLine({ size, file, width, height, durationMs }: SizeFacts): string {
   const name = file.slice(file.lastIndexOf('/') + 1)
   const dot = name.lastIndexOf('.')
   const ext = dot === -1 ? '' : name.slice(dot + 1).toLowerCase()
-  const dimensions = `(${width}×${height})`
+  const dimensions = durationMs == null
+    ? `(${width}×${height})`
+    : `(${width}×${height}, ${formatDuration(durationMs)})`
   return ext ? `${formatBytes(size)} .${ext} ${dimensions}` : `${formatBytes(size)} ${dimensions}`
 }
 

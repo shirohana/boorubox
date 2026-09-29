@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { formatBytes, formatRelative, formatSizeLine, formatTimestamp, ratingLabel } from './format'
+import { formatBytes, formatDuration, formatRelative, formatSizeLine, formatTimestamp, ratingLabel } from './format'
 
 describe('formatBytes', () => {
   it('leaves byte counts whole', () => {
@@ -67,6 +67,29 @@ describe('formatSizeLine', () => {
   it('lower-cases an upper-case extension', () => {
     expect(
       formatSizeLine({ size: 1_300_000, file: 'images/a1/b2/abc123.JPG', width: 1200, height: 2200 }),
+    ).toBe('1.3 MB .jpg (1200×2200)')
+  })
+})
+
+describe('formatDuration', () => {
+  it('reads minutes unpadded and seconds padded, rounded to the nearest second', () => {
+    expect(formatDuration(8033)).toBe('0:08')
+    expect(formatDuration(65_000)).toBe('1:05')
+    expect(formatDuration(720_000)).toBe('12:00')
+    expect(formatDuration(59_600)).toBe('1:00')
+  })
+})
+
+describe('formatSizeLine with a duration', () => {
+  it('appends m:ss inside the parentheses', () => {
+    expect(
+      formatSizeLine({ size: 1_813_982, file: 'images/a1/v.mp4', width: 1664, height: 1024, durationMs: 8033 }),
+    ).toBe('1.8 MB .mp4 (1664×1024, 0:08)')
+  })
+
+  it('leaves an image alone when the duration is null', () => {
+    expect(
+      formatSizeLine({ size: 1_300_000, file: 'a.jpg', width: 1200, height: 2200, durationMs: null }),
     ).toBe('1.3 MB .jpg (1200×2200)')
   })
 })
