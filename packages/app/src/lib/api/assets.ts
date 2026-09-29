@@ -15,6 +15,11 @@ export function imageUrl(libraryPath: string, image: Pick<ImageRecord, 'file'>):
   return convertFileSrc(`${libraryPath}/${image.file}`)
 }
 
+/** An asset-protocol URL whose `?v=` changes when the file does, so the webview's cache follows. */
+function versionedAssetUrl(path: string, version: number): string {
+  return `${convertFileSrc(path)}?v=${version}`
+}
+
 /**
  * The thumbnail; Rust generates it if it is not on disk yet. `?v=` carries the
  * file's own modified time (`one-level-buckets` design D6): `thumbnail_path`
@@ -24,5 +29,13 @@ export function imageUrl(libraryPath: string, image: Pick<ImageRecord, 'file'>):
  */
 export async function thumbnailUrl(id: string): Promise<string> {
   const { path, version } = await thumbnailPath(id)
-  return `${convertFileSrc(path)}?v=${version}`
+  return versionedAssetUrl(path, version)
+}
+
+/**
+ * A playback sample's URL; `?v=` is the file's modified time, so a sample made
+ * again after a clear is not served from the webview's cache.
+ */
+export function sampleUrl(path: string, version: number): string {
+  return versionedAssetUrl(path, version)
 }

@@ -13,6 +13,7 @@ use crate::sidecar;
 const IMAGES_DIR: &str = "images";
 const INBOX_DIR: &str = "inbox";
 const THUMBS_DIR: &str = ".thumbs";
+const SAMPLES_DIR: &str = ".samples";
 const DB_FILE: &str = "library.sqlite";
 const PART_EXT: &str = "part";
 
@@ -174,6 +175,7 @@ impl Library {
         };
         library.relayout_to_one_level()?;
         library.sweep_inbox()?;
+        library.sweep_sample_parts();
         Ok(library)
     }
 
@@ -212,6 +214,26 @@ impl Library {
             }
         }
         Ok(())
+    }
+
+    /// Remove every `.samples/<a1>/*.part` an encode that died left behind. Warning: opening
+    /// the same library again while an encode runs unlinks that encode's part, so the encode
+    /// fails with a refusal the user can retry; acceptable because an open is a user action.
+    /// Best effort: a sample is a cache, so an unreadable directory costs nothing.
+    fn sweep_sample_parts(&self) {
+        let Ok(buckets) = fs::read_dir(self.paths.samples_dir()) else {
+            return;
+        };
+        for bucket in buckets.flatten() {
+            let Ok(files) = fs::read_dir(bucket.path()) else {
+                continue;
+            };
+            for path in files.flatten().map(|file| file.path()) {
+                if path.extension().is_some_and(|ext| ext == PART_EXT) {
+                    let _ = fs::remove_file(path);
+                }
+            }
+        }
     }
 
     /// Move files under `images/` and `.thumbs/` into today's one-level
@@ -381,6 +403,10 @@ impl LibraryPaths {
         self.root.join(THUMBS_DIR)
     }
 
+    pub fn samples_dir(&self) -> PathBuf {
+        self.root.join(SAMPLES_DIR)
+    }
+
     pub fn db_path(&self) -> PathBuf {
         database_path(&self.root)
     }
@@ -461,6 +487,7 @@ fn create_layout_then_open(root: &Path) -> Result<Connection> {
         root.join(IMAGES_DIR),
         root.join(INBOX_DIR),
         root.join(THUMBS_DIR),
+        root.join(SAMPLES_DIR),
     ] {
         fs::create_dir_all(dir)?;
     }
@@ -472,6 +499,21 @@ mod tests {
     use super::*;
 
     #[test]
+    fn open_sweeps_a_stray_sample_part() {
+        let dir = tempfile::tempdir().unwrap();
+        Library::open_or_create(dir.path()).unwrap();
+        let bucket = dir.path().join(".samples").join("ab");
+        fs::create_dir_all(&bucket).unwrap();
+        fs::write(bucket.join("abc.mp4.part"), b"half an encode").unwrap();
+        fs::write(bucket.join("abd.mp4"), b"a sample").unwrap();
+
+        Library::open_or_create(dir.path()).unwrap();
+
+        assert!(!bucket.join("abc.mp4.part").exists());
+        assert!(bucket.join("abd.mp4").exists());
+    }
+
+    #[test]
     fn creates_the_layout_in_an_empty_folder() {
         let dir = tempfile::tempdir().unwrap();
         let library = Library::open_or_create(dir.path()).unwrap();
@@ -479,6 +521,7 @@ mod tests {
         assert!(library.paths.images_dir().is_dir());
         assert!(library.paths.inbox_dir().is_dir());
         assert!(library.paths.thumbs_dir().is_dir());
+        assert!(library.paths.samples_dir().is_dir());
         assert!(library.paths.db_path().is_file());
         assert_eq!(library.image_count().unwrap(), 0);
     }

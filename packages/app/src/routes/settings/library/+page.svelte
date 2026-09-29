@@ -2,6 +2,7 @@
   import type { RebuildReport } from '@boorubox/shared'
   import ChevronsUpDownIcon from '@lucide/svelte/icons/chevrons-up-down'
   import {
+    clearPlaybackSamples,
     errorText,
     library,
     libraryCounts,
@@ -17,6 +18,7 @@
   import LibraryMenu from '$lib/components/frame/LibraryMenu.svelte'
   import { Button } from '$lib/components/ui/button'
   import { Progress } from '$lib/components/ui/progress'
+  import { formatBytes } from '$lib/domain/format'
 
   const libraryPath = $derived(library.status?.libraryPath ?? '')
   // `/settings` is unreachable with no library open (the layout's gate
@@ -55,6 +57,23 @@
     error = null
     const outcome = await thumbsRegenerate.start()
     if (!outcome) error = thumbsRegenerate.error
+  }
+
+  let clearingSamples = $state(false)
+  let samplesReport = $state<string | null>(null)
+
+  async function runClearPlaybackSamples() {
+    error = null
+    samplesReport = null
+    clearingSamples = true
+    try {
+      const { removed, bytes } = await clearPlaybackSamples()
+      samplesReport = `Removed ${removed.toLocaleString()} playback ${removed === 1 ? 'sample' : 'samples'} (${formatBytes(bytes)})`
+    } catch (cause) {
+      error = errorText(cause)
+    } finally {
+      clearingSamples = false
+    }
   }
 
   /**
@@ -206,6 +225,33 @@
         />
       {/if}
     </div>
+  {/if}
+
+  <!--
+    `hevc-samples` design D1: the H.264 copies made for videos this machine's
+    engine cannot decode. A cache: clearing loses nothing but the wait to
+    convert a clip again.
+  -->
+  <div class="flex flex-wrap items-center justify-between gap-3 border-t border-border pt-4">
+    <div class="min-w-0">
+      <p class="text-sm font-medium">Clear playback samples</p>
+      <p class="text-sm text-muted-foreground">
+        Deletes the converted copies made for videos this machine cannot play directly. A
+        clip is converted again the next time it is opened.
+      </p>
+    </div>
+    <Button
+      variant="outline"
+      size="sm"
+      disabled={clearingSamples}
+      onclick={() => void runClearPlaybackSamples()}
+    >
+      {clearingSamples ? 'Clearing…' : 'Clear playback samples'}
+    </Button>
+  </div>
+
+  {#if samplesReport}
+    <p class="text-sm text-muted-foreground tabular-nums">{samplesReport}</p>
   {/if}
 
   {#if canRebuild}

@@ -14,21 +14,35 @@
 #   --disable-everything --disable-doc --disable-ffprobe --disable-ffplay --disable-network
 #   --disable-autodetect --disable-avdevice --disable-postproc --disable-debug --disable-x86asm
 #   --enable-small --enable-zlib --enable-protocol=file,pipe --enable-demuxer=mov,matroska
-#   --enable-decoder=h264,hevc,vp8,vp9 --enable-parser=h264,hevc,vp8,vp9
-#   --enable-encoder=png --enable-muxer=image2pipe,mp4 --enable-bsf=hevc_mp4toannexb,extract_extradata
-#   --enable-filter=scale,select,format
+#   --enable-decoder=h264,hevc,vp8,vp9,aac,mp3,ac3 --enable-parser=h264,hevc,vp8,vp9,aac,mpegaudio,ac3
+#   --enable-muxer=image2pipe,mp4 --enable-bsf=hevc_mp4toannexb,extract_extradata
+#   --enable-filter=scale,select,format,aformat,aresample
+# plus, per platform:
+#   *apple-darwin: --enable-encoder=png,aac,h264_videotoolbox --enable-videotoolbox
+#   *windows*:     --enable-encoder=png,aac,h264_mf --enable-mediafoundation
 #
 # The mp4 muxer and the two bitstream filters exist for a stream copy that moves in-band
 # parameter sets (`hev1`/`avc3`) into the container (`hvc1`/`avc1`), so WebKit plays the file.
 # `hevc-remux` design D4.
 #
-# Why that line: the four codecs (h264, hevc, vp8, vp9) are the ones the webviews play, so a
-# file the app can show is a file ffmpeg can take a frame from; everything else stays off to
-# keep the binary small. No `--enable-gpl` and no external library, so the result is LGPL 2.1
-# and ships as its own process. `--disable-x86asm` so no nasm is needed: one keyframe per file
-# does not pay for SIMD. `--enable-zlib` because ffmpeg's png encoder is compiled out
-# without it ("Unknown encoder 'png'" at run time); zlib is not GPL. To add a decoder, add it to `--enable-decoder`, its parser to
-# `--enable-parser` and, for a new container, its demuxer to `--enable-demuxer`.
+# The h264 encoder, the aac encoder, the audio decoders and the audio filters exist for a
+# playback sample: an H.264 + AAC copy of a video the engine cannot decode (`hevc-samples`
+# design D4).
+#
+# Why the H.264 encoder is the OS's and not libx264: libx264 is GPL, and this binary stays
+# LGPL 2.1 with no bundled library. VideoToolbox (macOS) and Media Foundation (Windows) are
+# system frameworks, so the flag is per platform: each names its own framework because
+# `--disable-autodetect` is on. `--enable-mediafoundation` under MSYS2 MinGW is unproven until
+# the Windows CI run accepts it.
+#
+# Why the rest of the line: the four video codecs (h264, hevc, vp8, vp9) are the ones the
+# webviews play, so a file the app can show is a file ffmpeg can take a frame from; everything
+# else stays off to keep the binary small. No `--enable-gpl` and no external library, so the
+# result is LGPL 2.1 and ships as its own process. `--disable-x86asm` so no nasm is needed: one
+# keyframe per file does not pay for SIMD. `--enable-zlib` because ffmpeg's png encoder is
+# compiled out without it ("Unknown encoder 'png'" at run time); zlib is not GPL. To add a
+# decoder, add it to `--enable-decoder`, its parser to `--enable-parser` and, for a new
+# container, its demuxer to `--enable-demuxer`.
 set -euo pipefail
 
 VERSION=7.1.1
@@ -78,13 +92,17 @@ flags=(
   --enable-small --enable-zlib
   --enable-protocol=file,pipe
   --enable-demuxer=mov,matroska
-  --enable-decoder=h264,hevc,vp8,vp9
-  --enable-parser=h264,hevc,vp8,vp9
-  --enable-encoder=png
+  --enable-decoder=h264,hevc,vp8,vp9,aac,mp3,ac3
+  --enable-parser=h264,hevc,vp8,vp9,aac,mpegaudio,ac3
   --enable-muxer=image2pipe,mp4
   --enable-bsf=hevc_mp4toannexb,extract_extradata
-  --enable-filter=scale,select,format
+  --enable-filter=scale,select,format,aformat,aresample
 )
+case "$triple" in
+  *apple-darwin) flags+=(--enable-encoder=png,aac,h264_videotoolbox --enable-videotoolbox) ;;
+  *windows*) flags+=(--enable-encoder=png,aac,h264_mf --enable-mediafoundation) ;;
+  *) flags+=(--enable-encoder=png,aac) ;;
+esac
 # Under MSYS2 a MinGW build links its runtime as DLLs by default; the app ships one file, so
 # link everything in.
 if [ -n "${MSYSTEM:-}" ]; then

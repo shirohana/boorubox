@@ -19,6 +19,7 @@ pub mod notes;
 pub mod query;
 pub mod recover;
 pub mod rules;
+pub mod samples;
 pub mod settings;
 pub mod sidecar;
 pub mod stamps;
@@ -209,6 +210,8 @@ pub fn run() {
             commands::tag_suggestions,
             commands::image_counts,
             commands::thumbnail_path,
+            commands::playback_sample,
+            commands::clear_playback_samples,
             commands::regenerate_thumbnails,
             commands::import_paths,
             commands::import_bundle,

@@ -24,15 +24,16 @@ use crate::model::{
     DeleteReport, ExportProgress, ExportReport, FactsEdit, GRID_TILE_MAX, GRID_TILE_MIN,
     ImageCounts, ImageRecord, ImportReport, LibraryStatus, ListenerStatus, Note, PinTarget,
     PostRef, RebuildProgress, RebuildReport, RecentLibrary, RenameArtistInput, RenameArtistReport,
-    Rule, RuleInput, RuleListEntry, RulesImportReport, RulesRunReport, SearchRequest, SearchResult,
-    SidecarsProgress, SiteAdapterRecord, Stamp, StampInput, TagCategory, TagCount, TagCounts,
-    TagEditSpec, TagEntry, Theme, ThumbnailRef, ThumbsProgress, ThumbsReport,
+    Rule, RuleInput, RuleListEntry, RulesImportReport, RulesRunReport, SampleProgress, SampleRef,
+    SamplesReport, SearchRequest, SearchResult, SidecarsProgress, SiteAdapterRecord, Stamp,
+    StampInput, TagCategory, TagCount, TagCounts, TagEditSpec, TagEntry, Theme, ThumbnailRef,
+    ThumbsProgress, ThumbsReport,
 };
 use crate::settings::Settings;
 use crate::{
     AppState, OpenFailureKind, VERSION, artists, booru, collections, db, export, facts, from_tauri,
-    http, import, ingest, lock, maintenance, notes, query, recover, rules, settings, stamps, tags,
-    thumbs, trash,
+    http, import, ingest, lock, maintenance, notes, query, recover, rules, samples, settings,
+    stamps, tags, thumbs, trash,
 };
 
 /// Progress while `import_paths` runs. The webview subscribes under this name;
@@ -77,6 +78,7 @@ const SIDECARS_PROGRESS_EVENT: &str = "library:sidecars";
 /// `import:progress` or `library:rebuild`, for the reason those already carry
 /// fields this pass has no answer for.
 const THUMBS_PROGRESS_EVENT: &str = "thumbs:progress";
+const PLAYBACK_SAMPLE_PROGRESS_EVENT: &str = "playback-sample-progress";
 
 /// Emitted once the launch-time open of the remembered library settles,
 /// success or failure alike (`launch-screen` design D1). Carries no payload:
@@ -1256,6 +1258,47 @@ pub async fn thumbnail_path(id: String, state: State<'_, AppState>) -> Result<Th
     .await
 }
 
+/// The playable stand-in for a video the webview's engine cannot decode
+/// (`hevc-samples` design D2): the path of the H.264 sample, made first if it is not there.
+/// The webview calls this only after `canDecode` said no. Progress goes out as
+/// `playback-sample-progress` events while it encodes. Rejects with the encoder's reason.
+///
+/// No cancel: see the FIXME on `ffmpeg::encode_sample`.
+#[tauri::command]
+pub async fn playback_sample<R: Runtime>(
+    id: String,
+    app: AppHandle<R>,
+    state: State<'_, AppState>,
+) -> Result<SampleRef> {
+    off_main_thread(&state.library, move |library| {
+        let (paths, record) = with_library(library, |library| {
+            let record = ingest::load_record(&library.conn, &id)?
+                .ok_or_else(|| AppError::NotFound(format!("image {id}")))?;
+            Ok((library.paths.clone(), record))
+        })?;
+        let path = samples::ensure_sample(&paths, &record, &mut |ratio| {
+            let _ = app.emit(
+                PLAYBACK_SAMPLE_PROGRESS_EVENT,
+                SampleProgress {
+                    id: id.clone(),
+                    ratio,
+                },
+            );
+        })?;
+        Ok(SampleRef {
+            version: file_version_ms(&path),
+            path: path.display().to_string(),
+        })
+    })
+    .await
+}
+
+/// Delete every playback sample and report the count and bytes freed.
+#[tauri::command]
+pub async fn clear_playback_samples(state: State<'_, AppState>) -> Result<SamplesReport> {
+    with_library_off_main_thread(&state.library, |library| samples::clear_all(&library.paths)).await
+}
+
 // FIXME: exFAT and SMB round a file's modified time to a 1-2 s resolution,
 // so two regenerations of the same thumbnail inside that window can answer
 // the same `version` and the webview's `?v=` cache-buster (design D6) fails
@@ -1560,7 +1603,7 @@ fn open_and_start_backfill<R: Runtime>(
     Ok(())
 }
 
-/// Let the webview load `<library>/images/…` and `<library>/.thumbs/…` through
+/// Let the webview load `<library>/images/…` and `<library>/.thumbs/…` (and `.samples/`) through
 /// the asset protocol (design D7). Granted at runtime rather than as a scope in
 /// `tauri.conf.json`, because the folder is the user's to choose and no build
 /// knows it.
@@ -1572,7 +1615,11 @@ fn open_and_start_backfill<R: Runtime>(
 /// alone also keeps `library.sqlite` and `inbox/` out of the webview's reach.
 fn grant_asset_scope<R: Runtime>(app: &AppHandle<R>, library: &Library) -> Result<()> {
     let scope = app.asset_protocol_scope();
-    for directory in [library.paths.images_dir(), library.paths.thumbs_dir()] {
+    for directory in [
+        library.paths.images_dir(),
+        library.paths.thumbs_dir(),
+        library.paths.samples_dir(),
+    ] {
         scope
             .allow_directory(&directory, true)
             .map_err(from_tauri)?;

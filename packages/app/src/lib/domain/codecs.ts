@@ -39,8 +39,19 @@ export function canDecode(
 
 const WINDOWS_HEVC_SENTENCE = 'Windows\' engine plays HEVC only with Microsoft\'s HEVC Video Extensions.'
 
+/** The engine's refusal of `codec`, from "browser engine" on, with the Windows note where it applies. */
+function engineCannotDecode(codec: string, windows: boolean): string {
+  const base = `browser engine cannot decode ${codecName(codec)}.`
+  return windows && codec === 'hvc1' ? `${base} ${WINDOWS_HEVC_SENTENCE}` : base
+}
+
 /** What the viewer says in a picture's place when the engine will not decode `codec`. */
 export function refusalMessage(codec: string, windows: boolean): string {
-  const base = `This machine's browser engine cannot decode ${codecName(codec)}.`
-  return windows && codec === 'hvc1' ? `${base} ${WINDOWS_HEVC_SENTENCE}` : base
+  return `This machine's ${engineCannotDecode(codec, windows)}`
+}
+
+/** What the viewer says while it converts a video the engine will not decode. */
+export function convertingMessage(codec: string, windows: boolean): string {
+  const why = engineCannotDecode(codec, windows)
+  return `Converting this video for playback: this machine's ${why} This takes about as long as the clip. Please wait…`
 }

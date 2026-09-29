@@ -216,6 +216,33 @@ export function thumbnailPath(id: string): Promise<ThumbnailRef> {
   return invoke('thumbnail_path', { id })
 }
 
+/** A playback sample on disk, as `thumbnailPath` answers for a thumbnail. */
+export interface SampleRef {
+  path: string
+  version: number
+}
+
+/** What `clear_playback_samples` deleted. */
+export interface SamplesReport {
+  removed: number
+  bytes: number
+}
+
+/**
+ * The id's H.264 playback sample under `<library>/.samples/`, encoded on
+ * demand (`hevc-samples` design D2) and answered when it is done. Rejects
+ * with the encoder's reason as a string; progress arrives on the
+ * `playback-sample-progress` event.
+ */
+export function playbackSample(id: string): Promise<SampleRef> {
+  return invoke('playback_sample', { id })
+}
+
+/** Deletes every playback sample; they are a cache, made again on demand. */
+export function clearPlaybackSamples(): Promise<SamplesReport> {
+  return invoke('clear_playback_samples')
+}
+
 /**
  * Re-renders every thumbnail at the current edge (`one-level-buckets` design
  * D4), against whichever library is open when the call starts. Progress

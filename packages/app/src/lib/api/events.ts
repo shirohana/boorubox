@@ -146,3 +146,22 @@ export const LIBRARY_OPENED_EVENT = 'library:opened'
 export function onLibraryOpened(handler: () => void): Promise<UnlistenFn> {
   return listen(LIBRARY_OPENED_EVENT, () => handler())
 }
+
+/** The event `playback_sample` emits while it encodes (`hevc-samples` design D3). */
+export const PLAYBACK_SAMPLE_PROGRESS_EVENT = 'playback-sample-progress'
+
+export interface PlaybackSampleProgress {
+  id: string
+  /** 0 to 1 */
+  ratio: number
+}
+
+/** Subscribes to a playback sample's encode progress. */
+export function onPlaybackSampleProgress(
+  handler: (progress: PlaybackSampleProgress) => void,
+): Promise<UnlistenFn> {
+  return listen<PlaybackSampleProgress>(
+    PLAYBACK_SAMPLE_PROGRESS_EVENT,
+    (event) => handler(event.payload),
+  )
+}

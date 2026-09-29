@@ -11,6 +11,7 @@ use crate::db;
 use crate::error::{AppError, Result};
 use crate::library::Library;
 use crate::model::DeleteReport;
+use crate::samples::sample_path;
 use crate::tags;
 use crate::thumbs::thumbnail_path;
 
@@ -131,6 +132,8 @@ pub fn delete_forever(library: &Library, ids: &[String]) -> Result<DeleteReport>
         // (Phase 1 D7); a failure removing one costs nothing the user can
         // lose, so it is not worth reporting.
         let _ = remove_if_present(&thumbnail_path(&library.paths, id));
+        // A playback sample is derived the same way, and just as safe to lose.
+        let _ = remove_if_present(&sample_path(&library.paths, id));
     }
 
     Ok(DeleteReport {

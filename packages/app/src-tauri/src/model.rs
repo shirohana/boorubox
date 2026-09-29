@@ -855,6 +855,32 @@ pub struct ThumbsReport {
     pub failed: i64,
 }
 
+/// What `clear_playback_samples` answers (`hevc-samples` design D1): how many sample files
+/// were deleted and how many bytes that freed.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SamplesReport {
+    pub removed: i64,
+    pub bytes: i64,
+}
+
+/// What `playback_sample` answers: the sample's absolute path and its modified time in
+/// milliseconds, the same `version` shape as [`ThumbnailRef`].
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SampleRef {
+    pub path: String,
+    pub version: i64,
+}
+
+/// The `playback-sample-progress` event's payload (`hevc-samples` design D3): `ratio` is 0 to 1.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SampleProgress {
+    pub id: String,
+    pub ratio: f64,
+}
+
 /// What `thumbnail_path` answers (`one-level-buckets` design D6): the file's
 /// absolute path and its modified time in milliseconds, `0` if that cannot be
 /// read. The grid's URL carries `version` as a query string

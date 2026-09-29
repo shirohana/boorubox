@@ -3,7 +3,7 @@
 import type { ImageRecord } from '@boorubox/shared'
 import type { SearchResults } from '$lib/api'
 import { clearMocks, mockConvertFileSrc, mockIPC } from '@tauri-apps/api/mocks'
-import { flushSync, mount, unmount } from 'svelte'
+import { flushSync, mount, tick, unmount } from 'svelte'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import { img } from '$lib/domain/image-fixture'
 import Lightbox from './Lightbox.svelte'
@@ -15,8 +15,23 @@ vi.mock('$lib/platform', () => ({
   },
 }))
 
+/** The `playback-sample-progress` handlers the viewer registered, so a test can push a payload. */
+const events = vi.hoisted(() => ({ handlers: [] as ((event: { payload: unknown }) => void)[] }))
+vi.mock('@tauri-apps/api/event', () => ({
+  listen: (_name: string, handler: (event: { payload: unknown }) => void) => {
+    events.handlers.push(handler)
+    return Promise.resolve(() => {})
+  },
+}))
+
+/** Every command the mocked IPC saw; `playback_sample` stays pending until a test settles it. */
+let calls: { cmd: string, payload: unknown }[] = []
+let settleSample: { resolve: (ref: unknown) => void, reject: (reason: string) => void }
+
 beforeEach(() => {
   platform.isWindows = false
+  events.handlers = []
+  calls = []
   // jsdom has no layout and no `showModal`; the viewport must measure non-zero
   // for a click to reach the zoom, so the contrast with a video is real.
   HTMLDialogElement.prototype.showModal ??= function showModal() {}
@@ -36,7 +51,11 @@ beforeEach(() => {
     unobserve() {}
     disconnect() {}
   })
-  mockIPC(() => null)
+  mockIPC((cmd, payload) => {
+    calls.push({ cmd, payload })
+    if (cmd !== 'playback_sample') return null
+    return new Promise((resolve, reject) => (settleSample = { resolve, reject }))
+  })
   mockConvertFileSrc('macos')
 })
 
@@ -192,7 +211,7 @@ it('names the codec and mounts no <video> when the engine will not decode it', (
   const probe = engineAnswers('')
   const { target, instance } = open(hevc)
   expect(target.querySelector('video')).toBeNull()
-  expect(target.textContent).toContain('This machine\'s browser engine cannot decode HEVC (H.265).')
+  expect(target.textContent).toContain('this machine\'s browser engine cannot decode HEVC (H.265).')
   expect(target.textContent).not.toContain('Microsoft')
   expect(probe).toHaveBeenCalledWith('video/mp4; codecs="hvc1.1.6.L93.B0"')
   unmount(instance)
@@ -236,5 +255,109 @@ it('mounts the <video> without asking when no codec is recorded', () => {
   const { target, instance } = open(video)
   expect(target.querySelector('video')).not.toBeNull()
   expect(probe).not.toHaveBeenCalled()
+  unmount(instance)
+})
+
+const sampleCalls = () => calls.filter((call) => call.cmd === 'playback_sample')
+const bar = (target: HTMLElement) => target.querySelector('[role="progressbar"]')
+
+it('asks for the sample once, says it is converting and shows a bar', () => {
+  engineAnswers('')
+  const { target, instance } = open(hevc)
+  expect(sampleCalls()).toEqual([{ cmd: 'playback_sample', payload: { id: 'h' } }])
+  expect(target.textContent).toContain('Converting this video for playback: this machine\'s browser engine cannot decode HEVC (H.265).')
+  expect(target.textContent).toContain('Please wait')
+  expect(bar(target)).not.toBeNull()
+  expect(target.querySelector('video')).toBeNull()
+  unmount(instance)
+})
+
+it('moves the bar on a progress event for the record, not for another', () => {
+  engineAnswers('')
+  const { target, instance } = open(hevc)
+  events.handlers.forEach((handler) => handler({ payload: { id: 'other', ratio: 0.9 } }))
+  flushSync()
+  expect(bar(target)?.getAttribute('aria-valuenow')).toBe('0')
+  events.handlers.forEach((handler) => handler({ payload: { id: 'h', ratio: 0.5 } }))
+  flushSync()
+  expect(bar(target)?.getAttribute('aria-valuenow')).toBe('0.5')
+  unmount(instance)
+})
+
+it('mounts the <video> on the sample once the command resolves', async () => {
+  engineAnswers('')
+  const { target, instance } = open(hevc)
+  settleSample.resolve({ path: '/lib/.samples/ab/h.mp4', version: 7 })
+  await tick()
+  await tick()
+  const el = target.querySelector('video')!
+  expect(el.getAttribute('src')).toContain('.samples%2Fab%2Fh.mp4')
+  expect(el.getAttribute('src')).toContain('?v=7')
+  expect(el.hasAttribute('autoplay')).toBe(true)
+  expect(bar(target)).toBeNull()
+  unmount(instance)
+})
+
+it('shows the refusal and the reason when the command rejects', async () => {
+  engineAnswers('')
+  const { target, instance } = open(hevc)
+  settleSample.reject('encoder exited with status 1')
+  await tick()
+  await tick()
+  expect(target.querySelector('video')).toBeNull()
+  expect(target.textContent).toContain('This machine\'s browser engine cannot decode HEVC (H.265).')
+  expect(target.textContent).toContain('encoder exited with status 1')
+  unmount(instance)
+})
+
+it('adds the Windows sentence to the converting message', () => {
+  engineAnswers('')
+  platform.isWindows = true
+  const { target, instance } = open(hevc)
+  expect(target.textContent).toContain('Microsoft\'s HEVC Video Extensions.')
+  unmount(instance)
+})
+
+it('moves on while converting and does not ask again when it comes back', async () => {
+  engineAnswers('')
+  const records = [hevc, video]
+  const view = $state({ index: 0 })
+  const onmove = vi.fn()
+  const target = document.createElement('div')
+  document.body.appendChild(target)
+  const instance = mount(Lightbox, {
+    target,
+    props: {
+      results: { total: 2, groups: [], at: (i: number) => records[i], ensureRange: () => {} } as unknown as SearchResults,
+      get index() { return view.index },
+      libraryPath: '/lib',
+      columns: 4,
+      mode: 'gallery' as const,
+      actions: { trash: vi.fn(), restore: vi.fn(), deleteForever: vi.fn() },
+      clickZoomCeiling: 4,
+      tagQuery: '',
+      onquery: () => {},
+      onartistsaved: () => {},
+      onmove,
+      onclose: () => {},
+    },
+  })
+  flushSync()
+  target.querySelector('dialog')!.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true, cancelable: true }))
+  expect(onmove).toHaveBeenCalledWith(1)
+  view.index = 1
+  flushSync()
+  view.index = 0
+  flushSync()
+  expect(sampleCalls()).toHaveLength(1)
+  expect(target.textContent).toContain('Converting')
+  unmount(instance)
+})
+
+it('never asks for a sample when the engine decodes the codec', () => {
+  engineAnswers('probably')
+  const { target, instance } = open(hevc)
+  expect(sampleCalls()).toEqual([])
+  expect(target.querySelector('video')?.getAttribute('src')).not.toContain('.samples')
   unmount(instance)
 })

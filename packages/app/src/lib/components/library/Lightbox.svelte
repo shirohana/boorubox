@@ -9,10 +9,10 @@
   // state and the keys can never disagree. `↑` `↓` are the grid's row step and
   // therefore CLAMPED (design D5) — the asymmetry is deliberate and argued in
   // `navigation-math`.
-  import { onDestroy, tick } from 'svelte'
+  import { onDestroy, tick, untrack } from 'svelte'
   import type { SearchResults } from '$lib/api'
-  import { imageUrl } from '$lib/api'
-  import { canDecode, refusalMessage } from '$lib/domain/codecs'
+  import { errorText, imageUrl, onPlaybackSampleProgress, playbackSample, sampleUrl } from '$lib/api'
+  import { canDecode, convertingMessage, refusalMessage } from '$lib/domain/codecs'
   import { offsetIndexBounded } from '$lib/domain/navigation-math'
   import {
     isTypingTarget,
@@ -26,6 +26,7 @@
     KEY_UP,
   } from '$lib/keyboard'
   import { isWindows } from '$lib/platform'
+  import { Progress } from '$lib/components/ui/progress'
   import { moveFocus } from './grid-focus'
   import Inspector from './Inspector.svelte'
   import { nextTabStop } from './tab-cycle'
@@ -158,6 +159,47 @@
     ),
   )
   const undecodableMessage = $derived(image?.codec ? refusalMessage(image.codec, isWindows) : '')
+  const convertingText = $derived(image?.codec ? convertingMessage(image.codec, isWindows) : '')
+  /**
+   * One entry per record whose sample was asked for (`hevc-samples` design
+   * D3). An entry is never removed: moving away leaves the call running, and
+   * moving back finds its outcome instead of asking again.
+   */
+  type Sample
+    = | { state: 'converting', ratio: number }
+      | { state: 'ready', url: string }
+      | { state: 'failed', reason: string }
+  let samples = $state<Record<string, Sample>>({})
+  /** A primitive, so the effect below re-runs on a change of record and not on a store refresh. */
+  const undecodableId = $derived(undecodable ? (image?.id ?? null) : null)
+  const sample = $derived(undecodableId ? samples[undecodableId] : undefined)
+  /** What the `<video>` plays: the original, or the converted copy once it is ready. */
+  const playSrc = $derived(undecodable ? (sample?.state === 'ready' ? sample.url : null) : src)
+
+  function requestSample(id: string) {
+    samples[id] = { state: 'converting', ratio: 0 }
+    playbackSample(id).then(
+      (ref) => (samples[id] = { state: 'ready', url: sampleUrl(ref.path, ref.version) }),
+      (cause) => (samples[id] = { state: 'failed', reason: errorText(cause) }),
+    )
+  }
+
+  // FIXME: while clip A encodes, undecodable clip B waits on Rust's encode mutex and shows
+  // "Converting" with its bar at 0 for minutes. The right shape is a "queued" state Rust
+  // reports before it takes the mutex, or one encode at a time surfaced as such. Not built:
+  // one conversion per clip is the expected use.
+  $effect(() => {
+    const id = undecodableId
+    if (id && !untrack(() => samples[id])) requestSample(id)
+  })
+
+  $effect(() => {
+    const subscription = onPlaybackSampleProgress(({ id, ratio }) => {
+      const entry = samples[id]
+      if (entry?.state === 'converting') entry.ratio = ratio
+    })
+    return () => void subscription.then((unlisten) => unlisten()).catch(() => {})
+  })
   const title = $derived(image?.pageTitle || image?.imageUrl || image?.id || '')
   const previous = $derived(offsetIndexBounded(index, -1, results.total))
   const next = $derived(offsetIndexBounded(index, 1, results.total))
@@ -494,11 +536,24 @@
           onpointermove={onviewportpointermove}
           class="absolute inset-0 flex items-center justify-center overflow-hidden"
         >
-          {#if src && undecodable}
-            <p class="max-w-prose px-6 text-center text-sm text-white/60">{undecodableMessage}</p>
-          {:else if src && isVideo && videoFailed}
+          {#if src && undecodable && sample?.state !== 'ready'}
+            {#if sample?.state === 'failed'}
+              <p class="max-w-prose px-6 text-center text-sm text-white/60">
+                {undecodableMessage} {sample.reason}
+              </p>
+            {:else}
+              <div class="flex w-full max-w-prose flex-col items-center gap-3 px-6" role="status">
+                <p class="text-center text-sm text-white/60">{convertingText}</p>
+                <Progress
+                  value={sample?.state === 'converting' ? sample.ratio : 0}
+                  max={1}
+                  aria-label="Converting for playback"
+                />
+              </div>
+            {/if}
+          {:else if playSrc && isVideo && videoFailed}
             <p class="text-sm text-white/60">This video cannot be played on this machine</p>
-          {:else if src && isVideo}
+          {:else if playSrc && isVideo}
             <!--
               Keyed on the record so the next item mounts a fresh element and
               plays from its start. `tabindex="-1"` keeps Tab off the element:
@@ -512,7 +567,7 @@
             -->
             {#key image?.id}
               <video
-                {src}
+                src={playSrc}
                 autoplay
                 loop
                 muted

@@ -2,6 +2,7 @@
 //! sidecar, spawned once per poster. It decodes h264, hevc, vp8 and vp9 and writes PNG; the
 //! caller downscales and encodes the thumbnail, so an image and a video share one path.
 
+use std::io::{BufRead, BufReader, Read};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
@@ -107,6 +108,91 @@ pub fn remux(source: &Path, dest: &Path, tag: &str) -> Result<()> {
     checked
 }
 
+/// Encode the video at `source` into an H.264 mp4 at `dest` with the OS encoder `encoder`, at
+/// `bitrate` bits per second, audio to AAC (`hevc-samples` design D1). `on_progress` gets the
+/// fraction done, 0 to 1, for every `out_time_us` line ffmpeg prints on stdout, measured
+/// against `duration_ms`. A failed encode leaves no `dest`.
+///
+/// FIXME: no cancel and no timeout: moving on from the clip leaves the encode running to
+/// completion (`hevc-samples` design D2). The right shape is a cancellation token checked
+/// between progress lines that kills the child. Not built: a conversion is a one-off per clip
+/// and its result is cached for the next open.
+pub fn encode_sample(
+    source: &Path,
+    dest: &Path,
+    encoder: &str,
+    bitrate: i64,
+    duration_ms: i64,
+    on_progress: &mut dyn FnMut(f64),
+) -> Result<()> {
+    let mut child = extractor_command()?
+        .args(["-nostdin", "-loglevel", "error", "-y", "-i"])
+        .arg(source)
+        .args(["-c:v", encoder, "-b:v"])
+        .arg(bitrate.to_string())
+        .args([
+            "-pix_fmt",
+            "yuv420p",
+            "-tag:v",
+            "avc1",
+            "-c:a",
+            "aac",
+            "-b:a",
+            "128k",
+            "-movflags",
+            "+faststart",
+            "-progress",
+            "pipe:1",
+            "-nostats",
+            "-f",
+            "mp4",
+        ])
+        .arg(dest)
+        .stdout(Stdio::piped())
+        .spawn()?;
+    // stderr is drained on its own thread: ffmpeg blocks on a full pipe, and stdout is read
+    // to EOF below, so reading stderr only afterwards could deadlock.
+    let mut stderr = child.stderr.take().map(|pipe| {
+        std::thread::spawn(move || {
+            let mut bytes = Vec::new();
+            let _ = { pipe }.read_to_end(&mut bytes);
+            bytes
+        })
+    });
+    if let Some(stdout) = child.stdout.take() {
+        for line in BufReader::new(stdout).lines().map_while(|line| line.ok()) {
+            if let Some(ratio) = progress_ratio(&line, duration_ms) {
+                on_progress(ratio);
+            }
+        }
+    }
+    let status = child.wait()?;
+    let output = std::process::Output {
+        status,
+        stdout: Vec::new(),
+        stderr: stderr
+            .take()
+            .and_then(|thread| thread.join().ok())
+            .unwrap_or_default(),
+    };
+    let checked = check_status(&output);
+    if checked.is_err() {
+        let _ = std::fs::remove_file(dest);
+    }
+    checked
+}
+
+/// The fraction done that one line of ffmpeg's `-progress` output states, clamped to 0..=1:
+/// `out_time_us=<microseconds>` against the clip's length. Every other key, `N/A` and a clip
+/// of no known length give `None`.
+fn progress_ratio(line: &str, duration_ms: i64) -> Option<f64> {
+    let micros: f64 = line.strip_prefix("out_time_us=")?.trim().parse().ok()?;
+    if duration_ms <= 0 {
+        return None;
+    }
+    Some((micros / (duration_ms as f64 * 1000.0)).clamp(0.0, 1.0))
+}
+
 /// The first frame of the video at `path`, decoded from the PNG the extractor writes to stdout.
 ///
 /// FIXME: no timeout. A hung extractor blocks the calling thread forever; posters are generated
@@ -135,6 +221,16 @@ pub fn first_frame(path: &Path) -> Result<DynamicImage> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn progress_lines_give_a_clamped_ratio() {
+        assert_eq!(progress_ratio("out_time_us=500000", 1000), Some(0.5));
+        assert_eq!(progress_ratio("out_time_us=9000000", 1000), Some(1.0));
+        assert_eq!(progress_ratio("out_time_us=-1000", 1000), Some(0.0));
+        assert_eq!(progress_ratio("out_time_us=N/A", 1000), None);
+        assert_eq!(progress_ratio("out_time_ms=500000", 1000), None);
+        assert_eq!(progress_ratio("out_time_us=500000", 0), None);
+    }
 
     #[test]
     fn first_frame_of_the_h264_fixture_is_16_by_16() {
