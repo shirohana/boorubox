@@ -12,6 +12,7 @@
   import { onDestroy, tick } from 'svelte'
   import type { SearchResults } from '$lib/api'
   import { imageUrl } from '$lib/api'
+  import { canDecode, refusalMessage } from '$lib/domain/codecs'
   import { offsetIndexBounded } from '$lib/domain/navigation-math'
   import {
     isTypingTarget,
@@ -24,6 +25,7 @@
     KEY_TAB,
     KEY_UP,
   } from '$lib/keyboard'
+  import { isWindows } from '$lib/platform'
   import { moveFocus } from './grid-focus'
   import Inspector from './Inspector.svelte'
   import { nextTabStop } from './tab-cycle'
@@ -143,6 +145,19 @@
   /** The id of the record whose `<video>` fired `error`; any other record is untried. */
   let failedId = $state<string | null>(null)
   const videoFailed = $derived(failedId === image?.id)
+  /**
+   * Asked of the engine before the `<video>` mounts: an element that cannot
+   * decode the picture may still start the sound (`hevc-remux` design D3).
+   * `null` codec reads as "try it".
+   */
+  const undecodable = $derived(
+    isVideo && !!image && !canDecode(
+      image.mime,
+      image.codec,
+      (type) => document.createElement('video').canPlayType(type),
+    ),
+  )
+  const undecodableMessage = $derived(image?.codec ? refusalMessage(image.codec, isWindows) : '')
   const title = $derived(image?.pageTitle || image?.imageUrl || image?.id || '')
   const previous = $derived(offsetIndexBounded(index, -1, results.total))
   const next = $derived(offsetIndexBounded(index, 1, results.total))
@@ -479,7 +494,9 @@
           onpointermove={onviewportpointermove}
           class="absolute inset-0 flex items-center justify-center overflow-hidden"
         >
-          {#if src && isVideo && videoFailed}
+          {#if src && undecodable}
+            <p class="max-w-prose px-6 text-center text-sm text-white/60">{undecodableMessage}</p>
+          {:else if src && isVideo && videoFailed}
             <p class="text-sm text-white/60">This video cannot be played on this machine</p>
           {:else if src && isVideo}
             <!--

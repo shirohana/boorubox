@@ -42,10 +42,76 @@ fn with_exe_suffix(path: PathBuf) -> PathBuf {
     }
 }
 
+/// The sidecar command every call starts from: no stdin, stderr captured for the failure line,
+/// no console window on Windows.
+fn extractor_command() -> Result<Command> {
+    let mut command = Command::new(locate()?);
+    command.stdin(Stdio::null()).stderr(Stdio::piped());
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        // CREATE_NO_WINDOW: no console flashes over the app.
+        command.creation_flags(0x0800_0000);
+    }
+    Ok(command)
+}
+
+/// A non-zero exit is an `Io` error carrying the last non-empty line ffmpeg wrote to stderr.
+fn check_status(output: &std::process::Output) -> Result<()> {
+    if output.status.success() {
+        return Ok(());
+    }
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let last_line = stderr
+        .lines()
+        .rev()
+        .find(|line| !line.trim().is_empty())
+        .unwrap_or("no output");
+    Err(AppError::Io(std::io::Error::other(format!(
+        "ffmpeg failed ({}): {last_line}",
+        output.status
+    ))))
+}
+
+/// Rewrite the mp4 at `source` into `dest` without re-encoding, its video sample entry tagged
+/// `tag` (`hvc1` or `avc1`): parameter sets that sat in the stream move into the container
+/// (`hevc-remux` design D1). File to file, because a moov-at-end mp4 cannot be read from a
+/// pipe. A failed rewrite leaves no `dest`.
+///
+/// FIXME: this runs inside `ingest::store_image`, with the library lock held, and has no
+/// timeout: a hung rewrite freezes every door of the library, not one thread. The right shape
+/// is to rewrite before the lock is taken (the bytes are on disk in the inbox either way) or
+/// to kill the child after N seconds. Not built: a stream copy of a 50 MB clip takes 0.15 s and
+/// no input is known to hang it.
+pub fn remux(source: &Path, dest: &Path, tag: &str) -> Result<()> {
+    let output = extractor_command()?
+        .args(["-nostdin", "-loglevel", "error", "-y", "-i"])
+        .arg(source)
+        .args([
+            "-c",
+            "copy",
+            "-tag:v",
+            tag,
+            "-movflags",
+            "+faststart",
+            "-f",
+            "mp4",
+        ])
+        .arg(dest)
+        .spawn()?
+        .wait_with_output()?;
+    let checked = check_status(&output);
+    if checked.is_err() {
+        let _ = std::fs::remove_file(dest);
+    }
+    checked
+}
+
 /// The first frame of the video at `path`, decoded from the PNG the extractor writes to stdout.
 ///
-/// FIXME: no timeout. A hung extractor blocks the calling thread forever; the library lock is
-/// not held (thumbnails are generated with it released), so only that thread hangs. The right
+/// FIXME: no timeout. A hung extractor blocks the calling thread forever; posters are generated
+/// with the library lock released, so here only that thread hangs (`remux` is the path that
+/// holds the lock, see its own FIXME). The right
 /// shape is to spawn, wait on a helper thread or poll `try_wait`, and kill the child after N
 /// seconds. Not built: no input is known to hang it.
 ///
@@ -55,33 +121,14 @@ fn with_exe_suffix(path: PathBuf) -> PathBuf {
 /// the spawn (and a remembered failure). Not built: the image path has the same shape today at
 /// far lower cost per call.
 pub fn first_frame(path: &Path) -> Result<DynamicImage> {
-    let mut command = Command::new(locate()?);
+    let mut command = extractor_command()?;
     command
         .args(["-nostdin", "-loglevel", "error", "-i"])
         .arg(path)
         .args(["-frames:v", "1", "-f", "image2pipe", "-vcodec", "png", "-"])
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        // CREATE_NO_WINDOW: no console flashes over the app.
-        command.creation_flags(0x0800_0000);
-    }
+        .stdout(Stdio::piped());
     let output = command.spawn()?.wait_with_output()?;
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        let last_line = stderr
-            .lines()
-            .rev()
-            .find(|line| !line.trim().is_empty())
-            .unwrap_or("no output");
-        return Err(AppError::Io(std::io::Error::other(format!(
-            "ffmpeg failed ({}): {last_line}",
-            output.status
-        ))));
-    }
+    check_status(&output)?;
     Ok(image::load_from_memory(&output.stdout)?)
 }
 
@@ -109,6 +156,23 @@ mod tests {
         .unwrap();
 
         assert_eq!((frame.width(), frame.height()), (16, 16));
+    }
+
+    #[test]
+    fn remuxing_the_hev1_fixture_gives_an_hvc1_file_of_the_same_size_and_length() {
+        let fixtures = concat!(env!("CARGO_MANIFEST_DIR"), "/fixtures/video");
+        let source = std::fs::read(format!("{fixtures}/hev1.mp4")).unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let dest = dir.path().join("out.mp4");
+
+        remux(Path::new(&format!("{fixtures}/hev1.mp4")), &dest, "hvc1").unwrap();
+
+        let before = crate::media::probe(&source).unwrap();
+        let after = crate::media::probe(&std::fs::read(&dest).unwrap()).unwrap();
+        assert_eq!(before.codec, Some("hev1"));
+        assert_eq!(after.codec, Some("hvc1"));
+        assert_eq!((after.width, after.height), (before.width, before.height));
+        assert_eq!(after.duration_ms, before.duration_ms);
     }
 
     #[test]

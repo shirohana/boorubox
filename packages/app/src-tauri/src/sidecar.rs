@@ -81,6 +81,10 @@ pub struct Sidecar {
     /// design D3).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub duration_ms: Option<i64>,
+    /// Videos only; additive like `duration_ms`, so the sidecar format stays 1 (`hevc-remux`
+    /// design D2).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub codec: Option<String>,
     pub created_at: i64,
     pub updated_at: i64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -115,6 +119,7 @@ impl From<&ImageRecord> for Sidecar {
             captured_at: record.captured_at,
             file_modified_at: record.file_modified_at,
             duration_ms: record.duration_ms,
+            codec: record.codec.clone(),
             created_at: record.created_at,
             updated_at: record.updated_at,
             deleted_at: record.deleted_at,
@@ -416,6 +421,7 @@ mod tests {
             captured_at: 1_757_000_000_000,
             file_modified_at: None,
             duration_ms: None,
+            codec: None,
             created_at: 1_757_000_000_000,
             updated_at: 1_757_000_000_123,
             deleted_at: None,
@@ -615,6 +621,7 @@ mod tests {
         sidecar.file_modified_at = Some(1_757_000_000_001);
         sidecar.deleted_at = Some(1_757_000_000_002);
         sidecar.duration_ms = Some(8_033);
+        sidecar.codec = Some("avc1".to_string());
         let serialised = serde_json::to_value(&sidecar).unwrap();
         let fields: Vec<&String> = serialised.as_object().unwrap().keys().collect();
 

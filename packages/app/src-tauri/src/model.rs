@@ -511,6 +511,9 @@ pub struct ImageRecord {
     /// Milliseconds, read from the container header; `None` for an image
     /// (`video-files` design D3).
     pub duration_ms: Option<i64>,
+    /// A video's codec as its container spells it (`avc1`, `hvc1`, `vp08`, `vp09`); `None` for
+    /// an image and for a video stored before the column existed (`hevc-remux` design D2).
+    pub codec: Option<String>,
     pub created_at: i64,
     pub updated_at: i64,
     pub deleted_at: Option<i64>,
@@ -1880,6 +1883,7 @@ mod tests {
             captured_at: 0,
             file_modified_at: None,
             duration_ms: None,
+            codec: None,
             created_at: 0,
             updated_at: 0,
             deleted_at: None,

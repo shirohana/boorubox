@@ -127,6 +127,12 @@ export interface ImageRecord {
    * the container header at import, so it is a fact of the file, not of playback.
    */
   durationMs?: number | null
+  /**
+   * The container's own four-letter code for the video track (`avc1`, `hvc1`, `vp08`,
+   * `vp09`; `hevc-remux`), videos only; absent on an image and on rows stored before the
+   * code was recorded. The viewer asks the browser engine about this code before playing.
+   */
+  codec?: string | null
   source: ImageSource
   /** Adapter site for `extension`, bundle id for `legacy-bundle`, else null. */
   sourceRef: string | null

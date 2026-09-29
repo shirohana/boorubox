@@ -15,7 +15,12 @@
 #   --disable-autodetect --disable-avdevice --disable-postproc --disable-debug --disable-x86asm
 #   --enable-small --enable-zlib --enable-protocol=file,pipe --enable-demuxer=mov,matroska
 #   --enable-decoder=h264,hevc,vp8,vp9 --enable-parser=h264,hevc,vp8,vp9
-#   --enable-encoder=png --enable-muxer=image2pipe --enable-filter=scale,select,format
+#   --enable-encoder=png --enable-muxer=image2pipe,mp4 --enable-bsf=hevc_mp4toannexb,extract_extradata
+#   --enable-filter=scale,select,format
+#
+# The mp4 muxer and the two bitstream filters exist for a stream copy that moves in-band
+# parameter sets (`hev1`/`avc3`) into the container (`hvc1`/`avc1`), so WebKit plays the file.
+# `hevc-remux` design D4.
 #
 # Why that line: the four codecs (h264, hevc, vp8, vp9) are the ones the webviews play, so a
 # file the app can show is a file ffmpeg can take a frame from; everything else stays off to
@@ -76,7 +81,8 @@ flags=(
   --enable-decoder=h264,hevc,vp8,vp9
   --enable-parser=h264,hevc,vp8,vp9
   --enable-encoder=png
-  --enable-muxer=image2pipe
+  --enable-muxer=image2pipe,mp4
+  --enable-bsf=hevc_mp4toannexb,extract_extradata
   --enable-filter=scale,select,format
 )
 # Under MSYS2 a MinGW build links its runtime as DLLs by default; the app ships one file, so

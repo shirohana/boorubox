@@ -10,9 +10,12 @@
       // header reserves the top-left for the traffic lights. The reserve is a
       // CSS rule keyed off this attribute, and CSS cannot ask what platform it
       // is on — so the answer has to be stamped here, before the first paint,
-      // or the sidebar lays out once without the reserve and jumps.
+      // or the sidebar lays out once without the reserve and jumps. `isWindows`
+      // and `isMacos` in `$lib/platform` read the same attribute.
       if (navigator.userAgent.includes('Mac OS X')) {
         document.documentElement.dataset.platform = 'macos'
+      } else if (navigator.userAgent.includes('Windows')) {
+        document.documentElement.dataset.platform = 'windows'
       }
     </script>
     %sveltekit.head%

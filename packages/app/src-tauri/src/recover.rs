@@ -542,8 +542,8 @@ fn insert_sidecar(
     conn.execute(
         "INSERT INTO images (id, ext, mime, size, width, height, source, source_ref, image_url,
                              page_url, page_title, adapter_json, rating, captured_at, created_at,
-                             updated_at, file_modified_at, deleted_at, missing, duration_ms)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20)",
+                             updated_at, file_modified_at, deleted_at, missing, duration_ms, codec)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21)",
         params![
             sidecar.id,
             sidecar.ext,
@@ -565,6 +565,7 @@ fn insert_sidecar(
             sidecar.deleted_at,
             missing,
             sidecar.duration_ms,
+            sidecar.codec,
         ],
     )?;
 
@@ -794,6 +795,40 @@ mod tests {
         std::fs::write(&file, serde_json::to_vec_pretty(&json).unwrap()).unwrap();
 
         assert_eq!(duration_after_rebuild(&paths, "v"), None);
+    }
+
+    fn codec_after_rebuild(paths: &crate::library::LibraryPaths, id: &str) -> Option<String> {
+        rebuild(paths, &mut |_, _| {}).unwrap();
+        let rebuilt = Library::open_existing(paths.root.as_path()).unwrap();
+        crate::ingest::require_record(&rebuilt.conn, id)
+            .unwrap()
+            .codec
+    }
+
+    /// `hevc-remux` design D2: the sidecar carries `codec` and a rebuild restores the column.
+    #[test]
+    fn a_sidecar_carrying_a_codec_restores_the_column() {
+        let (_dir, library) = library();
+        store_video(&library, "v");
+        let paths = library.paths.clone();
+        drop(library);
+
+        assert_eq!(codec_after_rebuild(&paths, "v").as_deref(), Some("avc1"));
+    }
+
+    #[test]
+    fn a_sidecar_without_a_codec_restores_null() {
+        let (_dir, library) = library();
+        store_video(&library, "v");
+        let paths = library.paths.clone();
+        drop(library);
+        let file = crate::sidecar::path(&paths, "v");
+        let mut json: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&file).unwrap()).unwrap();
+        assert!(json.as_object_mut().unwrap().remove("codec").is_some());
+        std::fs::write(&file, serde_json::to_vec_pretty(&json).unwrap()).unwrap();
+
+        assert_eq!(codec_after_rebuild(&paths, "v"), None);
     }
 
     /// Task 2.4: a full round trip. Everything the library held before the

@@ -420,6 +420,12 @@ const SCHEMA_V15: &str = r"
 ALTER TABLE images ADD COLUMN duration_ms INTEGER;
 ";
 
+/// Schema v16 (`hevc-remux` design D2): a video's codec as its container spells it (`avc1`,
+/// `hvc1`, `vp08`, `vp09`). Nullable: an image has none, and a video stored earlier stays null.
+const SCHEMA_V16: &str = r"
+ALTER TABLE images ADD COLUMN codec TEXT;
+";
+
 /// One schema version's step: plain SQL for every version but the one
 /// `merge_case_duplicates` is (its own doc comment says why that one has to be
 /// Rust).
@@ -446,6 +452,7 @@ const MIGRATIONS: &[Migration] = &[
     Migration::Sql(SCHEMA_V13),
     Migration::Sql(SCHEMA_V14),
     Migration::Sql(SCHEMA_V15),
+    Migration::Sql(SCHEMA_V16),
 ];
 
 /// Open (creating if needed) the library database with the pragmas D2 fixes,
@@ -1124,6 +1131,39 @@ mod tests {
             })
             .unwrap();
         assert_eq!(duration, None);
+    }
+
+    /// `hevc-remux` design D2: a v15 database migrates gaining a `codec` column that is `NULL`
+    /// for the row it already holds.
+    #[test]
+    fn a_v15_library_migrates_gaining_a_null_codec() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("library.sqlite");
+
+        let conn = Connection::open(&path).unwrap();
+        for schema in [
+            SCHEMA_V1, SCHEMA_V2, SCHEMA_V3, SCHEMA_V4, SCHEMA_V5, SCHEMA_V6, SCHEMA_V7, SCHEMA_V8,
+            SCHEMA_V10, SCHEMA_V11, SCHEMA_V12, SCHEMA_V13, SCHEMA_V14, SCHEMA_V15,
+        ] {
+            conn.execute_batch(schema).unwrap();
+        }
+        conn.pragma_update(None, "user_version", 15i64).unwrap();
+        insert_bare_image(&conn, "a", "sunset over kyoto");
+        drop(conn);
+
+        let conn = open(&path).unwrap();
+
+        let version: i64 = conn
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, MIGRATIONS.len() as i64);
+        assert!(column_names(&conn, "images").contains(&"codec".to_string()));
+        let codec: Option<String> = conn
+            .query_row("SELECT codec FROM images WHERE id = 'a'", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(codec, None);
     }
 
     /// The `CHECK` design D1 adds (task 1.1's "why the CHECK"): a category

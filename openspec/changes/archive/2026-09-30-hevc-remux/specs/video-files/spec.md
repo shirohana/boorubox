@@ -1,11 +1,4 @@
-# video-files Specification
-
-## Purpose
-Which video files the library accepts and refuses, the facts a video records, the first-frame
-thumbnail and the extractor the app carries to render it, type search, and the Size row.
-Requirements §1 (the app is where the files live), §6 (local file import; the viewer).
-
-## Requirements
+## MODIFIED Requirements
 
 ### Requirement: Accepted video files
 The library SHALL accept a video file through every door an image comes through — local
@@ -66,39 +59,3 @@ of the image's sidecar and SHALL survive a rebuild of the index from the sidecar
 #### Scenario: A rebuild keeps the duration
 - **WHEN** the index is rebuilt from the sidecars
 - **THEN** the video's duration and codec are the same as before the rebuild
-
-### Requirement: First-frame thumbnail
-A video's thumbnail SHALL be its first frame, rendered at the same longest edge and in the same
-format as an image's thumbnail, generated on the same occasions (after import, on demand when
-the grid first asks, and by the regenerate pass). The app SHALL carry the frame extractor it
-needs inside its own bundle on both platforms, so a machine with nothing else installed renders
-the thumbnail. A failure to render the frame SHALL NOT fail the import: the video is stored and
-its tile shows no preview, as an image whose thumbnail failed does.
-
-#### Scenario: The grid shows the first frame
-- **WHEN** a video is imported and the grid scrolls to its tile
-- **THEN** the tile shows the video's first frame
-
-#### Scenario: Regenerate re-renders posters
-- **WHEN** the user runs the thumbnail regenerate pass
-- **THEN** every video's thumbnail is rendered again, and one that cannot be rendered counts as failed in the pass's report
-
-### Requirement: Search by type
-`is:video` SHALL match every video; `is:mp4` and `is:webm` SHALL match by container. They SHALL
-combine with the other `is:` values as those already do with each other.
-
-#### Scenario: is:video
-- **WHEN** the query is `is:video`
-- **THEN** every mp4 and webm in the library matches and no image does
-
-#### Scenario: is:webm beside is:png
-- **WHEN** the query is `is:webm is:png`
-- **THEN** every webm and every PNG matches
-
-### Requirement: The Size row shows the duration
-The inspector's Size row for a video SHALL append the duration, as minutes and seconds, to the
-dimensions: `1.8 MB .mp4 (1664×1024, 0:08)`. An image's Size row SHALL be unchanged.
-
-#### Scenario: A video's Size row
-- **WHEN** the inspector shows an mp4 of 1,813,982 bytes, 1664×1024, 8033 ms
-- **THEN** its Size row reads `1.8 MB .mp4 (1664×1024, 0:08)`

@@ -26,3 +26,15 @@ describe('windowDragRegion', () => {
     expect(windowDragRegion).toBeUndefined()
   })
 })
+
+describe('isWindows', () => {
+  it('is true when app.html stamped windows', async () => {
+    const { isWindows } = await loadWith('windows')
+    expect(isWindows).toBe(true)
+  })
+
+  it('is false on macOS and when nothing was stamped', async () => {
+    expect((await loadWith('macos')).isWindows).toBe(false)
+    expect((await loadWith(undefined)).isWindows).toBe(false)
+  })
+})

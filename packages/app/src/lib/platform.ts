@@ -7,6 +7,14 @@ export const isMacos
   = typeof document !== 'undefined' && document.documentElement.dataset.platform === 'macos'
 
 /**
+ * Whether the webview is the Windows one, read off the same attribute as
+ * `isMacos`. Windows' engine decodes only the codecs the system ships, which
+ * is why the viewer's refusal message differs there.
+ */
+export const isWindows
+  = typeof document !== 'undefined' && document.documentElement.dataset.platform === 'windows'
+
+/**
  * The value for `data-tauri-drag-region` on the surfaces the window is dragged
  * by; `undefined` renders no attribute at all.
  *

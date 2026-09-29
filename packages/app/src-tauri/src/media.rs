@@ -26,8 +26,14 @@ pub struct Probed {
     pub codec: Option<&'static str>,
 }
 
-/// Matroska codec ids the two webviews and the bundled extractor decode.
-const ACCEPTED_MATROSKA: &[&str] = &["V_VP8", "V_VP9", "V_MPEG4/ISO/AVC", "V_MPEGH/ISO/HEVC"];
+/// Matroska codec ids the two webviews and the bundled extractor decode, each with the
+/// four-letter code an mp4 spells the same codec with (`hevc-remux` design D2).
+const ACCEPTED_MATROSKA: &[(&str, &str)] = &[
+    ("V_VP8", "vp08"),
+    ("V_VP9", "vp09"),
+    ("V_MPEG4/ISO/AVC", "avc1"),
+    ("V_MPEGH/ISO/HEVC", "hvc1"),
+];
 
 const NO_VIDEO_TRACK: &str = "no video track";
 
@@ -75,10 +81,11 @@ fn unsupported_codec(name: &str) -> AppError {
 /// with a rotation matrix reports its stored dimensions, not the displayed ones.
 ///
 /// `mp4parse` names H.264, MPEG-4 Part 2, VP8, VP9, AV1 and H.263 sample entries and reports
-/// every other one as `Unknown` without its fourcc or dimensions. For those,
-/// `first_video_sample_entry` answers the one question left (what is the entry's type): HEVC
-/// (`hvc1`/`hev1`) is accepted with its dimensions from the track header, any other type is
-/// refused by name. The walk is not a second parser: it never runs on a codec `mp4parse` names.
+/// every other one as `Unknown` without its fourcc or dimensions. `first_video_sample_entry`
+/// answers the one question the parser cannot, the entry's own type, and runs for every mp4:
+/// it tells `avc3` from `avc1` on a named entry, and for an `Unknown` one it is what accepts
+/// HEVC (`hvc1`/`hev1`, dimensions from the track header) or refuses by name. The parser's
+/// name stands when the walk finds no accepted type; the walk is not a second parser.
 fn probe_mp4(bytes: &[u8]) -> Result<Probed> {
     use mp4parse::{CodecType, SampleEntry, TrackType};
 
@@ -109,7 +116,9 @@ fn probe_mp4(bytes: &[u8]) -> Result<Probed> {
         _ => None,
     };
     let (codec, width, height) = match named {
-        Some(named) => named,
+        Some((named_codec, width, height)) => {
+            (walked_codec(bytes).unwrap_or(named_codec), width, height)
+        }
         None => unnamed_video_entry(bytes, track)?,
     };
     let duration_ms = match (&track.duration, &track.timescale) {
@@ -136,11 +145,10 @@ fn unnamed_video_entry(bytes: &[u8], track: &mp4parse::Track) -> Result<(&'stati
     let Some(fourcc) = first_video_sample_entry(bytes) else {
         return Err(unsupported_codec("unknown"));
     };
-    let codec = match &fourcc {
-        b"hvc1" => "hvc1",
-        b"hev1" => "hev1",
-        other => {
-            let name: String = other
+    let codec = match accepted_fourcc(&fourcc) {
+        Some(codec) => codec,
+        None => {
+            let name: String = fourcc
                 .iter()
                 .map(|&byte| {
                     if byte.is_ascii_graphic() {
@@ -158,6 +166,24 @@ fn unnamed_video_entry(bytes: &[u8], track: &mp4parse::Track) -> Result<(&'stati
         .as_ref()
         .map_or((0, 0), |tkhd| (tkhd.width >> 16, tkhd.height >> 16));
     Ok((codec, u64::from(width), u64::from(height)))
+}
+
+/// The accepted spelling of a sample-entry type; `avc3` and `hev1` keep their parameter sets in
+/// the stream, which is what `ingest` rewrites (`hevc-remux` design D1).
+fn accepted_fourcc(fourcc: &[u8; 4]) -> Option<&'static str> {
+    match fourcc {
+        b"avc1" => Some("avc1"),
+        b"avc3" => Some("avc3"),
+        b"hvc1" => Some("hvc1"),
+        b"hev1" => Some("hev1"),
+        _ => None,
+    }
+}
+
+/// The walk's answer for an entry `mp4parse` named: `avc1` or `avc3` for H.264, `None` when the
+/// entry is any other type, in which case the parser's own name stands.
+fn walked_codec(bytes: &[u8]) -> Option<&'static str> {
+    accepted_fourcc(&first_video_sample_entry(bytes)?)
 }
 
 /// The type of the first sample entry of the first `vide` track (`moov` > `trak` > `mdia` >
@@ -249,10 +275,9 @@ fn probe_webm(bytes: &[u8]) -> Result<Probed> {
         .video_tracks()
         .next()
         .ok_or_else(|| AppError::Unsupported(NO_VIDEO_TRACK.to_string()))?;
-    let Some(codec) = ACCEPTED_MATROSKA
+    let Some(&(_, codec)) = ACCEPTED_MATROSKA
         .iter()
-        .copied()
-        .find(|id| *id == track.codec_id)
+        .find(|(id, _)| *id == track.codec_id)
     else {
         return Err(unsupported_codec(&track.codec_id));
     };
@@ -307,14 +332,29 @@ mod tests {
     }
 
     #[test]
-    fn vp9_webm_is_probed_as_video() {
+    fn vp9_webm_reports_vp09() {
         let probed = probe(&fixture("vp9.webm")).unwrap();
 
         assert_eq!(probed.kind, Kind::Video);
         assert_eq!((probed.ext, probed.mime), ("webm", "video/webm"));
         assert_eq!((probed.width, probed.height), (16, 16));
-        assert_eq!(probed.codec, Some("V_VP9"));
+        assert_eq!(probed.codec, Some("vp09"));
         assert_within_a_millisecond(probed.duration_ms);
+    }
+
+    #[test]
+    fn avc3_is_told_from_avc1() {
+        let mut bytes = fixture("h264.mp4");
+        let entry = bytes
+            .windows(4)
+            .rposition(|window| window == b"avc1")
+            .expect("the h264 fixture has an avc1 sample entry");
+        bytes[entry..entry + 4].copy_from_slice(b"avc3");
+
+        let probed = probe(&bytes).unwrap();
+
+        assert_eq!(probed.codec, Some("avc3"));
+        assert_eq!((probed.width, probed.height), (16, 16));
     }
 
     #[test]

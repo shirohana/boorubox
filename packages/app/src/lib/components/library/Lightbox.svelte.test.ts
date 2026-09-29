@@ -8,7 +8,15 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import { img } from '$lib/domain/image-fixture'
 import Lightbox from './Lightbox.svelte'
 
+const platform = vi.hoisted(() => ({ isWindows: false }))
+vi.mock('$lib/platform', () => ({
+  get isWindows() {
+    return platform.isWindows
+  },
+}))
+
 beforeEach(() => {
+  platform.isWindows = false
   // jsdom has no layout and no `showModal`; the viewport must measure non-zero
   // for a click to reach the zoom, so the contrast with a video is real.
   HTMLDialogElement.prototype.showModal ??= function showModal() {}
@@ -171,5 +179,62 @@ it('still moves on the arrows after the video cannot be played', () => {
   flushSync()
   target.querySelector('dialog')!.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true, cancelable: true }))
   expect(onmove).toHaveBeenCalledWith(1)
+  unmount(instance)
+})
+
+const hevc = img({ id: 'h', ext: 'mp4', mime: 'video/mp4', codec: 'hvc1', durationMs: 8033 })
+
+function engineAnswers(answer: string) {
+  return vi.spyOn(HTMLMediaElement.prototype, 'canPlayType').mockReturnValue(answer as CanPlayTypeResult)
+}
+
+it('names the codec and mounts no <video> when the engine will not decode it', () => {
+  const probe = engineAnswers('')
+  const { target, instance } = open(hevc)
+  expect(target.querySelector('video')).toBeNull()
+  expect(target.textContent).toContain('This machine\'s browser engine cannot decode HEVC (H.265).')
+  expect(target.textContent).not.toContain('Microsoft')
+  expect(probe).toHaveBeenCalledWith('video/mp4; codecs="hvc1.1.6.L93.B0"')
+  unmount(instance)
+})
+
+it('adds the Windows sentence for HEVC on Windows', () => {
+  engineAnswers('')
+  platform.isWindows = true
+  const { target, instance } = open(hevc)
+  expect(target.textContent).toContain('Windows\' engine plays HEVC only with Microsoft\'s HEVC Video Extensions.')
+  unmount(instance)
+})
+
+it('leaves the Windows sentence off a refused codec other than HEVC', () => {
+  engineAnswers('')
+  platform.isWindows = true
+  const { target, instance } = open(img({ id: 'x', ext: 'webm', mime: 'video/webm', codec: 'vp09' }))
+  expect(target.textContent).toContain('cannot decode VP9.')
+  expect(target.textContent).not.toContain('Microsoft')
+  unmount(instance)
+})
+
+it('still moves on the arrows over the refusal message', () => {
+  engineAnswers('')
+  const onmove = vi.fn()
+  const { target, instance } = open(hevc, { onmove })
+  target.querySelector('dialog')!.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true, cancelable: true }))
+  expect(onmove).toHaveBeenCalledWith(1)
+  unmount(instance)
+})
+
+it('mounts the <video> when the engine says probably', () => {
+  engineAnswers('probably')
+  const { target, instance } = open(hevc)
+  expect(target.querySelector('video')).not.toBeNull()
+  unmount(instance)
+})
+
+it('mounts the <video> without asking when no codec is recorded', () => {
+  const probe = engineAnswers('')
+  const { target, instance } = open(video)
+  expect(target.querySelector('video')).not.toBeNull()
+  expect(probe).not.toHaveBeenCalled()
   unmount(instance)
 })

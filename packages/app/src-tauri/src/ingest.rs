@@ -20,6 +20,9 @@ use crate::query::{ID_CHUNK, placeholders};
 use crate::rules;
 use crate::tags;
 
+/// The extension of the remux output; ending in `.part` keeps it inside the inbox sweep.
+const REMUX_PART_EXT: &str = "remux.part";
+
 /// Everything a caller knows about an image before it has a row. `id` is the
 /// caller's UUID, and delivery is idempotent on it.
 pub struct IngestInput<'a> {
@@ -75,7 +78,7 @@ pub fn image_columns() -> String {
     format!(
         "id, ext, mime, size, width, height, source, source_ref, \
          image_url, page_url, page_title, adapter_json, rating, captured_at, created_at, updated_at, \
-         deleted_at, missing, file_modified_at, {} AS source_url, duration_ms",
+         deleted_at, missing, file_modified_at, {} AS source_url, duration_ms, codec",
         crate::query::SOURCE_URL_SQL,
     )
 }
@@ -104,11 +107,11 @@ pub fn store_image(library: &Library, input: IngestInput) -> Result<Ingested> {
         return Ok(Ingested::Existing(existing));
     }
 
-    let decoded = media::probe(input.bytes)?;
-    let path = library.paths.image_path(input.id, decoded.ext);
-    write_through_inbox(library, input.id, input.bytes, &path)?;
+    let probed = media::probe(input.bytes)?;
+    let path = library.paths.image_path(input.id, probed.ext);
+    let (decoded, size) = write_through_inbox(library, input.id, input.bytes, &probed, &path)?;
 
-    let (ingested, categorised) = match insert_rows(library, &input, &decoded) {
+    let (ingested, categorised) = match insert_rows(library, &input, &decoded, size) {
         Ok(outcome) => outcome,
         Err(error) => {
             let _ = std::fs::remove_file(&path);
@@ -133,40 +136,105 @@ fn write_sidecar(library: &Library, record: &ImageRecord) -> Result<()> {
     crate::sidecar::write(&library.paths, &crate::sidecar::Sidecar::from(record))
 }
 
-/// Write, fsync, rename. A crash before the rename leaves at most a stray
-/// `.part`, which `Library::open_or_create` sweeps; a crash after it leaves a
-/// file with no row, which the missing/orphan pass can see.
-fn write_through_inbox(library: &Library, id: &str, bytes: &[u8], dest: &Path) -> Result<()> {
+/// Write, fsync, remux when the stream keeps its parameter sets in-band, rename. A crash
+/// before the rename leaves at most a stray `.part` (the remux writes `<id>.remux.part`, which
+/// the sweep's extension match covers too), which `Library::open_or_create` sweeps; a crash
+/// after it leaves a file with no row, which the missing/orphan pass can see.
+///
+/// Answers what was stored: the probe of the file that reached `dest` and its size. An `hev1`
+/// or `avc3` mp4 is stored as its `hvc1` or `avc1` rewrite (`hevc-remux` design D1); every
+/// other file is stored as the bytes it arrived as.
+fn write_through_inbox(
+    library: &Library,
+    id: &str,
+    bytes: &[u8],
+    probed: &Probed,
+    dest: &Path,
+) -> Result<(Probed, u64)> {
     let part = library.paths.part_path(id);
-    let write = || -> Result<()> {
+    let remuxed_part = part.with_extension(REMUX_PART_EXT);
+    let discard_parts = || {
+        let _ = std::fs::remove_file(&part);
+        let _ = std::fs::remove_file(&remuxed_part);
+    };
+    let write = || -> Result<(Probed, u64)> {
         let mut file = File::create(&part)?;
         file.write_all(bytes)?;
         file.sync_all()?;
-        Ok(())
+        drop(file);
+        match remux_tag(probed) {
+            Some(tag) => remux_in_place(&part, &remuxed_part, tag),
+            None => Ok((probed.clone(), bytes.len() as u64)),
+        }
     };
-    if let Err(error) = write() {
-        let _ = std::fs::remove_file(&part);
-        return Err(error);
-    }
+    let stored = match write() {
+        Ok(stored) => stored,
+        Err(error) => {
+            discard_parts();
+            return Err(error);
+        }
+    };
     // The destination's bucket (design D1, D3): created on demand rather than
     // up front, so an empty library never pays for 65,536 directories it may
     // never fill.
     if let Some(bucket) = dest.parent()
         && let Err(error) = std::fs::create_dir_all(bucket)
     {
-        let _ = std::fs::remove_file(&part);
+        discard_parts();
         return Err(error.into());
     }
     std::fs::rename(&part, dest).map_err(|error| {
-        let _ = std::fs::remove_file(&part);
+        discard_parts();
         AppError::Io(error)
-    })
+    })?;
+    Ok(stored)
+}
+
+/// The sample-entry tag an in-band mp4 is rewritten to, `None` for a file stored as it came.
+fn remux_tag(probed: &Probed) -> Option<&'static str> {
+    match probed.codec {
+        Some("hev1") => Some("hvc1"),
+        Some("avc3") => Some("avc1"),
+        _ => None,
+    }
+}
+
+/// Rewrite `part` through `remuxed_part`, replace `part` with the result and probe it from
+/// disk, so the row records the stored file's codec and size. The rewrite is fsynced before it
+/// replaces the part: the muxer's close does not sync, and the file is renamed into `images/`
+/// straight after.
+fn remux_in_place(part: &Path, remuxed_part: &Path, tag: &str) -> Result<(Probed, u64)> {
+    crate::ffmpeg::remux(part, remuxed_part, tag)?;
+    // A writable handle: Windows refuses to flush a file opened read-only.
+    std::fs::OpenOptions::new()
+        .write(true)
+        .open(remuxed_part)?
+        .sync_all()?;
+    std::fs::rename(remuxed_part, part)?;
+    let stored = std::fs::read(part)?;
+    // ffmpeg exits 0 on a copy whose samples lie past the end of the file and writes a file with
+    // no video track; the probe is what catches it, and it is a failed rewrite, not a refused codec.
+    let probed = media::probe(&stored).map_err(|error| {
+        AppError::Io(std::io::Error::other(format!(
+            "the rewritten mp4 is unreadable: {error}"
+        )))
+    })?;
+    // A rewrite that kept the in-band tag would import and then not play on the Mac, the
+    // exact bug the remux exists for (`hevc-remux` design D1): a failed rewrite, not a row.
+    if probed.codec != Some(tag) {
+        return Err(AppError::Io(std::io::Error::other(format!(
+            "the rewritten mp4 still reads {} rather than {tag}",
+            probed.codec.unwrap_or("no codec")
+        ))));
+    }
+    Ok((probed, stored.len() as u64))
 }
 
 fn insert_rows(
     library: &Library,
     input: &IngestInput,
     decoded: &Probed,
+    size: u64,
 ) -> Result<(Ingested, bool)> {
     // `unchecked_transaction` because `store_image` takes `&Library`: the
     // exclusive access rusqlite normally wants is provided one level up, by the
@@ -188,14 +256,14 @@ fn insert_rows(
     let inserted = tx.execute(
         "INSERT INTO images (id, ext, mime, size, width, height, source, source_ref, image_url,
                              page_url, page_title, adapter_json, rating, captured_at, created_at,
-                             updated_at, file_modified_at, deleted_at, duration_ms)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)
+                             updated_at, file_modified_at, deleted_at, duration_ms, codec)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20)
          ON CONFLICT (id) DO NOTHING",
         params![
             input.id,
             decoded.ext,
             decoded.mime,
-            input.bytes.len() as i64,
+            size as i64,
             decoded.width,
             decoded.height,
             input.source,
@@ -211,6 +279,7 @@ fn insert_rows(
             input.file_modified_at,
             input.deleted_at,
             decoded.duration_ms,
+            decoded.codec,
         ],
     )?;
 
@@ -349,6 +418,7 @@ pub fn row_to_record(row: &Row) -> rusqlite::Result<ImageRecord> {
         file_modified_at: row.get(18)?,
         source_url: row.get(19)?,
         duration_ms: row.get(20)?,
+        codec: row.get(21)?,
         posts: Vec::new(),
         collections: Vec::new(),
     })
@@ -657,6 +727,74 @@ mod tests {
              level — one image file and its one sidecar (`library-sidecars` design D1)"
         );
         assert_eq!(library.image_count().unwrap(), 1);
+    }
+
+    fn video_fixture(name: &str) -> Vec<u8> {
+        std::fs::read(format!(
+            "{}/fixtures/video/{name}",
+            env!("CARGO_MANIFEST_DIR")
+        ))
+        .unwrap()
+    }
+
+    #[test]
+    fn an_hev1_mp4_is_stored_as_hvc1() {
+        let (_dir, library) = library();
+        let bytes = video_fixture("hev1.mp4");
+        let original = bytes.clone();
+        let tags: Vec<String> = Vec::new();
+
+        let record = store_image(&library, input("id-1", &bytes, &tags))
+            .unwrap()
+            .record()
+            .clone();
+
+        let stored = std::fs::read(library.paths.image_path("id-1", "mp4")).unwrap();
+        assert_eq!(media::probe(&stored).unwrap().codec, Some("hvc1"));
+        assert_eq!(record.codec.as_deref(), Some("hvc1"));
+        assert_eq!(record.size, stored.len() as i64);
+        assert_ne!(stored, original);
+        assert_eq!(bytes, original, "the input bytes are untouched");
+        assert_eq!(entry_count(&library.paths.inbox_dir()), 0);
+    }
+
+    #[test]
+    fn an_avc1_mp4_is_stored_as_is() {
+        let (_dir, library) = library();
+        let bytes = video_fixture("h264.mp4");
+        let tags: Vec<String> = Vec::new();
+
+        let record = store_image(&library, input("id-1", &bytes, &tags))
+            .unwrap()
+            .record()
+            .clone();
+
+        let stored = std::fs::read(library.paths.image_path("id-1", "mp4")).unwrap();
+        assert_eq!(stored, bytes);
+        assert_eq!(record.codec.as_deref(), Some("avc1"));
+        assert_eq!(record.size, bytes.len() as i64);
+    }
+
+    /// The `hev1` fixture with its one chunk offset moved past the end of the file: the header
+    /// still probes, and ffmpeg has no samples to copy.
+    #[test]
+    fn a_remux_failure_leaves_no_file_and_no_row() {
+        let (_dir, library) = library();
+        let mut bytes = video_fixture("hev1.mp4");
+        let stco = bytes.windows(4).position(|w| w == b"stco").unwrap() + 12;
+        bytes[stco..stco + 4].copy_from_slice(&0xffff_u32.to_be_bytes());
+        assert_eq!(media::probe(&bytes).unwrap().codec, Some("hev1"));
+        let tags: Vec<String> = Vec::new();
+
+        let error = store_image(&library, input("id-1", &bytes, &tags)).unwrap_err();
+
+        assert!(
+            matches!(error, AppError::Io(_)),
+            "unexpected error: {error}"
+        );
+        assert_eq!(recursive_file_count(&library.paths.images_dir()), 0);
+        assert_eq!(entry_count(&library.paths.inbox_dir()), 0);
+        assert_eq!(library.image_count().unwrap(), 0);
     }
 
     #[test]
