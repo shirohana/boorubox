@@ -223,8 +223,8 @@ ALTER TABLE tags ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0;
 /// language (`stamps.rs`) and applied to an image by a click in edit mode.
 /// Shaped like `rules` — a `TEXT PRIMARY KEY` id from `uuid::Uuid::new_v4()`,
 /// no index because the table holds tens of rows and every read is "all of
-/// them" — but ordered by `created_at` rather than by name: there is no
-/// reordering, so creation order is the only order a stamp ever has.
+/// them" — but ordered by the user, not by name: creation order until v17,
+/// the `position` column from v17 on.
 const SCHEMA_V8: &str = r"
 CREATE TABLE stamps (
     id         TEXT PRIMARY KEY,
@@ -426,6 +426,32 @@ const SCHEMA_V16: &str = r"
 ALTER TABLE images ADD COLUMN codec TEXT;
 ";
 
+/// Schema v17 (`stamp-order` design D1): a stamp's place in the user's order. Existing stamps
+/// are numbered from 1 in the `created_at, rowid` order they were listed in, so nothing moves
+/// at migration. `stamps::list` still breaks a tie by that key, which keeps the order total
+/// even for a row holding the column's default `0`.
+const SCHEMA_V17: &str = r"
+ALTER TABLE stamps ADD COLUMN position INTEGER NOT NULL DEFAULT 0;
+UPDATE stamps SET position = (
+    SELECT COUNT(*) FROM stamps AS earlier
+    WHERE earlier.created_at < stamps.created_at
+       OR (earlier.created_at = stamps.created_at AND earlier.rowid < stamps.rowid)
+) + 1;
+";
+
+/// Schema v18 (`pinned-group-management` design D1): a pinned group's name and fold, keyed by the
+/// position `tags.pinned_group` already names. One row per group a tag is pinned into, unnamed
+/// and unfolded; `tags::compact_groups` keeps the rows and the tags' groups agreeing from here.
+const SCHEMA_V18: &str = r"
+CREATE TABLE pinned_groups (
+    position INTEGER PRIMARY KEY,
+    name TEXT NOT NULL DEFAULT '',
+    collapsed INTEGER NOT NULL DEFAULT 0 CHECK (collapsed IN (0, 1))
+);
+INSERT INTO pinned_groups (position)
+SELECT DISTINCT pinned_group FROM tags WHERE pinned_group > 0;
+";
+
 /// One schema version's step: plain SQL for every version but the one
 /// `merge_case_duplicates` is (its own doc comment says why that one has to be
 /// Rust).
@@ -453,6 +479,8 @@ const MIGRATIONS: &[Migration] = &[
     Migration::Sql(SCHEMA_V14),
     Migration::Sql(SCHEMA_V15),
     Migration::Sql(SCHEMA_V16),
+    Migration::Sql(SCHEMA_V17),
+    Migration::Sql(SCHEMA_V18),
 ];
 
 /// Open (creating if needed) the library database with the pragmas D2 fixes,
@@ -1164,6 +1192,98 @@ mod tests {
             })
             .unwrap();
         assert_eq!(codec, None);
+    }
+
+    /// `stamp-order` design D1: a v16 database migrates numbering its stamps from 1 in
+    /// `created_at, rowid` order, two stamps sharing a `created_at` included.
+    #[test]
+    fn a_v16_library_migrates_numbering_stamps_by_creation() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("library.sqlite");
+
+        let conn = Connection::open(&path).unwrap();
+        for schema in [
+            SCHEMA_V1, SCHEMA_V2, SCHEMA_V3, SCHEMA_V4, SCHEMA_V5, SCHEMA_V6, SCHEMA_V7, SCHEMA_V8,
+            SCHEMA_V10, SCHEMA_V11, SCHEMA_V12, SCHEMA_V13, SCHEMA_V14, SCHEMA_V15, SCHEMA_V16,
+        ] {
+            conn.execute_batch(schema).unwrap();
+        }
+        conn.pragma_update(None, "user_version", 16i64).unwrap();
+        for (id, created_at) in [("late", 300i64), ("first-tie", 100), ("second-tie", 100)] {
+            conn.execute(
+                "INSERT INTO stamps (id, name, text, created_at, updated_at)
+                 VALUES (?1, ?1, 'x', ?2, ?2)",
+                rusqlite::params![id, created_at],
+            )
+            .unwrap();
+        }
+        drop(conn);
+
+        let conn = open(&path).unwrap();
+
+        let version: i64 = conn
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, MIGRATIONS.len() as i64);
+        let mut stmt = conn
+            .prepare("SELECT id, position FROM stamps ORDER BY position")
+            .unwrap();
+        let positions: Vec<(String, i64)> = stmt
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert_eq!(
+            positions,
+            vec![
+                ("first-tie".to_string(), 1),
+                ("second-tie".to_string(), 2),
+                ("late".to_string(), 3),
+            ]
+        );
+    }
+
+    /// `pinned-group-management` design D1: a v17 database migrates seeding one unnamed,
+    /// unfolded row per group a tag is pinned into. The migration is not followed by a
+    /// compaction, so groups 1 and 3 seed rows 1 and 3.
+    #[test]
+    fn a_v17_library_migrates_seeding_a_row_per_pinned_group() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("library.sqlite");
+
+        let conn = Connection::open(&path).unwrap();
+        for schema in [
+            SCHEMA_V1, SCHEMA_V2, SCHEMA_V3, SCHEMA_V4, SCHEMA_V5, SCHEMA_V6, SCHEMA_V7, SCHEMA_V8,
+            SCHEMA_V10, SCHEMA_V11, SCHEMA_V12, SCHEMA_V13, SCHEMA_V14, SCHEMA_V15, SCHEMA_V16,
+            SCHEMA_V17,
+        ] {
+            conn.execute_batch(schema).unwrap();
+        }
+        conn.pragma_update(None, "user_version", 17i64).unwrap();
+        for (name, group) in [("a", 1i64), ("b", 1), ("c", 3), ("loose", 0)] {
+            conn.execute(
+                "INSERT INTO tags (name, pinned_group) VALUES (?1, ?2)",
+                rusqlite::params![name, group],
+            )
+            .unwrap();
+        }
+        drop(conn);
+
+        let conn = open(&path).unwrap();
+
+        let version: i64 = conn
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, MIGRATIONS.len() as i64);
+        let mut stmt = conn
+            .prepare("SELECT position, name, collapsed FROM pinned_groups ORDER BY position")
+            .unwrap();
+        let rows: Vec<(i64, String, i64)> = stmt
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert_eq!(rows, vec![(1, String::new(), 0), (3, String::new(), 0)]);
     }
 
     /// The `CHECK` design D1 adds (task 1.1's "why the CHECK"): a category

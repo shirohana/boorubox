@@ -158,10 +158,16 @@
     />
   {/if}
 
+  <!--
+    The fold's target is the whole row up to the "+", as `NotesPanel`'s
+    header is. The "+" is the trigger's sibling, not its child: a button
+    inside a button is invalid, and creating must not also fold.
+  -->
   <div class="flex items-center justify-between px-1 pb-1">
     <Collapsible.Trigger
       class="
-        flex items-center gap-1 rounded-md py-0.5 text-xs font-medium text-muted-foreground
+        flex min-w-0 flex-1 items-center gap-1 rounded-md py-0.5 text-xs font-medium
+        text-muted-foreground
         hover:bg-sidebar-accent
       "
     >

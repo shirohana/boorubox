@@ -29,8 +29,8 @@ import type {
   StampInput,
   TagCounts,
   TagEditSpec,
-  TagEntry,
   ThumbsReport,
+  Vocabulary,
 } from '@boorubox/shared'
 import {
   CLICK_ZOOM_CEILING_DEFAULT,
@@ -43,6 +43,12 @@ import { clearMocks, mockIPC } from '@tauri-apps/api/mocks'
 import { afterEach, expect, it, vi } from 'vitest'
 import {
   applyEdit,
+  createPinnedGroup,
+  deletePinnedGroup,
+  movePinnedGroup,
+  movePinnedTags,
+  renamePinnedGroup,
+  setPinnedGroupCollapsed,
   appSettings,
   artistMatch,
   artistPreview,
@@ -102,6 +108,7 @@ import {
   setTheme,
   stampsDelete,
   stampsList,
+  stampsReorder,
   stampsUpsert,
   tagCounts,
   tagSuggestions,
@@ -526,26 +533,31 @@ it('selection_tag_counts passes the optional names filter when given', async () 
   })
 })
 
-it('tag_vocabulary takes no arguments and returns the exceptions list', async () => {
-  const vocabulary: TagEntry[] = [
-    { name: 'kantoku', category: 'artist', pinnedGroup: null, note: null },
-  ]
+it('tag_vocabulary takes no arguments and returns the vocabulary', async () => {
+  const vocabulary: Vocabulary = {
+    tags: [{ name: 'kantoku', category: 'artist', pinnedGroup: null, note: null }],
+    groups: [],
+  }
   const calls = spyIPC(vocabulary)
   await expect(tagVocabulary()).resolves.toEqual(vocabulary)
   expect(calls).toHaveBeenCalledWith('tag_vocabulary', {})
 })
 
 it('set_tag_category passes the name and the category and returns the vocabulary', async () => {
-  const vocabulary: TagEntry[] = [{ name: 'cat', category: 'artist', pinnedGroup: null, note: null }]
+  const vocabulary: Vocabulary = {
+    tags: [{ name: 'cat', category: 'artist', pinnedGroup: null, note: null }],
+    groups: [],
+  }
   const calls = spyIPC(vocabulary)
   await expect(setTagCategory('cat', 'artist')).resolves.toEqual(vocabulary)
   expect(calls).toHaveBeenCalledWith('set_tag_category', { name: 'cat', category: 'artist' })
 })
 
 it('set_tag_pinned_group passes the name and the target and returns the vocabulary', async () => {
-  const vocabulary: TagEntry[] = [
-    { name: 'tagme', category: 'general', pinnedGroup: 1, note: null },
-  ]
+  const vocabulary: Vocabulary = {
+    tags: [{ name: 'tagme', category: 'general', pinnedGroup: 1, note: null }],
+    groups: [{ name: 'Style', collapsed: true }],
+  }
   const calls = spyIPC(vocabulary)
   const target: PinTarget = { group: 1 }
   await expect(setTagPinnedGroup('tagme', target)).resolves.toEqual(vocabulary)
@@ -553,12 +565,27 @@ it('set_tag_pinned_group passes the name and the target and returns the vocabula
 })
 
 it('set_tag_note passes the name and the note and returns the vocabulary', async () => {
-  const vocabulary: TagEntry[] = [
-    { name: 'sky', category: 'general', pinnedGroup: null, note: 'whole background only' },
-  ]
+  const vocabulary: Vocabulary = {
+    tags: [{ name: 'sky', category: 'general', pinnedGroup: null, note: 'whole background only' }],
+    groups: [],
+  }
   const calls = spyIPC(vocabulary)
   await expect(setTagNote('sky', 'whole background only')).resolves.toEqual(vocabulary)
   expect(calls).toHaveBeenCalledWith('set_tag_note', { name: 'sky', note: 'whole background only' })
+})
+
+it.each([
+  ['move_pinned_tags', () => movePinnedTags(['a', 'b'], 'unpin'), { names: ['a', 'b'], target: 'unpin' }],
+  ['rename_pinned_group', () => renamePinnedGroup(2, 'Style'), { position: 2, name: 'Style' }],
+  ['set_pinned_group_collapsed', () => setPinnedGroupCollapsed(2, true), { position: 2, collapsed: true }],
+  ['move_pinned_group', () => movePinnedGroup(3, 1), { from: 3, to: 1 }],
+  ['create_pinned_group', () => createPinnedGroup('Style'), { name: 'Style' }],
+  ['delete_pinned_group', () => deletePinnedGroup(2), { position: 2 }],
+])('%s passes its arguments and returns the vocabulary', async (command, call, args) => {
+  const vocabulary: Vocabulary = { tags: [], groups: [{ name: 'Style', collapsed: false }] }
+  const calls = spyIPC(vocabulary)
+  await expect(call()).resolves.toEqual(vocabulary)
+  expect(calls).toHaveBeenCalledWith(command, args)
 })
 
 it('export_zip passes the ids, the path and this zone\'s offset, and returns the report', async () => {
@@ -682,6 +709,12 @@ it('stamps_upsert passes the input and returns the row', async () => {
   const calls = spyIPC(stamp)
   await expect(stampsUpsert(input)).resolves.toEqual(stamp)
   expect(calls).toHaveBeenCalledWith('stamps_upsert', { input })
+})
+
+it('stamps_reorder passes the ids and returns the list', async () => {
+  const calls = spyIPC([stamp])
+  await expect(stampsReorder(['s-1'])).resolves.toEqual([stamp])
+  expect(calls).toHaveBeenCalledWith('stamps_reorder', { ids: ['s-1'] })
 })
 
 it('stamps_delete passes the id', async () => {

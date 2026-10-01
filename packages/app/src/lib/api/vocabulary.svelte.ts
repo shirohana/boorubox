@@ -14,17 +14,37 @@
 //
 // No `setCategory`/`place`/`setNote` write of its own kind to read back: each
 // setter's command already answers the whole vocabulary, so the setters
-// below replace `entries` with that answer directly, the cheapest way to
-// keep the one list in step.
+// below replace `entries` and `groups` together with that answer, the
+// cheapest way to keep the two in step — a compaction can renumber a group,
+// and a name read apart from the tags would sit on the wrong row.
 
-import type { PinTarget, TagCategory, TagEntry } from '@boorubox/shared'
+import type { PinnedGroup, PinTarget, TagCategory, TagEntry, Vocabulary as VocabularyAnswer } from '@boorubox/shared'
 import { groupByCategory } from '$lib/domain/tag-categories'
-import { setTagCategory, setTagNote, setTagPinnedGroup, tagVocabulary } from './commands'
+import {
+  createPinnedGroup,
+  deletePinnedGroup,
+  movePinnedGroup,
+  movePinnedTags,
+  renamePinnedGroup,
+  setPinnedGroupCollapsed,
+  setTagCategory,
+  setTagNote,
+  setTagPinnedGroup,
+  tagVocabulary,
+} from './commands'
 import { errorText } from './errors'
+
+/** One pinned group as the strip and the dialog draw it (`pinned-group-management` design D7). */
+export interface PinnedGroupRow extends PinnedGroup {
+  /** The group's tags in the sidebar's order, by name. */
+  tags: string[]
+}
 
 export class Vocabulary {
   /** Every tag that is not `(general, unpinned)`, as Rust answers. */
   entries = $state<TagEntry[]>([])
+  /** Every pinned group's name and fold; `groups[i]` is position `i + 1`. */
+  groups = $state<PinnedGroup[]>([])
   /** Why the list could not be read; `null` while it is in step. */
   error = $state<string | null>(null)
 
@@ -56,33 +76,31 @@ export class Vocabulary {
   noteOf = (name: string): string | null => this.#byName.get(name)?.note ?? null
 
   /**
-   * Every pinned tag's group, in group order, each group in the sidebar's
+   * Every pinned group in position order, each group's tags in the sidebar's
    * own order — `CATEGORY_ORDER` first, alphabetical within a category
-   * (`pinned-collections` design D7, `pinned-tag-groups` design D4). Made
+   * (`pinned-collections` design D7, `pinned-tag-groups` design D4) — with
+   * the group's name and fold (`pinned-group-management` design D7). Made
    * here, once, because the inspector's two placements both draw the pinned
    * rows from this list rather than sorting their own: a category changing
    * cannot leave one placement's chip row out of step with the other's.
    * `groupByCategory` is the sidebar's own grouping (`domain/tag-categories.ts`),
-   * not a second copy of it. Group numbers come from the entries themselves,
-   * not a counted range, so a group Rust has already compacted is never
-   * second-guessed here.
+   * not a second copy of it. A named group with no tag is a row with `tags: []`.
    */
-  pinnedGroups: string[][] = $derived.by(() => {
-    const pinnedEntries = this.entries.filter((entry) => entry.pinnedGroup !== null)
-    const groupNumbers = pinnedEntries
-      .map((entry) => entry.pinnedGroup!)
-      .filter((groupNumber, index, all) => all.indexOf(groupNumber) === index)
-      .sort((a, b) => a - b)
-    return groupNumbers.map((groupNumber) =>
-      groupByCategory(
-        pinnedEntries.filter((entry) => entry.pinnedGroup === groupNumber),
+  pinnedGroups: PinnedGroupRow[] = $derived.by(() =>
+    this.groups.map((group, index) => ({
+      ...group,
+      tags: groupByCategory(
+        this.entries.filter((entry) => entry.pinnedGroup === index + 1),
         (entry) => entry.name,
         this.categoryOf,
-      ).flatMap((group) => group.items.map((entry) => entry.name)),
-    )
-  })
+      ).flatMap((byCategory) => byCategory.items.map((entry) => entry.name)),
+    })),
+  )
 
-  /** How many groups exist — the menu's "Move to #x" range (design D4). */
+  /** The group's name, or `#n` when it has none: the one spelling the menu and the strip share. */
+  labelOf = (position: number): string => this.groups[position - 1]?.name || `#${position}`
+
+  /** How many groups exist — the menu's "Move to #x" range (`pinned-tag-groups` design D4). */
   groupCount = $derived(this.pinnedGroups.length)
 
   /**
@@ -91,7 +109,7 @@ export class Vocabulary {
    * `selectionTagCounts` and any other flat reader cannot disagree with the
    * grouped view about which tags are pinned.
    */
-  pinned = $derived(this.pinnedGroups.flat())
+  pinned = $derived(this.pinnedGroups.flatMap((group) => group.tags))
 
   /**
    * Re-reads the exceptions: on a library switch and after every tag write
@@ -99,43 +117,62 @@ export class Vocabulary {
    * pin toggled, or an editor save whose prefix created a categorised tag.
    */
   async refresh(): Promise<void> {
-    try {
-      this.entries = await tagVocabulary()
-      this.error = null
-    } catch (cause) {
-      this.error = errorText(cause)
-    }
+    await this.#apply(tagVocabulary())
   }
 
-  /** A refusal is reported the same way `refresh()` reports one: `entries` untouched. */
   async setCategory(name: string, category: TagCategory): Promise<void> {
-    try {
-      this.entries = await setTagCategory(name, category)
-      this.error = null
-    } catch (cause) {
-      this.error = errorText(cause)
-    }
+    await this.#apply(setTagCategory(name, category))
   }
 
-  /** A refusal is reported the same way `refresh()` reports one: `entries` untouched. */
   async place(name: string, target: PinTarget): Promise<void> {
-    try {
-      this.entries = await setTagPinnedGroup(name, target)
-      this.error = null
-    } catch (cause) {
-      this.error = errorText(cause)
-    }
+    await this.#apply(setTagPinnedGroup(name, target))
+  }
+
+  /** All of `names` move or none do. */
+  async placeMany(names: string[], target: PinTarget): Promise<void> {
+    await this.#apply(movePinnedTags(names, target))
+  }
+
+  async setGroupCollapsed(position: number, collapsed: boolean): Promise<void> {
+    await this.#apply(setPinnedGroupCollapsed(position, collapsed))
+  }
+
+  async moveGroup(from: number, to: number): Promise<void> {
+    await this.#apply(movePinnedGroup(from, to))
+  }
+
+  async deleteGroup(position: number): Promise<void> {
+    await this.#apply(deletePinnedGroup(position))
   }
 
   /**
-   * A refusal is reported the same way `refresh()` reports one: `entries`
-   * untouched. Also answers whether it landed (`tag-notes` design D7): a
-   * menu's fire-and-forget setter has nowhere to show a failure, but the
-   * note dialog does and must stay open on one.
+   * Answers whether it landed (`tag-notes` design D7): a menu's
+   * fire-and-forget setter has nowhere to show a failure, but the note dialog
+   * does and must stay open on one.
    */
-  async setNote(name: string, note: string | null): Promise<boolean> {
+  setNote(name: string, note: string | null): Promise<boolean> {
+    return this.#apply(setTagNote(name, note))
+  }
+
+  /** Answers whether it landed, for the dialog that must stay open on a refusal. */
+  renameGroup(position: number, name: string): Promise<boolean> {
+    return this.#apply(renamePinnedGroup(position, name))
+  }
+
+  /** Answers whether it landed; a blank name is refused. */
+  createGroup(name: string): Promise<boolean> {
+    return this.#apply(createPinnedGroup(name))
+  }
+
+  /**
+   * Replaces both arrays with a command's answer. A refusal is reported in
+   * `error` and leaves them untouched.
+   */
+  async #apply(answer: Promise<VocabularyAnswer>): Promise<boolean> {
     try {
-      this.entries = await setTagNote(name, note)
+      const { tags, groups } = await answer
+      this.entries = tags
+      this.groups = groups
       this.error = null
       return true
     } catch (cause) {

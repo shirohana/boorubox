@@ -12,6 +12,7 @@
   import PlusIcon from '@lucide/svelte/icons/plus'
   import * as ContextMenu from '$lib/components/ui/context-menu'
   import { searchMarkClass, type SearchMark } from './categories'
+  import PinnedDot from './PinnedDot.svelte'
   import TagNoteIndicator from './TagNoteIndicator.svelte'
 
   interface Props {
@@ -29,6 +30,8 @@
      * list passes nothing.
      */
     note?: string | null
+    /** The tag list passes whether the tag is pinned; the collection list passes nothing. */
+    pinned?: boolean
     oninclude: () => void
     onexclude: () => void
     ontoggle: () => void
@@ -42,6 +45,7 @@
     nameClass = '',
     lookup,
     note = null,
+    pinned = false,
     oninclude,
     onexclude,
     ontoggle,
@@ -105,6 +109,7 @@
           >
             {name}
           </button>
+          <PinnedDot {pinned} />
           <TagNoteIndicator {note} />
           <span class="shrink-0 text-muted-foreground tabular-nums">{count}</span>
         </div>

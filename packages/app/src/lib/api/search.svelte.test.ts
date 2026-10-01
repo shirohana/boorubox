@@ -341,7 +341,7 @@ it('leaves an image on screen after the tag it was found by is removed', async (
     if (cmd === 'update_tags') {
       return img({ id: (args as { id: string }).id, tags: (args as { tags: string[] }).tags })
     }
-    if (cmd === 'tag_vocabulary') return []
+    if (cmd === 'tag_vocabulary') return { tags: [], groups: [] }
     return pagedLibrary(3)(0)
   })
   const results = new SearchResults()
@@ -365,7 +365,7 @@ it('refreshes the vocabulary after a tag save', async () => {
     }
     if (cmd === 'tag_vocabulary') {
       vocabularyCalls()
-      return []
+      return { tags: [], groups: [] }
     }
     return pagedLibrary(3)(0)
   })

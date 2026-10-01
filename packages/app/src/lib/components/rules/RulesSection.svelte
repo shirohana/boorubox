@@ -18,11 +18,15 @@
     vocabulary,
   } from '$lib/api'
   import { Button } from '$lib/components/ui/button'
+  import { Input } from '$lib/components/ui/input'
   import { Progress } from '$lib/components/ui/progress'
+  import { filterRules } from './filter'
   import RuleForm from './RuleForm.svelte'
   import RuleList from './RuleList.svelte'
 
   let entries = $state<RuleListEntry[]>([])
+  let query = $state('')
+  const shown = $derived(filterRules(entries, query))
   /** Whether the form is open, and on which rule — `null` is a new one. */
   let formOpen = $state(false)
   let editing = $state<Rule | null>(null)
@@ -60,6 +64,13 @@
     } catch (cause) {
       error = errorText(cause)
     }
+  }
+
+  /** Clears the field and keeps the focus: the next search starts there. */
+  function clearOnEscape(event: KeyboardEvent) {
+    if (event.key !== 'Escape' || query === '') return
+    event.preventDefault()
+    query = ''
   }
 
   async function guard(action: () => Promise<void>) {
@@ -185,6 +196,16 @@
     </div>
   {/if}
 
+  {#if entries.length > 0}
+    <Input
+      type="search"
+      placeholder="Search rules"
+      aria-label="Search rules"
+      bind:value={query}
+      onkeydown={clearOnEscape}
+    />
+  {/if}
+
   {#if formOpen}
     <RuleForm
       rule={editing}
@@ -207,16 +228,20 @@
     </div>
   {/if}
 
-  <RuleList
-    {entries}
-    {newIds}
-    onedit={(entry) => {
-      editing = entry.rule
-      formOpen = true
-    }}
-    onchanged={load}
-    onerror={(message) => (error = message)}
-  />
+  {#if entries.length > 0 && shown.length === 0}
+    <p class="text-sm text-muted-foreground">No rules match “{query.trim()}”</p>
+  {:else}
+    <RuleList
+      entries={shown}
+      {newIds}
+      onedit={(entry) => {
+        editing = entry.rule
+        formOpen = true
+      }}
+      onchanged={load}
+      onerror={(message) => (error = message)}
+    />
+  {/if}
 
   {#if error}
     <p class="text-sm text-destructive">{error}</p>

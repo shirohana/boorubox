@@ -26,8 +26,8 @@ use crate::model::{
     PostRef, RebuildProgress, RebuildReport, RecentLibrary, RenameArtistInput, RenameArtistReport,
     Rule, RuleInput, RuleListEntry, RulesImportReport, RulesRunReport, SampleProgress, SampleRef,
     SamplesReport, SearchRequest, SearchResult, SidecarsProgress, SiteAdapterRecord, Stamp,
-    StampInput, TagCategory, TagCount, TagCounts, TagEditSpec, TagEntry, Theme, ThumbnailRef,
-    ThumbsProgress, ThumbsReport,
+    StampInput, TagCategory, TagCount, TagCounts, TagEditSpec, Theme, ThumbnailRef, ThumbsProgress,
+    ThumbsReport, Vocabulary,
 };
 use crate::settings::Settings;
 use crate::{
@@ -629,9 +629,9 @@ pub async fn selection_tag_counts(
 }
 
 /// The tag vocabulary's exceptions (`tag-vocabulary` design D2): every tag
-/// that is not `(general, unpinned)`.
+/// that is not `(general, unpinned)`, with the pinned groups' names and folds.
 #[tauri::command]
-pub async fn tag_vocabulary(state: State<'_, AppState>) -> Result<Vec<TagEntry>> {
+pub async fn tag_vocabulary(state: State<'_, AppState>) -> Result<Vocabulary> {
     with_library_off_main_thread(&state.library, |library| tags::vocabulary(&library.conn)).await
 }
 
@@ -643,7 +643,7 @@ pub async fn set_tag_category(
     name: String,
     category: TagCategory,
     state: State<'_, AppState>,
-) -> Result<Vec<TagEntry>> {
+) -> Result<Vocabulary> {
     with_library_off_main_thread(&state.library, move |library| {
         tags::set_category(library, &name, category)
     })
@@ -657,9 +657,82 @@ pub async fn set_tag_pinned_group(
     name: String,
     target: PinTarget,
     state: State<'_, AppState>,
-) -> Result<Vec<TagEntry>> {
+) -> Result<Vocabulary> {
     with_library_off_main_thread(&state.library, move |library| {
         tags::place_pinned(library, &name, target)
+    })
+    .await
+}
+
+/// Move every one of `names` to `target` in one write, all or none
+/// (`pinned-group-management` design D3); answers with the vocabulary.
+#[tauri::command]
+pub async fn move_pinned_tags(
+    names: Vec<String>,
+    target: PinTarget,
+    state: State<'_, AppState>,
+) -> Result<Vocabulary> {
+    with_library_off_main_thread(&state.library, move |library| {
+        tags::place_pinned_many(library, &names, target)
+    })
+    .await
+}
+
+/// Name pinned group `position`; a blank name clears it
+/// (`pinned-group-management` design D4).
+#[tauri::command]
+pub async fn rename_pinned_group(
+    position: u32,
+    name: String,
+    state: State<'_, AppState>,
+) -> Result<Vocabulary> {
+    with_library_off_main_thread(&state.library, move |library| {
+        tags::rename_pinned_group(library, position, &name)
+    })
+    .await
+}
+
+/// Fold or unfold pinned group `position` (`pinned-group-management` design D4).
+#[tauri::command]
+pub async fn set_pinned_group_collapsed(
+    position: u32,
+    collapsed: bool,
+    state: State<'_, AppState>,
+) -> Result<Vocabulary> {
+    with_library_off_main_thread(&state.library, move |library| {
+        tags::set_pinned_group_collapsed(library, position, collapsed)
+    })
+    .await
+}
+
+/// Move pinned group `from` to position `to`, its tags with it
+/// (`pinned-group-management` design D4).
+#[tauri::command]
+pub async fn move_pinned_group(
+    from: u32,
+    to: u32,
+    state: State<'_, AppState>,
+) -> Result<Vocabulary> {
+    with_library_off_main_thread(&state.library, move |library| {
+        tags::move_pinned_group(library, from, to)
+    })
+    .await
+}
+
+/// Append a named, empty pinned group (`pinned-group-management` design D4).
+#[tauri::command]
+pub async fn create_pinned_group(name: String, state: State<'_, AppState>) -> Result<Vocabulary> {
+    with_library_off_main_thread(&state.library, move |library| {
+        tags::create_pinned_group(library, &name)
+    })
+    .await
+}
+
+/// Delete an empty pinned group (`pinned-group-management` design D4).
+#[tauri::command]
+pub async fn delete_pinned_group(position: u32, state: State<'_, AppState>) -> Result<Vocabulary> {
+    with_library_off_main_thread(&state.library, move |library| {
+        tags::delete_pinned_group(library, position)
     })
     .await
 }
@@ -671,7 +744,7 @@ pub async fn set_tag_note(
     name: String,
     note: Option<String>,
     state: State<'_, AppState>,
-) -> Result<Vec<TagEntry>> {
+) -> Result<Vocabulary> {
     with_library_off_main_thread(&state.library, move |library| {
         tags::set_note(library, &name, note.as_deref())
     })
@@ -920,7 +993,7 @@ pub async fn selection_collection_counts(
     .await
 }
 
-/// The library's stamps, in creation order (`stamps` design D3).
+/// The library's stamps, in their order (`stamp-order` design D1).
 #[tauri::command]
 pub async fn stamps_list(state: State<'_, AppState>) -> Result<Vec<Stamp>> {
     with_library_off_main_thread(&state.library, |library| stamps::list(&library.conn)).await
@@ -932,6 +1005,16 @@ pub async fn stamps_list(state: State<'_, AppState>) -> Result<Vec<Stamp>> {
 pub async fn stamps_upsert(input: StampInput, state: State<'_, AppState>) -> Result<Stamp> {
     with_library_off_main_thread(&state.library, move |library| {
         stamps::upsert(library, &input)
+    })
+    .await
+}
+
+/// Put the stamps in the order `ids` names and answer the list as it now stands; refused
+/// unless `ids` is every stamp exactly once (`stamp-order` design D3).
+#[tauri::command]
+pub async fn stamps_reorder(ids: Vec<String>, state: State<'_, AppState>) -> Result<Vec<Stamp>> {
+    with_library_off_main_thread(&state.library, move |library| {
+        stamps::reorder(library, &ids)
     })
     .await
 }
@@ -3221,6 +3304,24 @@ mod tests {
         assert!(now(stamps_list(app.state())).unwrap().is_empty());
     }
 
+    #[test]
+    fn stamps_reorder_answers_the_new_order_and_refuses_a_partial_list() {
+        let (_library, app) = app_with_library();
+        let cat = now(stamps_upsert(new_stamp("Cat", "x"), app.state())).unwrap();
+        let dog = now(stamps_upsert(new_stamp("Dog", "x"), app.state())).unwrap();
+
+        let answered = now(stamps_reorder(
+            vec![dog.id.clone(), cat.id.clone()],
+            app.state(),
+        ))
+        .unwrap();
+        assert_eq!(answered, vec![dog.clone(), cat.clone()]);
+
+        let error = now(stamps_reorder(vec![dog.id], app.state())).unwrap_err();
+        assert!(matches!(error, AppError::BadRequest(_)), "{error:?}");
+        assert_eq!(now(stamps_list(app.state())).unwrap(), answered);
+    }
+
     /// Design D3: the command surfaces the store's refusal reason, and
     /// creates nothing.
     #[test]
@@ -3240,6 +3341,7 @@ mod tests {
         for error in [
             now(stamps_list(app.state())).unwrap_err(),
             now(stamps_upsert(new_stamp("a", "a"), app.state())).unwrap_err(),
+            now(stamps_reorder(vec![], app.state())).unwrap_err(),
             now(stamps_delete("a".to_string(), app.state())).unwrap_err(),
         ] {
             assert!(matches!(error, AppError::NoLibrary), "{error:?}");
@@ -3252,11 +3354,11 @@ mod tests {
         import(&app, &folder_of_images(1));
         let ids = ids_in_library(&app);
 
-        assert!(now(tag_vocabulary(app.state())).unwrap().is_empty());
+        assert!(now(tag_vocabulary(app.state())).unwrap().tags.is_empty());
 
         tag(&app, &ids[0], &["artist:kantoku"]);
 
-        let entries = now(tag_vocabulary(app.state())).unwrap();
+        let entries = now(tag_vocabulary(app.state())).unwrap().tags;
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].name, "kantoku");
         assert_eq!(entries[0].category, TagCategory::Artist);
@@ -3274,7 +3376,8 @@ mod tests {
             TagCategory::Copyright,
             app.state(),
         ))
-        .unwrap();
+        .unwrap()
+        .tags;
         assert_eq!(entries[0].category, TagCategory::Copyright);
 
         let entries = now(set_tag_pinned_group(
@@ -3282,7 +3385,8 @@ mod tests {
             PinTarget::Group(1),
             app.state(),
         ))
-        .unwrap();
+        .unwrap()
+        .tags;
         assert_eq!(entries[0].pinned_group, Some(1));
 
         let entries = now(set_tag_pinned_group(
@@ -3290,9 +3394,38 @@ mod tests {
             PinTarget::Unpin,
             app.state(),
         ))
-        .unwrap();
+        .unwrap()
+        .tags;
         assert_eq!(entries[0].category, TagCategory::Copyright);
         assert_eq!(entries[0].pinned_group, None);
+    }
+
+    #[test]
+    fn the_pinned_group_commands_reach_the_open_library_and_answer_the_vocabulary() {
+        let (_library, app) = app_with_library();
+        import(&app, &folder_of_images(1));
+        let ids = ids_in_library(&app);
+        tag(&app, &ids[0], &["dress", "hat"]);
+
+        let vocabulary = now(move_pinned_tags(
+            vec!["dress".to_string(), "hat".to_string()],
+            PinTarget::Group(1),
+            app.state(),
+        ))
+        .unwrap();
+        assert_eq!(vocabulary.groups.len(), 1);
+        let vocabulary = now(create_pinned_group("Clothes".to_string(), app.state())).unwrap();
+        assert_eq!(vocabulary.groups[1].name, "Clothes");
+        let vocabulary = now(rename_pinned_group(2, "Wear".to_string(), app.state())).unwrap();
+        assert_eq!(vocabulary.groups[1].name, "Wear");
+        let vocabulary = now(set_pinned_group_collapsed(2, true, app.state())).unwrap();
+        assert!(vocabulary.groups[1].collapsed);
+        let vocabulary = now(move_pinned_group(2, 1, app.state())).unwrap();
+        assert_eq!(vocabulary.groups[0].name, "Wear");
+        assert_eq!(vocabulary.tags[0].pinned_group, Some(2));
+        let vocabulary = now(delete_pinned_group(1, app.state())).unwrap();
+        assert_eq!(vocabulary.groups.len(), 1);
+        assert!(now(delete_pinned_group(1, app.state())).is_err());
     }
 
     #[test]
@@ -3307,10 +3440,13 @@ mod tests {
             Some("whole background only".to_string()),
             app.state(),
         ))
-        .unwrap();
+        .unwrap()
+        .tags;
         assert_eq!(entries[0].note, Some("whole background only".to_string()));
 
-        let entries = now(set_tag_note("azur_lane".to_string(), None, app.state())).unwrap();
+        let entries = now(set_tag_note("azur_lane".to_string(), None, app.state()))
+            .unwrap()
+            .tags;
         assert!(
             entries.is_empty(),
             "clearing the note of a general, unpinned tag leaves the vocabulary"

@@ -398,6 +398,27 @@ export interface TagEntry {
 }
 
 /**
+ * A pinned group's name and fold (`pinned-group-management` design D5). The
+ * group's position is its index in {@link Vocabulary.groups} plus one, the
+ * number every tag's `pinnedGroup` names; an empty `name` is an unnamed group,
+ * shown as `#n`.
+ */
+export interface PinnedGroup {
+  name: string
+  collapsed: boolean
+}
+
+/**
+ * What every vocabulary command answers: the exceptions list and the pinned
+ * groups together, so a compaction that renumbers a group is never read half
+ * at a time (`pinned-group-management` design D5).
+ */
+export interface Vocabulary {
+  tags: TagEntry[]
+  groups: PinnedGroup[]
+}
+
+/**
  * Where a pin operation places a tag (`pinned-tag-groups` design D3): unpin
  * it, move it into an existing group (a number past the last existing group
  * becomes a new last group), or insert a new, empty group at a position —

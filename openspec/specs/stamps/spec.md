@@ -65,7 +65,11 @@ between collections SHALL NOT, as the collection menus do not.
 The user SHALL be able to create, edit and delete stamps, each with a name and a text, on the
 Stamps page of Settings, and from the stamp bar. A stamp's text SHALL be checked as
 it is saved, and a save with an invalid text SHALL be refused with the reason and the text
-kept. Stamps SHALL be listed in the order they were created. They SHALL belong to the library,
+kept. Stamps SHALL be listed, on the page and in the bar alike, in an order the user sets: a new
+stamp lands last, and the Stamps page SHALL offer moving a stamp by dragging its handle and by
+"Move up" and "Move down" on its row (owner, 2026-10-01, reversing the 2026-09-23
+non-goal: creation order was the order at four stamps and stopped being at a daily working
+set). The bar SHALL follow the new order at once. They SHALL belong to the library,
 not to the machine, and SHALL be described in the library's own file so a rebuild restores
 them.
 
@@ -80,6 +84,22 @@ them.
 #### Scenario: Invalid on save
 - **WHEN** the user saves a text reading `cat or dog`
 - **THEN** the save is refused naming `or`, and the form keeps the text
+
+#### Scenario: Drag to reorder
+- **WHEN** the stamps are Cat, Dog, Bird and the user drags Bird's handle above Cat
+- **THEN** the page and the bar both list Bird, Cat, Dog
+
+#### Scenario: Move by the row's menu
+- **WHEN** the stamps are Cat, Dog, Bird and the user chooses "Move down" on Cat
+- **THEN** the order is Dog, Cat, Bird, and "Move up" on Cat restores Cat, Dog, Bird
+
+#### Scenario: A new stamp lands last
+- **WHEN** the stamps are Bird, Cat, Dog and the user saves a stamp Fish
+- **THEN** the order is Bird, Cat, Dog, Fish
+
+#### Scenario: The order survives a rebuild
+- **WHEN** the order is Bird, Cat, Dog and the library is rebuilt from its folder
+- **THEN** the order is Bird, Cat, Dog afterwards
 
 ### Requirement: Edit mode applies the active stamp by a click
 The library screen SHALL offer an edit mode, entered and left by a toolbar control — no key
@@ -98,7 +118,10 @@ the mode the footer follows a view setting the toolbar toggles, kept with the th
 in the mode it is always shown. The active
 stamp SHALL be whatever the field currently parses to: a blank field or text that does not
 parse SHALL leave none active, the same as leaving the mode does. Activating a saved stamp
-SHALL fill the field with its text; the field's text, one-off or not, SHALL be savable as a
+SHALL fill the field with its text, and activating the stamp whose text the field already
+holds SHALL empty it — the pressed chip is a toggle (owner, 2026-10-01, reversing the
+2026-09-23 reading that a chip only fills); the field SHALL also offer a clear control inside
+it, at its end, while it holds text; the field's text, one-off or not, SHALL be savable as a
 named stamp at any time. While the mode is on and a stamp is active, a plain click on a
 thumbnail SHALL apply the active stamp to that image and SHALL NOT open the viewer; the
 thumbnail SHALL show the result at once without the search being re-run; a thumbnail under
@@ -167,3 +190,11 @@ gone if it is off).
 #### Scenario: A footer while browsing
 - **WHEN** the user is not in edit mode and turns on the tags-under-thumbnails toggle beside the thumbnail-size slider
 - **THEN** every thumbnail gains its tag footer at once, the toggle reads pressed, and the setting is still on the next time the app opens
+
+#### Scenario: The active stamp clears on a second click
+- **WHEN** the stamp Cat is active and the user clicks its chip again
+- **THEN** the field is empty, no stamp is active, and a click on a thumbnail opens the viewer
+
+#### Scenario: Clearing a typed stamp
+- **WHEN** the user has typed `cat -dog` into the field and clicks the clear control at its end
+- **THEN** the field is empty and no stamp is active

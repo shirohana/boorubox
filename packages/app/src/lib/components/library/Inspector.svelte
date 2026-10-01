@@ -31,7 +31,9 @@
   import { CATEGORY_TEXT_CLASS, searchMark, searchMarkClass, SEARCH_MARK_CLASS } from '$lib/components/tags/categories'
   import TagInput from '$lib/components/tags/TagInput.svelte'
   import CollectionPinMenuItem from '$lib/components/tags/CollectionPinMenuItem.svelte'
+  import PinnedGroupsDialog from '$lib/components/tags/PinnedGroupsDialog.svelte'
   import TagNoteDialog from '$lib/components/tags/TagNoteDialog.svelte'
+  import PinnedDot from '$lib/components/tags/PinnedDot.svelte'
   import TagNoteIndicator from '$lib/components/tags/TagNoteIndicator.svelte'
   import TagVocabularyMenuItems from '$lib/components/tags/TagVocabularyMenuItems.svelte'
   import { Badge } from '$lib/components/ui/badge'
@@ -563,6 +565,9 @@
    */
   let editingNote = $state<string | null>(null)
 
+  /** The pinned-groups dialog is open; one instance serves every menu of both strips. */
+  let managingGroups = $state(false)
+
   async function removeFromCollection(collectionId: string): Promise<void> {
     if (!image) return
     try {
@@ -808,49 +813,54 @@
 -->
 {#snippet pinnedTagRows(fill: (tag: string) => FillState, onactivate: (tag: string) => void)}
   <!--
-    One `<ul>` per group, a hairline between rows from the second on
-    (`pinned-tag-groups` design D5): bands, not names — no label, ever. Past
-    one group each row also carries a small dim `#n` at its right edge, the
-    number "Move to #n" already uses, so a target row can be found without
-    counting from the top (`menu-polish` design D1). With one group there is
-    nothing to move to, so no hint is drawn and no width is reserved for one.
-    The hint's span is a sibling of the `<ul>`, not a child of it — a `<span>`
-    directly inside a `<ul>` is invalid, and Preflight's `list-style: none`
-    then makes WebKit drop the list role, taking the `aria-label` with it — so
-    each group is wrapped in a `<div>` that carries the positioning and the
-    two are aligned with the same padding instead. `aria-hidden` on the span
-    and `aria-label` on the list keep the two in step for assistive tech.
-    Shared by both strips so a category or group change cannot leave one
-    placement's rows out of step with the other's.
+    One row per group, a hairline between rows from the second on. A group
+    is called by its name, or `#n` when it has none (`vocabulary.labelOf`,
+    the spelling "Move to" uses), and the label is the fold toggle: past one
+    group, or for a named one, it ends the row; a single unnamed group has
+    nothing to tell apart or to fold, so it draws no label. A folded row is
+    its label and `· <count>` and no chips.
+    The row is the wrap container and the label its last item (`order-last`,
+    `ml-auto`, `self-end`): it takes the end of the chips' last line when
+    there is room and a line of its own only when there is not, so no width is
+    reserved for a name whose length nobody knows. The chips' `<ul>` is
+    `contents` for that reason, its chips being the row's own flex items, and
+    the label is a sibling of it, not a child — a `<button>` directly inside
+    a `<ul>` is invalid, and Preflight's `list-style: none` makes WebKit drop
+    the list role, taking the `aria-label` with it, hence the explicit
+    `role="list"`. Shared by both strips so a category or group change cannot
+    leave one placement's rows out of step with the other's.
   -->
   {#each vocabulary.pinnedGroups as group, index (index)}
-    <div
-      class="
-        relative
-        {vocabulary.pinnedGroups.length > 1 ? 'pr-6' : ''}
-        {index > 0 ? 'mt-1.5 border-t border-border pt-1.5' : ''}
-      "
-    >
-      {#if vocabulary.pinnedGroups.length > 1}
-        <span
-          aria-hidden="true"
-          class="
-            absolute top-0 right-0 text-[10px] text-muted-foreground tabular-nums
-            {index > 0 ? 'mt-1.5' : ''}
-          "
+    {@const position = index + 1}
+    {@const label = vocabulary.labelOf(position)}
+    {@const labelled = group.name !== '' || vocabulary.pinnedGroups.length > 1}
+    <div class="flex flex-wrap gap-1 {index > 0 ? 'mt-1.5 border-t border-border pt-1.5' : ''}">
+      {#if !group.collapsed}
+        <ul
+          role="list"
+          class="contents"
+          aria-label={labelled ? `Pinned group ${label}` : undefined}
         >
-          #{index + 1}
-        </span>
+          {#each group.tags as tag (tag)}
+            {@render pinnedChip({ kind: 'tag', tag }, fill(tag), () => onactivate(tag))}
+          {/each}
+        </ul>
       {/if}
-      <ul
-        role="list"
-        class="flex flex-wrap gap-1"
-        aria-label={vocabulary.pinnedGroups.length > 1 ? `Pinned group ${index + 1}` : undefined}
-      >
-        {#each group as tag (tag)}
-          {@render pinnedChip({ kind: 'tag', tag }, fill(tag), () => onactivate(tag))}
-        {/each}
-      </ul>
+      {#if labelled}
+        <button
+          type="button"
+          aria-expanded={!group.collapsed}
+          title={label}
+          class="
+            order-last ml-auto max-w-32 cursor-pointer self-end truncate text-[10px]
+            text-muted-foreground tabular-nums
+            hover:text-foreground
+          "
+          onclick={() => void vocabulary.setGroupCollapsed(position, !group.collapsed)}
+        >
+          {group.collapsed ? `${label} · ${group.tags.length}` : label}
+        </button>
+      {/if}
     </div>
   {/each}
 {/snippet}
@@ -902,6 +912,7 @@
           <TagVocabularyMenuItems
             name={chip.tag}
             oneditnote={(name) => (editingNote = name)}
+            onmanagegroups={() => (managingGroups = true)}
             oneditartist={(tag) => (editingArtist = { mode: 'edit', tag, adapter: image?.adapter ?? null, pageUrl: image?.pageUrl ?? null })}
           />
         {:else}
@@ -932,7 +943,7 @@
       instead of one image's tags. Absent along with its heading while no tag
       is pinned.
     -->
-    {#if vocabulary.pinned.length > 0}
+    {#if vocabulary.pinnedGroups.length > 0}
       <section class="border-t border-border px-4 py-3">
         <h3 class="mb-2 text-xs font-medium text-muted-foreground">Tags</h3>
         {@render pinnedTagRows(
@@ -968,7 +979,7 @@
             )}
           {/each}
         </ul>
-        {#if pinnedCountsError && vocabulary.pinned.length === 0}
+        {#if pinnedCountsError && vocabulary.pinnedGroups.length === 0}
           <p class="mt-1 text-xs text-destructive">{pinnedCountsError}</p>
         {/if}
       </section>
@@ -1045,7 +1056,7 @@
             <Button size="xs" disabled={saving} onclick={save}>Save</Button>
           </div>
         </div>
-      {:else if vocabulary.pinned.length > 0}
+      {:else if vocabulary.pinnedGroups.length > 0}
         <!--
           `tag-vocabulary` design D8: a chip's activation writes the whole
           toggled set through `write`, the same path the editor's own save
@@ -1114,6 +1125,7 @@
                         onclick={() => query(toggleTagInQuery(tagQuery, tag))}
                       >
                         <span class="min-w-0 break-all whitespace-normal">{tag}</span>
+                        <PinnedDot pinned={vocabulary.isPinned(tag)} />
                         <TagNoteIndicator note={vocabulary.noteOf(tag)} {portalTo} />
                       </button>
                     {/snippet}
@@ -1124,6 +1136,7 @@
                     <TagVocabularyMenuItems
                       name={tag}
                       oneditnote={(name) => (editingNote = name)}
+                      onmanagegroups={() => (managingGroups = true)}
                       oneditartist={(name) => (editingArtist = { mode: 'edit', tag: name, adapter: image?.adapter ?? null, pageUrl: image?.pageUrl ?? null })}
                     />
                     <ContextMenu.Separator />
@@ -1578,6 +1591,15 @@
   {portalTo}
   onclose={() => {
     editingNote = null
+    onrelease?.()
+  }}
+/>
+
+<PinnedGroupsDialog
+  open={managingGroups}
+  {portalTo}
+  onclose={() => {
+    managingGroups = false
     onrelease?.()
   }}
 />

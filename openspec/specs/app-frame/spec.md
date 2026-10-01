@@ -353,6 +353,11 @@ What each page holds is said by the capability that owns the fact; General holds
 set once and then left alone — how the app looks and how it listens for captures — because a
 page holding a single field is not worth a place in the nav (owner, 2026-09-28).
 
+A page row that pairs an action button with its description SHALL keep the button at the
+right edge of the row whether or not the description has wrapped the button onto a line of
+its own (owner, 2026-10-01: a button that lands left under a wrapped description reads as a
+stray).
+
 #### Scenario: The pages in order
 - **WHEN** the user opens Settings
 - **THEN** the nav lists General, Library, Artists, Rules, Stamps, Booru, Keyboard, About, and the page shown is marked in it
@@ -380,3 +385,7 @@ page holding a single field is not worth a place in the nav (owner, 2026-09-28).
 #### Scenario: A narrow window
 - **WHEN** the main content region is narrower than the nav and a page need side by side
 - **THEN** the nav sits above the page, and nothing scrolls sideways
+
+#### Scenario: A wrapped action row
+- **WHEN** the Library page is narrow enough that "Rebuild library index" no longer fits beside its description
+- **THEN** the button sits on its own line, at the right edge

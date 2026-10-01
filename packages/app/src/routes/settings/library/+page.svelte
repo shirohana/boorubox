@@ -174,6 +174,10 @@
     every thumbnail, off the lock and per image, so the library stays
     usable while it runs. Always offered, unlike Rebuild below: it needs
     no confirm, since nothing it does is destructive.
+
+    The button's `ml-auto`, here and on the two rows below, keeps it at the
+    right once it wraps: a wrapped line holds one item, and `justify-between`
+    starts it.
   -->
   <div class="flex flex-wrap items-center justify-between gap-3 border-t border-border pt-4">
     <div class="min-w-0">
@@ -186,6 +190,7 @@
     <Button
       variant="outline"
       size="sm"
+      class="ml-auto"
       disabled={thumbsRegenerate.running}
       onclick={() => void runRegenerateThumbnails()}
     >
@@ -243,6 +248,7 @@
     <Button
       variant="outline"
       size="sm"
+      class="ml-auto"
       disabled={clearingSamples}
       onclick={() => void runClearPlaybackSamples()}
     >
@@ -272,6 +278,7 @@
       <Button
         variant="outline"
         size="sm"
+        class="ml-auto"
         disabled={rebuild.running}
         onclick={() => (rebuildConfirmOpen = true)}
       >

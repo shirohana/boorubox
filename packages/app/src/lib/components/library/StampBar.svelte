@@ -7,6 +7,7 @@
   import type { Stamp, TagEditSpec } from '@boorubox/shared'
   import PencilIcon from '@lucide/svelte/icons/pencil'
   import Trash2Icon from '@lucide/svelte/icons/trash-2'
+  import XIcon from '@lucide/svelte/icons/x'
   import { errorText, stamps, stampsDelete } from '$lib/api'
   import ConfirmDialog from '$lib/components/common/ConfirmDialog.svelte'
   import TagInput from '$lib/components/tags/TagInput.svelte'
@@ -35,6 +36,13 @@
   }
 
   let { text = $bindable(''), selectionCount, onapplyselection, error }: Props = $props()
+
+  let field = $state<{ focusEnd: () => void } | null>(null)
+
+  function clear() {
+    text = ''
+    field?.focusEnd()
+  }
 
   const parsed = $derived(parseStamp(text))
   /**
@@ -94,13 +102,33 @@
     trailing the saved stamps the way a one-off field used to.
   -->
   <div class="flex items-center gap-2">
-    <TagInput
-      bind:value={text}
-      label="Stamp"
-      placeholder="cat animal -dog"
-      class="h-7 min-w-0 flex-1"
-      onescape={blurOnEscape}
-    />
+    <!--
+      The clear control is this bar's own markup, not a `TagInput` prop: the
+      bar is the only field that wants one (the tag editor and the bulk dialog
+      are multiline and submit on Enter), and a shared input should not grow a
+      prop for one caller.
+    -->
+    <div class="relative min-w-0 flex-1">
+      <TagInput
+        bind:this={field}
+        bind:value={text}
+        label="Stamp"
+        placeholder="cat animal -dog"
+        class="h-7 w-full pr-7"
+        onescape={blurOnEscape}
+      />
+      {#if text !== ''}
+        <Button
+          size="icon-xs"
+          variant="ghost"
+          aria-label="Clear stamp"
+          class="absolute top-1/2 right-0.5 -translate-y-1/2"
+          onclick={clear}
+        >
+          <XIcon />
+        </Button>
+      {/if}
+    </div>
 
     <Button size="sm" variant="ghost" onclick={() => (savingNew = true)}>Save as stamp…</Button>
 
@@ -125,10 +153,11 @@
               <!--
                 A `Button` whose look follows `text`, not `TogglePrimitive`'s own
                 internal flip (`LibraryScreen`'s inspector button, same
-                reasoning): a chip only ever fills the field on click, never
-                toggles itself off, so there is no boolean here for a real
-                toggle to own. Pressed by text equality, not by id (owner's
-                review, 2026-09-23) — the field is what is active, and two
+                reasoning): the chip writes the field in both directions — fills
+                it, or empties it when it already holds this text — and the
+                field stays the one signal for what is active. A pressed
+                control that cannot be pressed off would break the expectation
+                its own look sets. Pressed by text equality, not by id — two
                 stamps that happen to share text both read pressed together,
                 honestly.
 
@@ -144,7 +173,7 @@
                 aria-pressed={stamp.text === text}
                 aria-disabled={inactiveText}
                 title={inactiveText ? `“${stamp.text}” is not an edit any more.` : stamp.text}
-                onclick={() => (text = stamp.text)}
+                onclick={() => (text = stamp.text === text ? '' : stamp.text)}
                 {...props}
                 class="{props.class ?? ''} {inactiveText ? 'text-muted-foreground opacity-70' : ''}"
               >
@@ -168,8 +197,9 @@
   {/if}
 
   <p class="text-xs text-muted-foreground">
-    Type a stamp, or click a saved one to fill the field; click an image to apply it. Clear the
-    field to stop. There is no undo — the inverse stamp is the way back.
+    Type a stamp, or click a saved one to fill the field; click an image to apply it. Click the
+    active stamp again, or clear the field, to stop. There is no undo — the inverse stamp is the
+    way back.
   </p>
 
   {#if error || manageError}

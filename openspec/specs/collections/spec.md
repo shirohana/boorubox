@@ -117,7 +117,9 @@ row height, the same spacing between rows — so the two lists read as one colum
 SHALL have no frame of its own around it.
 
 The section SHALL fold away and unfold on request, and whether it is folded SHALL be kept
-with the app's other preferences, so the choice survives a restart. Unfolded, its list SHALL
+with the app's other preferences, so the choice survives a restart. The fold SHALL be toggled
+by a click anywhere on the header row except on the create control at its end, the same area
+the Notes header gives (owner, 2026-10-01: the label alone was the target). Unfolded, its list SHALL
 occupy a height the user can change by dragging the section's top edge — the edge it shares
 with the tag list, dragged up for more room and down for less — kept for the session, and
 SHALL scroll inside that height: a library with many collections SHALL NOT push the tag list
@@ -168,6 +170,10 @@ there cannot be dragged past them (owner, 2026-09-24).
 #### Scenario: Folded across a restart
 - **WHEN** the user folds the section and restarts the app
 - **THEN** the section is folded
+
+#### Scenario: The header folds on its whole row
+- **WHEN** the user clicks the empty space between the "Collections" label and the "+" button
+- **THEN** the section folds, and clicking the "+" button creates a collection without folding anything
 
 ### Requirement: A collection survives a rebuild by its id
 An image's describing file SHALL carry the ids of the collections it is in; the library-level

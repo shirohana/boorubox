@@ -1,6 +1,6 @@
 //! Stamps: saved edits, written once in the tag language and applied to an
 //! image by a click in edit mode (`stamps` design D1, D3). This module is
-//! only the store — `list`, `upsert`, `delete` — shaped like `rules.rs`'s,
+//! only the store — `list`, `upsert`, `reorder`, `delete` — shaped like `rules.rs`'s,
 //! without the matching or the import/export halves a stamp does not need:
 //! a stamp's text is never matched against anything, only parsed by the
 //! webview's grammar and, once parsed, applied through `tags::apply_edit`.
@@ -24,20 +24,17 @@ fn row_to_stamp(row: &Row) -> rusqlite::Result<Stamp> {
     })
 }
 
-/// Every stamp, by creation order (design D3): there is no reordering, so
-/// the order the user built them in is the only order a stamp bar or a
-/// settings table ever shows.
+/// Every stamp, in the user's order (`stamp-order` design D1): the stamp bar
+/// and the settings table both read this one list.
 ///
-/// Ordered by `created_at, rowid` rather than `created_at, id`: `id` is a
-/// random uuid, so two stamps created in the same millisecond would come back
-/// in random order on every read — flaky in a test and, for the user, a bar
-/// that reshuffles itself between sessions. `rowid` is monotonic on insert
-/// (SQLite's own row-creation order for a table with no `WITHOUT ROWID`), and
-/// `recover::insert_stamps` inserts a rebuild's stamps in the same order
-/// `list` last read them in, so the order survives a rebuild too.
+/// Ordered by `position, created_at, rowid` rather than ending in `id`: `id`
+/// is a random uuid, so two rows tied on the earlier keys would come back in
+/// random order on every read — a bar that reshuffles itself between
+/// sessions. `rowid` is monotonic on insert (SQLite's own row-creation order
+/// for a table with no `WITHOUT ROWID`).
 pub fn list(conn: &Connection) -> Result<Vec<Stamp>> {
     let mut stmt = conn.prepare(&format!(
-        "SELECT {STAMP_COLUMNS} FROM stamps ORDER BY created_at, rowid"
+        "SELECT {STAMP_COLUMNS} FROM stamps ORDER BY position, created_at, rowid"
     ))?;
     let rows = stmt.query_map([], row_to_stamp)?;
     Ok(rows.collect::<rusqlite::Result<_>>()?)
@@ -81,8 +78,8 @@ pub fn upsert(library: &Library, input: &StampInput) -> Result<Stamp> {
         None => {
             let id = uuid::Uuid::new_v4().to_string();
             library.conn.execute(
-                "INSERT INTO stamps (id, name, text, created_at, updated_at)
-                 VALUES (?1, ?2, ?3, ?4, ?4)",
+                "INSERT INTO stamps (id, name, text, created_at, updated_at, position)
+                 VALUES (?1, ?2, ?3, ?4, ?4, (SELECT COALESCE(MAX(position), 0) + 1 FROM stamps))",
                 params![id, name, text, now],
             )?;
             require_stamp(&library.conn, &id)?
@@ -92,6 +89,37 @@ pub fn upsert(library: &Library, input: &StampInput) -> Result<Stamp> {
     // single `execute` outside a transaction is already its own commit.
     crate::sidecar::write_library(&library.paths, &library.conn)?;
     Ok(stamp)
+}
+
+/// Set every stamp's place to its index in `ids` and answer the list as it
+/// now stands (`stamp-order` design D3). `ids` must be exactly the library's
+/// stamps — a duplicate, a missing id or an unknown id is refused with nothing
+/// written, because a partial order would interleave with the positions it did
+/// not name in a way the user never saw.
+pub fn reorder(library: &Library, ids: &[String]) -> Result<Vec<Stamp>> {
+    let mut held: Vec<String> = list(&library.conn)?
+        .into_iter()
+        .map(|stamp| stamp.id)
+        .collect();
+    let mut asked: Vec<String> = ids.to_vec();
+    held.sort();
+    asked.sort();
+    if held != asked {
+        return Err(AppError::BadRequest(
+            "the new order must list every stamp exactly once".to_string(),
+        ));
+    }
+
+    let tx = library.conn.unchecked_transaction()?;
+    for (index, id) in ids.iter().enumerate() {
+        tx.execute(
+            "UPDATE stamps SET position = ?1 WHERE id = ?2",
+            params![index as i64 + 1, id],
+        )?;
+    }
+    tx.commit()?;
+    crate::sidecar::write_library(&library.paths, &library.conn)?;
+    list(&library.conn)
 }
 
 /// Delete a stamp. Idempotent — one already gone is the same outcome as one
@@ -206,18 +234,130 @@ mod tests {
     }
 
     #[test]
-    fn stamps_are_listed_by_creation_order_not_by_name() {
+    fn stamps_are_listed_by_position_not_by_name() {
         let (_dir, library) = library();
-        upsert(&library, &new_stamp("Zebra", "z")).unwrap();
-        upsert(&library, &new_stamp("Aardvark", "a")).unwrap();
-
-        let names: Vec<String> = list(&library.conn)
-            .unwrap()
-            .into_iter()
-            .map(|stamp| stamp.name)
+        let made: Vec<Stamp> = ["Mango", "Zebra", "Aardvark"]
+            .iter()
+            .map(|name| upsert(&library, &new_stamp(name, "x")).unwrap())
             .collect();
+        reorder(
+            &library,
+            &[made[1].id.clone(), made[0].id.clone(), made[2].id.clone()],
+        )
+        .unwrap();
 
-        assert_eq!(names, vec!["Zebra".to_string(), "Aardvark".to_string()]);
+        assert_eq!(
+            names(&list(&library.conn).unwrap()),
+            vec!["Zebra", "Mango", "Aardvark"]
+        );
+    }
+
+    fn names(stamps: &[Stamp]) -> Vec<&str> {
+        stamps.iter().map(|stamp| stamp.name.as_str()).collect()
+    }
+
+    fn three_stamps(library: &Library) -> Vec<Stamp> {
+        ["Cat", "Dog", "Bird"]
+            .iter()
+            .map(|name| upsert(library, &new_stamp(name, "x")).unwrap())
+            .collect()
+    }
+
+    #[test]
+    fn a_new_stamp_lands_last() {
+        let (_dir, library) = library();
+        let made = three_stamps(&library);
+        reorder(
+            &library,
+            &[made[2].id.clone(), made[0].id.clone(), made[1].id.clone()],
+        )
+        .unwrap();
+
+        upsert(&library, &new_stamp("Fish", "x")).unwrap();
+
+        assert_eq!(
+            names(&list(&library.conn).unwrap()),
+            vec!["Bird", "Cat", "Dog", "Fish"]
+        );
+    }
+
+    #[test]
+    fn reorder_rewrites_positions_and_answers_the_new_order() {
+        let (_dir, library) = library();
+        let made = three_stamps(&library);
+
+        let answered = reorder(
+            &library,
+            &[made[2].id.clone(), made[0].id.clone(), made[1].id.clone()],
+        )
+        .unwrap();
+
+        assert_eq!(names(&answered), vec!["Bird", "Cat", "Dog"]);
+        assert_eq!(answered, list(&library.conn).unwrap());
+    }
+
+    #[test]
+    fn reorder_refuses_a_list_that_is_not_the_whole_set() {
+        let (_dir, library) = library();
+        let made = three_stamps(&library);
+        let (cat, dog, bird) = (&made[0].id, &made[1].id, &made[2].id);
+        let cases: Vec<Vec<String>> = vec![
+            vec![bird.clone(), cat.clone()],
+            vec![bird.clone(), cat.clone(), cat.clone()],
+            vec![bird.clone(), cat.clone(), "no-such-id".to_string()],
+            vec![bird.clone(), cat.clone(), dog.clone(), dog.clone()],
+        ];
+
+        for ids in cases {
+            let error = reorder(&library, &ids).unwrap_err();
+            assert!(matches!(error, AppError::BadRequest(_)), "got {error}");
+            assert_eq!(
+                names(&list(&library.conn).unwrap()),
+                vec!["Cat", "Dog", "Bird"]
+            );
+        }
+    }
+
+    #[test]
+    fn editing_a_stamp_keeps_its_position() {
+        let (_dir, library) = library();
+        let made = three_stamps(&library);
+        reorder(
+            &library,
+            &[made[2].id.clone(), made[0].id.clone(), made[1].id.clone()],
+        )
+        .unwrap();
+
+        upsert(
+            &library,
+            &StampInput {
+                id: Some(made[0].id.clone()),
+                name: "Kitten".to_string(),
+                text: "x".to_string(),
+            },
+        )
+        .unwrap();
+
+        assert_eq!(
+            names(&list(&library.conn).unwrap()),
+            vec!["Bird", "Kitten", "Dog"]
+        );
+    }
+
+    #[test]
+    fn reorder_rewrites_library_json() {
+        let (_dir, library) = library();
+        let made = three_stamps(&library);
+
+        reorder(
+            &library,
+            &[made[2].id.clone(), made[0].id.clone(), made[1].id.clone()],
+        )
+        .unwrap();
+
+        let file =
+            crate::sidecar::read_library(&crate::sidecar::library_path(&library.paths)).unwrap();
+        assert_eq!(names(&file.stamps.unwrap()), vec!["Bird", "Cat", "Dog"]);
     }
 
     /// `library-sidecars` design D3, D5: creating, editing and deleting a

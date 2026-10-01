@@ -46,10 +46,10 @@ import type {
   TagCount,
   TagCounts,
   TagEditSpec,
-  TagEntry,
   Theme,
   ThumbnailRef,
   ThumbsReport,
+  Vocabulary,
 } from '@boorubox/shared'
 import { invoke } from '@tauri-apps/api/core'
 
@@ -386,7 +386,7 @@ export function selectionTagCounts(
  * `(general, unpinned)`, sorted by name — what `api/vocabulary.svelte.ts`
  * reads on refresh.
  */
-export function tagVocabulary(): Promise<TagEntry[]> {
+export function tagVocabulary(): Promise<Vocabulary> {
   return invoke('tag_vocabulary')
 }
 
@@ -396,7 +396,7 @@ export function tagVocabulary(): Promise<TagEntry[]> {
  * all. Answers the vocabulary as it now stands, the cheapest way for the
  * store to stay in step with a write it did not read back itself.
  */
-export function setTagCategory(name: string, category: TagCategory): Promise<TagEntry[]> {
+export function setTagCategory(name: string, category: TagCategory): Promise<Vocabulary> {
   return invoke('set_tag_category', { name, category })
 }
 
@@ -404,8 +404,42 @@ export function setTagCategory(name: string, category: TagCategory): Promise<Tag
  * Places or unplaces `name` per `target` (`pinned-tag-groups` design D3); same
  * refusal, same answer shape as {@link setTagCategory}.
  */
-export function setTagPinnedGroup(name: string, target: PinTarget): Promise<TagEntry[]> {
+export function setTagPinnedGroup(name: string, target: PinTarget): Promise<Vocabulary> {
   return invoke('set_tag_pinned_group', { name, target })
+}
+
+/**
+ * Moves every one of `names` to `target` in one write, all or none
+ * (`pinned-group-management` design D3): a name that is not a tag refuses the
+ * whole call. Answers the vocabulary.
+ */
+export function movePinnedTags(names: string[], target: PinTarget): Promise<Vocabulary> {
+  return invoke('move_pinned_tags', { names, target })
+}
+
+/** Names group `position`; a blank name clears it. Refused for a position with no group. */
+export function renamePinnedGroup(position: number, name: string): Promise<Vocabulary> {
+  return invoke('rename_pinned_group', { position, name })
+}
+
+/** Folds or unfolds group `position`. Refused for a position with no group. */
+export function setPinnedGroupCollapsed(position: number, collapsed: boolean): Promise<Vocabulary> {
+  return invoke('set_pinned_group_collapsed', { position, collapsed })
+}
+
+/** Moves group `from` to `to`, its tags with it. Refused when either has no group. */
+export function movePinnedGroup(from: number, to: number): Promise<Vocabulary> {
+  return invoke('move_pinned_group', { from, to })
+}
+
+/** Appends a named, empty group. Refused for a blank name. */
+export function createPinnedGroup(name: string): Promise<Vocabulary> {
+  return invoke('create_pinned_group', { name })
+}
+
+/** Deletes group `position`. Refused while it holds a tag, and for a position with no group. */
+export function deletePinnedGroup(position: number): Promise<Vocabulary> {
+  return invoke('delete_pinned_group', { position })
 }
 
 /**
@@ -413,7 +447,7 @@ export function setTagPinnedGroup(name: string, target: PinTarget): Promise<TagE
  * empty or blank text clears it. Refused when `name` is not a tag at all.
  * Same answer shape as {@link setTagCategory}.
  */
-export function setTagNote(name: string, note: string | null): Promise<TagEntry[]> {
+export function setTagNote(name: string, note: string | null): Promise<Vocabulary> {
   return invoke('set_tag_note', { name, note })
 }
 
@@ -505,7 +539,7 @@ export function rulesImport(path: string): Promise<RulesImportReport> {
 }
 
 /**
- * The library's stamps, by creation order (`stamps` design D3) — what
+ * The library's stamps, in their order (`stamp-order` design D1) — what
  * `api/stamps.svelte.ts` reads on refresh.
  */
 export function stampsList(): Promise<Stamp[]> {
@@ -521,6 +555,15 @@ export function stampsList(): Promise<Stamp[]> {
  */
 export function stampsUpsert(input: StampInput): Promise<Stamp> {
   return invoke('stamps_upsert', { input })
+}
+
+/**
+ * Puts the stamps in the order `ids` names and answers the list as it now stands. `ids` must
+ * be every stamp exactly once; anything else is refused and nothing is written
+ * (`stamp-order` design D3).
+ */
+export function stampsReorder(ids: string[]): Promise<Stamp[]> {
+  return invoke('stamps_reorder', { ids })
 }
 
 /** Deletes a stamp; idempotent, and no image it was ever applied to is touched. */

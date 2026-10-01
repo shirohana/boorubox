@@ -270,6 +270,29 @@ impl<'de> Deserialize<'de> for TagEntry {
     }
 }
 
+/// A pinned group's name and fold (`pinned-group-management` design D5). The group's position
+/// is its index in [`Vocabulary::groups`] and in `library.json`'s `pinnedGroups`, plus one: the
+/// position is already the identity `tags.pinned_group`, every menu item and `PinTarget` use, so
+/// a field here would be a second name for it. An empty `name` is an unnamed group, drawn as
+/// `#n`.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PinnedGroup {
+    pub name: String,
+    pub collapsed: bool,
+}
+
+/// What every vocabulary command answers (`pinned-group-management` design D5): the tag
+/// exceptions list and the pinned groups together, because a compaction after any pinned write
+/// can delete or renumber a group, and a caller reading the two apart would show a name on the
+/// wrong row between the reads. `groups[i]` describes position `i + 1`.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Vocabulary {
+    pub tags: Vec<TagEntry>,
+    pub groups: Vec<PinnedGroup>,
+}
+
 /// Where a pin operation places a tag (`pinned-tag-groups` design D3):
 /// unpin it, move it into an existing group (`n` past the last existing
 /// group means a new last group), or insert a new, empty group at position
@@ -1252,8 +1275,9 @@ pub struct RulesRunReport {
 /// (`stamps` design D1, D3): the text is stored exactly as typed, never the
 /// parsed [`TagEditSpec`] — the grammar belongs to the webview, and storing
 /// the parsed lists would freeze a stamp the user meant to keep editing.
-/// Shaped like [`Rule`]: library-level, listed by creation order rather than
-/// by name, since there is no reordering (`stamps` design D3).
+/// Shaped like [`Rule`]: library-level, listed in the order the user sets
+/// (`stamp-order` design D1) — the position is a column, not a field here,
+/// since the list's order is the order (`stamp-order` design D2).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Stamp {

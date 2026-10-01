@@ -12,7 +12,7 @@ import { stampsList } from './commands'
 import { errorText } from './errors'
 
 export class Stamps {
-  /** Every stamp in the library, by creation order, as Rust answers. */
+  /** Every stamp in the library, in their order, as Rust answers. */
   list = $state<Stamp[]>([])
   /** Why the list could not be read; `null` while it is in step. */
   error = $state<string | null>(null)

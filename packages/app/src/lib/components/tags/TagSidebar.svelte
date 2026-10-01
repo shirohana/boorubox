@@ -22,6 +22,7 @@
   import { CATEGORY_ICON, CATEGORY_TEXT_CLASS, searchMark } from './categories'
   import { openDanbooruLookup } from './danbooru-open'
   import FilterRow from './FilterRow.svelte'
+  import PinnedGroupsDialog from './PinnedGroupsDialog.svelte'
   import TagNoteDialog from './TagNoteDialog.svelte'
   import TagVocabularyMenuItems from './TagVocabularyMenuItems.svelte'
 
@@ -90,6 +91,9 @@
    * inside `TagVocabularyMenuItems` (its content unmounts on select).
    */
   let editingNote = $state<string | null>(null)
+
+  /** The pinned-groups dialog is open (`pinned-group-management` design D9). */
+  let managingGroups = $state(false)
 
   /**
    * The `ArtistDialog` this row's own menu opens (`artist-workflow` design
@@ -168,6 +172,7 @@
           nameClass={CATEGORY_TEXT_CLASS[vocabulary.categoryOf(name)]}
           lookup={tagLookup(name)}
           note={vocabulary.noteOf(name)}
+          pinned={vocabulary.isPinned(name)}
           oninclude={() => onquery(addTagToQuery(tagQuery, name))}
           onexclude={() => onquery(excludeTagFromQuery(tagQuery, name))}
           ontoggle={() => onquery(toggleTagInQuery(tagQuery, name))}
@@ -176,6 +181,7 @@
             <TagVocabularyMenuItems
               {name}
               oneditnote={(tag) => (editingNote = tag)}
+              onmanagegroups={() => (managingGroups = true)}
               oneditartist={(tag) => (editingArtist = { mode: 'edit', tag, adapter: null, pageUrl: null })}
             />
           {/snippet}
@@ -195,6 +201,7 @@
   name={editingNote ?? ''}
   onclose={() => (editingNote = null)}
 />
+<PinnedGroupsDialog open={managingGroups} onclose={() => (managingGroups = false)} />
 <ArtistDialog
   open={editingArtist !== null}
   request={editingArtist}

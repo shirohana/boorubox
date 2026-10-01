@@ -1,0 +1,24 @@
+> One unit, Sonnet, retried on Opus if the gate fails. Design D1–D3 decide every shape; do not
+> re-decide them. Owns `components/tags/PinnedDot.svelte` (new), `FilterRow.svelte` and its
+> test, `TagSidebar.svelte`, and in `Inspector.svelte` only the described image's tag list
+> (~line 1099) — `pinned-group-management` edits the pinned snippets in the same file after
+> this unit has landed. Gate: `pnpm lint && pnpm typecheck && pnpm --filter @boorubox/app
+> test`. Does not commit; does not tick the hand check.
+
+## 1. Unit M — the dot (`packages/app/src/lib/components`)
+
+- [ ] 1.1 `tags/PinnedDot.svelte` per D1, header comment saying why a dot and why muted.
+      `PinnedDot.test.ts` (`// @vitest-environment jsdom`, mount): nothing for `false`, the
+      disc and the hidden text for `true`.
+- [ ] 1.2 `tags/FilterRow.svelte`: `pinned = false` prop, `PinnedDot` between the name button
+      and `TagNoteIndicator` per D2. `FilterRow.svelte.test.ts`: a pinned row draws the dot
+      before the count, an unpinned row draws none. `TagSidebar.svelte` passes
+      `pinned={vocabulary.isPinned(name)}`.
+- [ ] 1.3 `library/Inspector.svelte`: `PinnedDot` after the name span in the described
+      image's tag buttons per D2. `Inspector.svelte.test.ts`: a pinned tag in the list
+      carries the dot (seed the vocabulary store as its other tests seed stores).
+- [ ] 1.4 Gate green. Handoff: anything the design did not foresee.
+- [ ] 1.5 Hand check (owner): pin a tag; its sidebar row and its entry under the inspector's
+      Tags show a small dot after the name, the same in the viewer; include the tag in the
+      search and the tint plus dot read as two different facts; the dot adds no visible
+      width beyond one gap.

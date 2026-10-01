@@ -13,7 +13,9 @@ use crate::db;
 use crate::error::{AppError, Result};
 use crate::ingest;
 use crate::library::Library;
-use crate::model::{ImageRecord, PinTarget, TagCategory, TagCount, TagEditSpec, TagEntry};
+use crate::model::{
+    ImageRecord, PinTarget, PinnedGroup, TagCategory, TagCount, TagEditSpec, TagEntry, Vocabulary,
+};
 use crate::query::{ID_CHUNK, placeholders, text_values};
 
 /// A tag's one true spelling (`lowercase-tags` design D1): every door onto the
@@ -767,31 +769,43 @@ fn described(category: TagCategory) -> String {
     format!("{article} {} tag", category.as_str())
 }
 
-/// Every tag outside the `(general, unpinned)` default, by name — the
-/// vocabulary's own exceptions list (`tag-vocabulary` design D2, widened by
-/// `tag-notes` design D3 to a noted tag too): what `library.json`'s `tags`
-/// key holds, what the `tag_vocabulary` command answers with, and what
-/// [`set_category`], [`place_pinned`] and [`set_note`] answer with after
-/// their own write, so the caller redraws from one list rather than trusting
-/// its own edit landed. Sorted by name: group order is the store's job
-/// (`pinned-tag-groups` design D4), and every exceptions read answers in one
-/// order so a caller never has to know which one it got.
-pub fn vocabulary(conn: &Connection) -> Result<Vec<TagEntry>> {
+/// The vocabulary's own exceptions list — every tag outside the `(general,
+/// unpinned)` default, by name (`tag-vocabulary` design D2, widened by
+/// `tag-notes` design D3 to a noted tag too) — together with the pinned
+/// groups in position order (`pinned-group-management` design D5): what
+/// `library.json`'s `tags` and `pinnedGroups` keys hold, what the
+/// `tag_vocabulary` command answers with, and what every pinned-group write,
+/// [`set_category`] and [`set_note`] answer with after their own write, so the
+/// caller redraws from one answer rather than trusting its own edit landed.
+/// Tags are sorted by name: group order is `groups`, and every exceptions
+/// read answers in one order so a caller never has to know which one it got.
+pub fn vocabulary(conn: &Connection) -> Result<Vocabulary> {
     let mut stmt = conn.prepare(
         "SELECT name, category, pinned_group, note FROM tags
          WHERE category != 'general' OR pinned_group > 0 OR note IS NOT NULL
          ORDER BY name",
     )?;
-    let rows = stmt.query_map([], |row| {
-        let group: u32 = row.get(2)?;
-        Ok(TagEntry {
-            name: row.get(0)?,
-            category: row.get(1)?,
-            pinned_group: if group == 0 { None } else { Some(group) },
-            note: row.get(3)?,
-        })
-    })?;
-    Ok(rows.collect::<rusqlite::Result<_>>()?)
+    let tags = stmt
+        .query_map([], |row| {
+            let group: u32 = row.get(2)?;
+            Ok(TagEntry {
+                name: row.get(0)?,
+                category: row.get(1)?,
+                pinned_group: if group == 0 { None } else { Some(group) },
+                note: row.get(3)?,
+            })
+        })?
+        .collect::<rusqlite::Result<_>>()?;
+    let mut stmt = conn.prepare("SELECT name, collapsed FROM pinned_groups ORDER BY position")?;
+    let groups = stmt
+        .query_map([], |row| {
+            Ok(PinnedGroup {
+                name: row.get(0)?,
+                collapsed: row.get(1)?,
+            })
+        })?
+        .collect::<rusqlite::Result<_>>()?;
+    Ok(Vocabulary { tags, groups })
 }
 
 /// Change `name`'s category everywhere it is shown, without touching any
@@ -801,7 +815,7 @@ pub fn vocabulary(conn: &Connection) -> Result<Vec<TagEntry>> {
 /// menu naming no image has no tag set to have created one from. `name` is
 /// canonicalised (`lowercase-tags` design D1) so a menu built from typed text
 /// still names the stored row.
-pub fn set_category(library: &Library, name: &str, category: TagCategory) -> Result<Vec<TagEntry>> {
+pub fn set_category(library: &Library, name: &str, category: TagCategory) -> Result<Vocabulary> {
     let name = canonical(name);
     let changed = library.conn.execute(
         "UPDATE tags SET category = ?1 WHERE name = ?2",
@@ -829,7 +843,7 @@ pub fn set_category(library: &Library, name: &str, category: TagCategory) -> Res
 /// leaving the row would have it suggest itself at count 0 with nothing to
 /// show, the same argument [`collect_orphans`]'s own doc gives for a
 /// categorised tag.
-pub fn set_note(library: &Library, name: &str, note: Option<&str>) -> Result<Vec<TagEntry>> {
+pub fn set_note(library: &Library, name: &str, note: Option<&str>) -> Result<Vocabulary> {
     let name = canonical(name);
     let note = crate::model::normalized_note(note);
     let tx = library.conn.unchecked_transaction()?;
@@ -856,77 +870,254 @@ pub fn set_note(library: &Library, name: &str, note: Option<&str>) -> Result<Vec
 }
 
 /// Move `name` per `target` (`pinned-tag-groups` design D3), and answer with
-/// the vocabulary as it now stands. Same refusal, and the same
-/// canonicalisation, as [`set_category`] for a name that is not a tag.
+/// the vocabulary as it now stands: [`place_pinned_many`] for one name.
+pub fn place_pinned(library: &Library, name: &str, target: PinTarget) -> Result<Vocabulary> {
+    place_pinned_many(library, &[name.to_string()], target)
+}
+
+/// Move every one of `names` per `target` in one transaction
+/// (`pinned-group-management` design D3): a name that is not a tag refuses
+/// the whole call with nothing written, so a move of ten never lands five.
+/// Names are canonicalised ([`canonical`]) as [`set_category`] does.
 ///
-/// One transaction: the write and [`compact_groups`] must never disagree
-/// about what the groups are, including when the write itself is the one
-/// that empties a group (an unpin, or a move out of a group of one).
-pub fn place_pinned(library: &Library, name: &str, target: PinTarget) -> Result<Vec<TagEntry>> {
-    let name = canonical(name);
+/// `Group(n)` past the last group means a new last group, never a numbered
+/// gap; `NewGroupAt(n)` inserts a new group at `n` (clamped to the end),
+/// shifting the groups at or after it, rows and tags together. The write and
+/// [`compact_groups`] share the transaction so they never disagree about what
+/// the groups are, including when the write empties one.
+pub fn place_pinned_many(
+    library: &Library,
+    names: &[String],
+    target: PinTarget,
+) -> Result<Vocabulary> {
+    let names: Vec<String> = names.iter().map(|name| canonical(name)).collect();
     let tx = library.conn.unchecked_transaction()?;
 
-    let changed = match target {
-        PinTarget::Unpin => tx.execute(
-            "UPDATE tags SET pinned_group = 0 WHERE name = ?1",
+    for name in &names {
+        let exists: bool = tx.query_row(
+            "SELECT EXISTS (SELECT 1 FROM tags WHERE name = ?1)",
             params![name],
-        )?,
-        PinTarget::Group(group) => {
-            // Past the last existing group means a new last group, never a
-            // numbered gap: the max plus one is that new last group,
-            // whatever number the caller asked for.
-            let max_group: u32 = tx.query_row(
-                "SELECT COALESCE(MAX(pinned_group), 0) FROM tags",
-                [],
-                |row| row.get(0),
-            )?;
-            let group = group.clamp(1, max_group + 1);
-            tx.execute(
-                "UPDATE tags SET pinned_group = ?1 WHERE name = ?2",
-                params![group, name],
-            )?
+            |row| row.get(0),
+        )?;
+        if !exists {
+            return Err(AppError::NotFound(format!("tag {name}")));
         }
+    }
+
+    let group_count = group_count(&tx)?;
+    let destination = match target {
+        PinTarget::Unpin => 0,
+        PinTarget::Group(group) => group.clamp(1, group_count + 1),
         PinTarget::NewGroupAt(at) => {
-            let at = at.max(1);
-            tx.execute(
-                "UPDATE tags SET pinned_group = pinned_group + 1 WHERE pinned_group >= ?1",
-                params![at],
-            )?;
-            tx.execute(
-                "UPDATE tags SET pinned_group = ?1 WHERE name = ?2",
-                params![at, name],
-            )?
+            let at = at.clamp(1, group_count + 1);
+            remap_groups(&tx, |position| {
+                if position >= at {
+                    position + 1
+                } else {
+                    position
+                }
+            })?;
+            at
         }
     };
-    if changed == 0 {
-        return Err(AppError::NotFound(format!("tag {name}")));
+    if destination > 0 {
+        tx.execute(
+            "INSERT OR IGNORE INTO pinned_groups (position) VALUES (?1)",
+            params![destination],
+        )?;
     }
+    for name in &names {
+        tx.execute(
+            "UPDATE tags SET pinned_group = ?1 WHERE name = ?2",
+            params![destination, name],
+        )?;
+    }
+    finish_group_write(library, tx)
+}
+
+/// Set group `position`'s name (`pinned-group-management` design D4). The
+/// name is trimmed; a blank one stores `''`, and the compaction then closes
+/// the group if it is also empty. Refused when no group sits at `position`.
+pub fn rename_pinned_group(library: &Library, position: u32, name: &str) -> Result<Vocabulary> {
+    let tx = library.conn.unchecked_transaction()?;
+    require_group(&tx, position)?;
+    tx.execute(
+        "UPDATE pinned_groups SET name = ?1 WHERE position = ?2",
+        params![name.trim(), position],
+    )?;
+    finish_group_write(library, tx)
+}
+
+/// Fold or unfold group `position` (`pinned-group-management` design D4).
+/// Refused when no group sits at `position`.
+pub fn set_pinned_group_collapsed(
+    library: &Library,
+    position: u32,
+    collapsed: bool,
+) -> Result<Vocabulary> {
+    let tx = library.conn.unchecked_transaction()?;
+    require_group(&tx, position)?;
+    tx.execute(
+        "UPDATE pinned_groups SET collapsed = ?1 WHERE position = ?2",
+        params![collapsed, position],
+    )?;
+    finish_group_write(library, tx)
+}
+
+/// Move group `from` to position `to`, the groups between shifting by one and
+/// every tag keeping its group (`pinned-group-management` design D4). Refused
+/// when either position has no group.
+pub fn move_pinned_group(library: &Library, from: u32, to: u32) -> Result<Vocabulary> {
+    let tx = library.conn.unchecked_transaction()?;
+    require_group(&tx, from)?;
+    require_group(&tx, to)?;
+    remap_groups(&tx, |position| {
+        if position == from {
+            to
+        } else if from < to && position > from && position <= to {
+            position - 1
+        } else if to < from && position >= to && position < from {
+            position + 1
+        } else {
+            position
+        }
+    })?;
+    finish_group_write(library, tx)
+}
+
+/// Append a new, empty group named `name` after the last one
+/// (`pinned-group-management` design D4). A blank name is refused: an unnamed
+/// empty group would be closed by the compaction before anyone saw it.
+pub fn create_pinned_group(library: &Library, name: &str) -> Result<Vocabulary> {
+    let name = name.trim();
+    if name.is_empty() {
+        return Err(AppError::BadRequest("a group needs a name".to_string()));
+    }
+    let tx = library.conn.unchecked_transaction()?;
+    let position = group_count(&tx)? + 1;
+    tx.execute(
+        "INSERT INTO pinned_groups (position, name) VALUES (?1, ?2)",
+        params![position, name],
+    )?;
+    finish_group_write(library, tx)
+}
+
+/// Delete group `position` (`pinned-group-management` design D4). Refused
+/// when no group sits there, and when it still holds a tag: deleting a group
+/// never unpins anything.
+pub fn delete_pinned_group(library: &Library, position: u32) -> Result<Vocabulary> {
+    let tx = library.conn.unchecked_transaction()?;
+    require_group(&tx, position)?;
+    let tagged: bool = tx.query_row(
+        "SELECT EXISTS (SELECT 1 FROM tags WHERE pinned_group = ?1)",
+        params![position],
+        |row| row.get(0),
+    )?;
+    if tagged {
+        return Err(AppError::BadRequest(format!(
+            "pinned group {position} still has tags"
+        )));
+    }
+    tx.execute(
+        "DELETE FROM pinned_groups WHERE position = ?1",
+        params![position],
+    )?;
+    finish_group_write(library, tx)
+}
+
+/// The last step of every group write: close up what the write left unnamed
+/// and empty, commit, rewrite `library.json`, and answer the vocabulary.
+fn finish_group_write(library: &Library, tx: rusqlite::Transaction<'_>) -> Result<Vocabulary> {
     compact_groups(&tx)?;
     tx.commit()?;
-
     crate::sidecar::write_library(&library.paths, &library.conn)?;
     vocabulary(&library.conn)
 }
 
-/// Renumber every non-zero `pinned_group` densely from 1, in ascending group
-/// order (`pinned-tag-groups` design D3): no group is ever left empty,
-/// whatever operation emptied it. Called inside the same transaction as the
-/// write that might have emptied one (`place_pinned`), so the two can never
-/// disagree about what the groups are.
+fn group_count(conn: &Connection) -> rusqlite::Result<u32> {
+    conn.query_row("SELECT COUNT(*) FROM pinned_groups", [], |row| row.get(0))
+}
+
+fn require_group(conn: &Connection, position: u32) -> Result<()> {
+    let exists: bool = conn.query_row(
+        "SELECT EXISTS (SELECT 1 FROM pinned_groups WHERE position = ?1)",
+        params![position],
+        |row| row.get(0),
+    )?;
+    if exists {
+        Ok(())
+    } else {
+        Err(AppError::NotFound(format!("pinned group {position}")))
+    }
+}
+
+/// Give every group the position `map` names for its current one, rows and
+/// tags together. `map` must be injective over the existing positions. Both
+/// tables are first parked at negated positions, so no step collides on
+/// `pinned_groups`' primary key, whatever order the groups move in.
+fn remap_groups(conn: &Connection, map: impl Fn(u32) -> u32) -> rusqlite::Result<()> {
+    let positions: Vec<u32> = {
+        let mut stmt = conn.prepare("SELECT position FROM pinned_groups")?;
+        stmt.query_map([], |row| row.get(0))?
+            .collect::<rusqlite::Result<_>>()?
+    };
+    conn.execute("UPDATE pinned_groups SET position = -position", [])?;
+    conn.execute(
+        "UPDATE tags SET pinned_group = -pinned_group WHERE pinned_group > 0",
+        [],
+    )?;
+    for position in positions {
+        let to = map(position);
+        conn.execute(
+            "UPDATE pinned_groups SET position = ?1 WHERE position = -?2",
+            params![to, position],
+        )?;
+        conn.execute(
+            "UPDATE tags SET pinned_group = ?1 WHERE pinned_group = -?2",
+            params![to, position],
+        )?;
+    }
+    Ok(())
+}
+
+/// Close the groups up to a dense 1..n (`pinned-tag-groups` design D3,
+/// `pinned-group-management` design D2). A group is live when a tag is pinned
+/// into it or it carries a name: an unnamed empty group has nothing to lose
+/// and closes, a named one survives because its name is the user's work. Every
+/// live group gets a row (a tag may name a group no row exists for yet), every
+/// other row goes, and both tables are renumbered in ascending order, so a
+/// move down never lands on a position not yet vacated. Called inside the
+/// same transaction as the write that might have changed the groups.
 pub fn compact_groups(conn: &Connection) -> rusqlite::Result<()> {
-    let groups: Vec<u32> = {
+    let live: Vec<u32> = {
         let mut stmt = conn.prepare(
-            "SELECT DISTINCT pinned_group FROM tags WHERE pinned_group > 0 ORDER BY pinned_group",
+            "SELECT pinned_group FROM tags WHERE pinned_group > 0
+             UNION SELECT position FROM pinned_groups WHERE name != ''
+             ORDER BY 1",
         )?;
         stmt.query_map([], |row| row.get(0))?
             .collect::<rusqlite::Result<_>>()?
     };
-    for (index, group) in groups.iter().enumerate() {
+    conn.execute(
+        "DELETE FROM pinned_groups WHERE position NOT IN (
+             SELECT pinned_group FROM tags WHERE pinned_group > 0
+             UNION SELECT position FROM pinned_groups WHERE name != '')",
+        [],
+    )?;
+    for (index, position) in live.iter().enumerate() {
+        conn.execute(
+            "INSERT OR IGNORE INTO pinned_groups (position) VALUES (?1)",
+            params![position],
+        )?;
         let dense = (index + 1) as u32;
-        if *group != dense {
+        if *position != dense {
             conn.execute(
                 "UPDATE tags SET pinned_group = ?1 WHERE pinned_group = ?2",
-                params![dense, group],
+                params![dense, position],
+            )?;
+            conn.execute(
+                "UPDATE pinned_groups SET position = ?1 WHERE position = ?2",
+                params![dense, position],
             )?;
         }
     }
@@ -1000,6 +1191,40 @@ fn like_escape(text: &str) -> String {
     text.replace('\\', r"\\")
         .replace('%', r"\%")
         .replace('_', r"\_")
+}
+
+/// `pinned-group-management` design D1's invariant, asserted after a write:
+/// positions are dense from 1, every pinned tag's group has a row, and no
+/// row is both unnamed and empty.
+#[cfg(test)]
+pub(crate) fn groups_are_consistent(conn: &Connection) {
+    let positions: Vec<u32> = conn
+        .prepare("SELECT position FROM pinned_groups ORDER BY position")
+        .unwrap()
+        .query_map([], |row| row.get(0))
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap();
+    let dense: Vec<u32> = (1..=positions.len() as u32).collect();
+    assert_eq!(positions, dense, "positions are dense from 1");
+    let orphans: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM tags WHERE pinned_group > 0
+             AND pinned_group NOT IN (SELECT position FROM pinned_groups)",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(orphans, 0, "every pinned tag's group has a row");
+    let hollow: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM pinned_groups WHERE name = ''
+             AND position NOT IN (SELECT pinned_group FROM tags)",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(hollow, 0, "no row is unnamed and empty");
 }
 
 #[cfg(test)]
@@ -1092,6 +1317,15 @@ mod tests {
                 row.get(0)
             })
             .unwrap()
+    }
+
+    fn group_names(library: &Library) -> Vec<(String, bool)> {
+        vocabulary(&library.conn)
+            .unwrap()
+            .groups
+            .into_iter()
+            .map(|group| (group.name, group.collapsed))
+            .collect()
     }
 
     /// The raw `pinned_group` column: `0` unpinned, `n >= 1` group `n` —
@@ -1607,7 +1841,7 @@ mod tests {
         edit(&library, "a", &["artist:zebra", "cat", "dog"]);
         place_pinned(&library, "dog", PinTarget::Group(1)).unwrap();
 
-        let entries = vocabulary(&library.conn).unwrap();
+        let entries = vocabulary(&library.conn).unwrap().tags;
 
         assert_eq!(
             entries,
@@ -1639,7 +1873,7 @@ mod tests {
         place_pinned(&library, "dog", PinTarget::Group(1)).unwrap();
         place_pinned(&library, "dog", PinTarget::NewGroupAt(2)).unwrap();
 
-        let entries = vocabulary(&library.conn).unwrap();
+        let entries = vocabulary(&library.conn).unwrap().tags;
 
         assert_eq!(
             entries,
@@ -1665,7 +1899,9 @@ mod tests {
         let (_dir, library) = library();
         store(&library, "a", None, &["azur_lane"]);
 
-        let entries = set_category(&library, "azur_lane", TagCategory::Copyright).unwrap();
+        let entries = set_category(&library, "azur_lane", TagCategory::Copyright)
+            .unwrap()
+            .tags;
 
         assert_eq!(category_of(&library, "azur_lane"), TagCategory::Copyright);
         assert_eq!(
@@ -1716,7 +1952,9 @@ mod tests {
         let (_dir, library) = library();
         store(&library, "a", None, &["sky"]);
 
-        let entries = set_note(&library, "sky", Some("whole background only")).unwrap();
+        let entries = set_note(&library, "sky", Some("whole background only"))
+            .unwrap()
+            .tags;
         assert_eq!(
             entries
                 .iter()
@@ -1726,7 +1964,7 @@ mod tests {
             Some("whole background only".to_string())
         );
 
-        let entries = set_note(&library, "sky", Some("  ")).unwrap();
+        let entries = set_note(&library, "sky", Some("  ")).unwrap().tags;
         assert!(
             !entries.iter().any(|entry| entry.name == "sky"),
             "a blank note clears it, and a general, unpinned, noteless tag is not in the vocabulary"
@@ -1761,7 +1999,9 @@ mod tests {
         let (_dir, library) = library();
         store(&library, "a", None, &["bench"]);
 
-        let entries = set_note(&library, "bench", Some("park bench")).unwrap();
+        let entries = set_note(&library, "bench", Some("park bench"))
+            .unwrap()
+            .tags;
 
         assert_eq!(
             entries,
@@ -1860,7 +2100,9 @@ mod tests {
         let (_dir, library) = library();
         store(&library, "a", None, &["tagme"]);
 
-        let entries = place_pinned(&library, "tagme", PinTarget::Group(1)).unwrap();
+        let entries = place_pinned(&library, "tagme", PinTarget::Group(1))
+            .unwrap()
+            .tags;
 
         assert_eq!(group_of(&library, "tagme"), 1);
         assert!(
@@ -1869,9 +2111,12 @@ mod tests {
                 .any(|entry| entry.name == "tagme" && entry.pinned_group == Some(1))
         );
 
-        let entries = place_pinned(&library, "tagme", PinTarget::Unpin).unwrap();
+        let entries = place_pinned(&library, "tagme", PinTarget::Unpin)
+            .unwrap()
+            .tags;
         assert_eq!(group_of(&library, "tagme"), 0);
         assert!(entries.is_empty());
+        groups_are_consistent(&library.conn);
     }
 
     /// `pinned-tag-groups` task 1.3, design D3: a tag inserted with
@@ -1895,6 +2140,7 @@ mod tests {
         assert_eq!(group_of(&library, "d"), 2, "the newly inserted group");
         assert_eq!(group_of(&library, "b"), 3, "shifted up by one");
         assert_eq!(group_of(&library, "c"), 4, "shifted up by one");
+        groups_are_consistent(&library.conn);
     }
 
     /// Spec `tag-vocabulary`, "A new group below": `NewGroupAt` past every
@@ -1912,6 +2158,7 @@ mod tests {
         assert_eq!(group_of(&library, "1girl"), 1);
         assert_eq!(group_of(&library, "smile"), 1);
         assert_eq!(group_of(&library, "sketch"), 2);
+        groups_are_consistent(&library.conn);
     }
 
     /// Design D3: `Group(n)` for an `n` past the last existing group clamps
@@ -1938,6 +2185,7 @@ mod tests {
             3,
             "clamped to a new last group, not literally 10"
         );
+        groups_are_consistent(&library.conn);
     }
 
     /// Spec `tag-vocabulary`, "An emptied group closes up": unpinning the
@@ -1960,6 +2208,199 @@ mod tests {
             2,
             "the third group closes up to become the second"
         );
+        groups_are_consistent(&library.conn);
+    }
+
+    #[test]
+    fn a_named_empty_group_survives_compaction_and_an_unnamed_one_closes() {
+        let (_dir, library) = library();
+        store(&library, "img", None, &["a", "b", "c"]);
+        place_pinned(&library, "a", PinTarget::Group(1)).unwrap();
+        place_pinned(&library, "b", PinTarget::NewGroupAt(2)).unwrap();
+        place_pinned(&library, "c", PinTarget::NewGroupAt(3)).unwrap();
+        rename_pinned_group(&library, 2, "Clothes").unwrap();
+
+        place_pinned(&library, "b", PinTarget::Unpin).unwrap();
+        groups_are_consistent(&library.conn);
+        assert_eq!(
+            group_names(&library),
+            vec![
+                (String::new(), false),
+                ("Clothes".to_string(), false),
+                (String::new(), false)
+            ],
+            "the named group stays, empty"
+        );
+        assert_eq!(group_of(&library, "c"), 3);
+
+        place_pinned(&library, "a", PinTarget::Unpin).unwrap();
+        groups_are_consistent(&library.conn);
+        assert_eq!(
+            group_names(&library),
+            vec![("Clothes".to_string(), false), (String::new(), false)],
+            "the unnamed empty first group closed and the rest moved up"
+        );
+        assert_eq!(group_of(&library, "c"), 2);
+    }
+
+    #[test]
+    fn new_group_at_shifts_rows_with_the_tags() {
+        let (_dir, library) = library();
+        store(&library, "img", None, &["a", "b", "c"]);
+        place_pinned(&library, "a", PinTarget::Group(1)).unwrap();
+        place_pinned(&library, "b", PinTarget::NewGroupAt(2)).unwrap();
+        rename_pinned_group(&library, 1, "First").unwrap();
+        rename_pinned_group(&library, 2, "Second").unwrap();
+        set_pinned_group_collapsed(&library, 2, true).unwrap();
+
+        place_pinned(&library, "c", PinTarget::NewGroupAt(2)).unwrap();
+
+        groups_are_consistent(&library.conn);
+        assert_eq!(
+            group_names(&library),
+            vec![
+                ("First".to_string(), false),
+                (String::new(), false),
+                ("Second".to_string(), true)
+            ]
+        );
+        assert_eq!(group_of(&library, "c"), 2);
+        assert_eq!(group_of(&library, "b"), 3);
+    }
+
+    #[test]
+    fn move_pinned_group_keeps_every_tag_with_its_group() {
+        let (_dir, library) = library();
+        store(&library, "img", None, &["a", "b", "c", "d"]);
+        place_pinned(&library, "a", PinTarget::Group(1)).unwrap();
+        place_pinned(&library, "b", PinTarget::NewGroupAt(2)).unwrap();
+        place_pinned(&library, "c", PinTarget::NewGroupAt(3)).unwrap();
+        place_pinned(&library, "d", PinTarget::Group(3)).unwrap();
+        for (position, name) in [(1, "A"), (2, "B"), (3, "C")] {
+            rename_pinned_group(&library, position, name).unwrap();
+        }
+
+        move_pinned_group(&library, 1, 3).unwrap();
+        groups_are_consistent(&library.conn);
+        let names: Vec<String> = group_names(&library).into_iter().map(|g| g.0).collect();
+        assert_eq!(names, vec!["B", "C", "A"]);
+        assert_eq!(group_of(&library, "a"), 3);
+        assert_eq!(group_of(&library, "b"), 1);
+        assert_eq!(group_of(&library, "c"), 2);
+        assert_eq!(group_of(&library, "d"), 2);
+
+        move_pinned_group(&library, 3, 1).unwrap();
+        groups_are_consistent(&library.conn);
+        let names: Vec<String> = group_names(&library).into_iter().map(|g| g.0).collect();
+        assert_eq!(names, vec!["A", "B", "C"]);
+        assert_eq!(group_of(&library, "a"), 1);
+        assert_eq!(group_of(&library, "b"), 2);
+        assert_eq!(group_of(&library, "c"), 3);
+        assert_eq!(group_of(&library, "d"), 3);
+    }
+
+    #[test]
+    fn place_pinned_many_moves_all_or_none() {
+        let (_dir, library) = library();
+        store(&library, "img", None, &["a", "b", "c"]);
+        place_pinned(&library, "a", PinTarget::Group(1)).unwrap();
+
+        let error = place_pinned_many(
+            &library,
+            &["B".to_string(), "c".to_string(), "nobody".to_string()],
+            PinTarget::Group(1),
+        )
+        .unwrap_err();
+        assert!(matches!(error, AppError::NotFound(_)), "got {error}");
+        assert_eq!(group_of(&library, "b"), 0);
+        assert_eq!(group_of(&library, "c"), 0);
+
+        let vocab = place_pinned_many(
+            &library,
+            &["B".to_string(), "c".to_string()],
+            PinTarget::NewGroupAt(2),
+        )
+        .unwrap();
+        groups_are_consistent(&library.conn);
+        assert_eq!(group_of(&library, "b"), 2);
+        assert_eq!(group_of(&library, "c"), 2);
+        assert_eq!(vocab.groups.len(), 2);
+    }
+
+    #[test]
+    fn create_pinned_group_refuses_a_blank_name_and_appends_otherwise() {
+        let (_dir, library) = library();
+        store(&library, "img", None, &["a"]);
+        place_pinned(&library, "a", PinTarget::Group(1)).unwrap();
+
+        let error = create_pinned_group(&library, "  ").unwrap_err();
+        assert!(
+            matches!(&error, AppError::BadRequest(reason) if reason == "a group needs a name"),
+            "got {error}"
+        );
+
+        let vocab = create_pinned_group(&library, " Clothes ").unwrap();
+        groups_are_consistent(&library.conn);
+        assert_eq!(vocab.groups.len(), 2);
+        assert_eq!(vocab.groups[1].name, "Clothes");
+        assert!(!vocab.groups[1].collapsed);
+    }
+
+    #[test]
+    fn rename_to_blank_clears_the_name_and_an_empty_group_closes() {
+        let (_dir, library) = library();
+        store(&library, "img", None, &["a"]);
+        place_pinned(&library, "a", PinTarget::Group(1)).unwrap();
+        create_pinned_group(&library, "Empty").unwrap();
+        rename_pinned_group(&library, 1, "Full").unwrap();
+
+        let vocab = rename_pinned_group(&library, 1, "  ").unwrap();
+        groups_are_consistent(&library.conn);
+        assert_eq!(vocab.groups.len(), 2, "a group with a tag stays unnamed");
+        assert_eq!(vocab.groups[0].name, "");
+
+        let vocab = rename_pinned_group(&library, 2, "").unwrap();
+        groups_are_consistent(&library.conn);
+        assert_eq!(vocab.groups.len(), 1, "the unnamed empty group closed");
+    }
+
+    #[test]
+    fn delete_pinned_group_refuses_a_group_with_tags() {
+        let (_dir, library) = library();
+        store(&library, "img", None, &["a"]);
+        place_pinned(&library, "a", PinTarget::Group(1)).unwrap();
+        create_pinned_group(&library, "Old").unwrap();
+
+        let error = delete_pinned_group(&library, 1).unwrap_err();
+        assert!(
+            matches!(&error, AppError::BadRequest(reason) if reason == "pinned group 1 still has tags"),
+            "got {error}"
+        );
+        assert_eq!(group_of(&library, "a"), 1);
+
+        let vocab = delete_pinned_group(&library, 2).unwrap();
+        groups_are_consistent(&library.conn);
+        assert_eq!(vocab.groups.len(), 1);
+    }
+
+    #[test]
+    fn a_position_with_no_row_is_refused() {
+        let (_dir, library) = library();
+        store(&library, "img", None, &["a"]);
+        place_pinned(&library, "a", PinTarget::Group(1)).unwrap();
+
+        let refusals = [
+            rename_pinned_group(&library, 2, "x"),
+            set_pinned_group_collapsed(&library, 0, true),
+            move_pinned_group(&library, 1, 2),
+            move_pinned_group(&library, 3, 1),
+            delete_pinned_group(&library, 2),
+        ];
+        for refusal in refusals {
+            let error = refusal.unwrap_err();
+            assert!(matches!(error, AppError::NotFound(_)), "got {error}");
+        }
+        groups_are_consistent(&library.conn);
     }
 
     #[test]

@@ -1434,6 +1434,7 @@ mod tests {
             vec![1, 2],
             "compact_groups leaves no gap where kantoku_(pixiv)'s row was"
         );
+        crate::tags::groups_are_consistent(&library.conn);
     }
 
     /// `tag-notes` design D5, the pinned-group rule beside it: a merge

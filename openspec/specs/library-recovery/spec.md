@@ -47,8 +47,9 @@ changed produces the same bytes.
 The app SHALL keep one file in the library folder describing the library-level state a
 rebuild would otherwise lose: the auto-tag rules, the configured booru sites, the library
 note, the collections with their ids, names and pins, the tag vocabulary — every tag that is
-not general, is pinned or carries a note, with its category, its pin and its note — and the
-stamps. It SHALL be rewritten whenever any
+not general, is pinned or carries a note, with its category, its pin and its note — the
+pinned groups with their names, order and folds, and the
+stamps in their order. It SHALL be rewritten whenever any
 of those change. It SHALL NOT contain any API key or other credential; those live in the
 operating system's credential store (`booru-sites`) and SHALL NOT be written into the
 library folder.
@@ -84,6 +85,10 @@ library folder.
 #### Scenario: A tag's note is written
 - **WHEN** the user writes, changes or removes a tag's note
 - **THEN** the library's own file lists the vocabulary as it now stands, each noted tag with its note
+
+#### Scenario: A group is named or folded
+- **WHEN** the user names, reorders, folds or deletes a pinned group
+- **THEN** the library's own file lists the groups as they now stand
 
 ### Requirement: A write that cannot be mirrored is a failed write
 A write that stores the row but cannot write the file describing it SHALL be reported as a

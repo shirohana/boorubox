@@ -2,7 +2,7 @@
 
 import type { ArtistMatch, ImageRecord } from '@boorubox/shared'
 import type { SearchResults } from '$lib/api'
-import { artistRevision } from '$lib/api'
+import { artistRevision, vocabulary } from '$lib/api'
 import { clearMocks, mockIPC } from '@tauri-apps/api/mocks'
 import { flushSync, mount, tick, unmount } from 'svelte'
 import { afterEach, expect, it, vi } from 'vitest'
@@ -366,6 +366,101 @@ it('the Artist row re-reads when an artist entry is written elsewhere', async ()
 
   expect(calls).toEqual(['alice_x', 'alice_x'])
   expect(artistOwnerButton(target, 'alice')).toBeDefined()
+
+  unmount(instance)
+})
+
+it('draws the pinned dot after a pinned tag in the list and none after an unpinned one', () => {
+  vocabulary.entries = [{ name: 'solo', category: 'general', pinnedGroup: 1, note: null }]
+  const { target, instance } = setup(img({ id: 'a', tags: ['solo', 'cat'] }))
+  flushSync()
+
+  // The pinned strip's chip for `solo` is also a button; the list's carry `max-w-full`.
+  const buttons = [...target.querySelectorAll('button.max-w-full')]
+  const dotted = (name: string) => buttons
+    .find((button) => button.textContent?.includes(name))
+    ?.querySelector('span[aria-hidden="true"].rounded-full')
+  expect(dotted('solo')).not.toBeNull()
+  expect(dotted('cat')).toBeNull()
+
+  unmount(instance)
+  vocabulary.entries = []
+})
+
+/** The strip's label buttons: the only `aria-expanded` buttons in the panel. */
+const groupLabels = (target: HTMLElement) => [...target.querySelectorAll<HTMLButtonElement>('button[aria-expanded]')]
+
+function seedGroups(groups: { name: string, collapsed: boolean }[], tags: [string, number][]) {
+  vocabulary.entries = tags.map(([name, pinnedGroup]) => ({ name, category: 'general', pinnedGroup, note: null }))
+  vocabulary.groups = groups
+}
+
+afterEach(() => {
+  vocabulary.entries = []
+  vocabulary.groups = []
+})
+
+it('shows a folded group as its label and count with no chips', () => {
+  seedGroups(
+    [{ name: 'Clothes', collapsed: true }, { name: '', collapsed: false }],
+    [['hat', 1], ['scarf', 1], ['solo', 2]],
+  )
+  const { target, instance } = setup(img({ id: 'a', tags: [] }))
+  flushSync()
+
+  const [folded, open] = groupLabels(target)
+  expect(folded.textContent?.replace(/\s+/g, ' ').trim()).toBe('Clothes · 2')
+  expect(folded.getAttribute('aria-expanded')).toBe('false')
+  expect(open.textContent?.trim()).toBe('#2')
+  expect(target.textContent).not.toContain('hat')
+  expect(target.textContent).toContain('solo')
+
+  unmount(instance)
+})
+
+it('draws no label for a single unnamed group', () => {
+  seedGroups([{ name: '', collapsed: false }], [['solo', 1]])
+  const { target, instance } = setup(img({ id: 'a', tags: [] }))
+  flushSync()
+
+  expect(groupLabels(target)).toHaveLength(0)
+  expect(target.textContent).toContain('solo')
+
+  unmount(instance)
+})
+
+it('labels a single named group with its name', () => {
+  seedGroups([{ name: 'Favourites', collapsed: false }], [['solo', 1]])
+  const { target, instance } = setup(img({ id: 'a', tags: [] }))
+  flushSync()
+
+  expect(groupLabels(target).map((label) => label.textContent?.trim())).toEqual(['Favourites'])
+
+  unmount(instance)
+})
+
+it('clicking a group label writes the fold through set_pinned_group_collapsed', async () => {
+  seedGroups(
+    [{ name: 'Clothes', collapsed: false }, { name: '', collapsed: false }],
+    [['hat', 1], ['solo', 2]],
+  )
+  const calls: { cmd: string, payload: unknown }[] = []
+  const { target, instance } = setup(img({ id: 'a', tags: [] }), {
+    ipc: (cmd, payload) => {
+      if (cmd !== 'set_pinned_group_collapsed') return cmd === 'tag_suggestions' ? [] : null
+      calls.push({ cmd, payload })
+      return { tags: vocabulary.entries, groups: vocabulary.groups }
+    },
+  })
+  flushSync()
+
+  groupLabels(target)[0].click()
+  await tick()
+
+  expect(calls).toEqual([
+    { cmd: 'set_pinned_group_collapsed', payload: { position: 1, collapsed: true } },
+  ])
+  expect(groupLabels(target)[0].getAttribute('aria-expanded')).toBe('true')
 
   unmount(instance)
 })

@@ -18,7 +18,7 @@ use crate::error::{AppError, Result};
 use crate::ingest;
 use crate::library::LibraryPaths;
 use crate::model::{
-    ArtistEntry, BooruSite, Collection, ImageRecord, ImageSource, Note, PostRef, Rule,
+    ArtistEntry, BooruSite, Collection, ImageRecord, ImageSource, Note, PinnedGroup, PostRef, Rule,
     SiteAdapterRecord, Stamp, TagEntry,
 };
 use crate::notes;
@@ -165,7 +165,16 @@ pub struct LibraryFile {
     /// included — is restored onto the rows verbatim.
     #[serde(default)]
     pub tags: Option<Vec<TagEntry>>,
-    /// The stamps, by creation order (`stamps` design D3). The same `Option`
+    /// The pinned groups' names and folds, in position order
+    /// (`pinned-group-management` design D6): `groups[i]` is position `i + 1`,
+    /// the number every tag's `pinnedGroup` names. The same `Option` reasoning
+    /// as `collections` and `tags` above: `None` is a file written before
+    /// groups had names, and a rebuild derives one unnamed, unfolded group per
+    /// number the tags name; `Some` is restored verbatim; this build always
+    /// writes `Some`, and an old reader ignores the key.
+    #[serde(default)]
+    pub pinned_groups: Option<Vec<PinnedGroup>>,
+    /// The stamps, in their order (`stamp-order` design D4). The same `Option`
     /// reasoning as `collections` and `tags` above: `None` is a file written
     /// before this change and says nothing about stamps, while `Some` — empty
     /// included — is restored onto the table verbatim; this build always
@@ -312,6 +321,7 @@ pub fn read_library(path: &Path) -> Result<LibraryFile> {
 /// collections, the tag vocabulary and the stamps as they stand right now
 /// (design D3, `tag-vocabulary` design D2, `stamps` design D3).
 pub fn write_library(paths: &LibraryPaths, conn: &Connection) -> Result<()> {
+    let vocabulary = tags::vocabulary(conn)?;
     let file = LibraryFile {
         version: LIBRARY_VERSION,
         rules: rules::list(conn)?
@@ -321,7 +331,8 @@ pub fn write_library(paths: &LibraryPaths, conn: &Connection) -> Result<()> {
         booru_sites: sites::list(conn)?,
         note: notes::get(conn)?,
         collections: Some(collections::list(conn)?),
-        tags: Some(tags::vocabulary(conn)?),
+        tags: Some(vocabulary.tags),
+        pinned_groups: Some(vocabulary.groups),
         stamps: Some(stamps::list(conn)?),
         artists: Some(artists::list(conn)?),
     };
@@ -686,6 +697,36 @@ mod tests {
                 "tags.{column} has no representation in TagEntry"
             );
         }
+    }
+
+    /// `pinned-group-management` design D6: a build that predates `pinnedGroups`
+    /// has no field for it and still parses a file that carries one, since no
+    /// type here denies unknown fields.
+    #[test]
+    fn an_old_reader_still_parses_a_file_with_pinned_groups() {
+        #[derive(Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        #[allow(dead_code)]
+        struct OldLibraryFile {
+            version: u32,
+            rules: Vec<Rule>,
+            booru_sites: Vec<BooruSite>,
+            note: Note,
+            tags: Option<Vec<TagEntry>>,
+        }
+
+        let (_dir, library) = library();
+        store(&library, "a", &["sketch"]);
+        tags::place_pinned(&library, "sketch", crate::model::PinTarget::Group(1)).unwrap();
+        tags::rename_pinned_group(&library, 1, "Style").unwrap();
+
+        let bytes = std::fs::read(library_path(&library.paths)).unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(json["pinnedGroups"][0]["name"], "Style");
+        let old: OldLibraryFile =
+            serde_json::from_slice(&bytes).expect("an old reader ignores the key it does not know");
+        assert_eq!(old.version, LIBRARY_VERSION);
+        assert_eq!(old.tags.unwrap().len(), 1);
     }
 
     #[test]

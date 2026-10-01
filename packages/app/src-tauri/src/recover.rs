@@ -14,7 +14,8 @@ use crate::db;
 use crate::error::{AppError, Result};
 use crate::library::LibraryPaths;
 use crate::model::{
-    ArtistEntry, BooruSite, Collection, Note, RebuildFailure, RebuildReport, Rule, Stamp, TagEntry,
+    ArtistEntry, BooruSite, Collection, Note, PinnedGroup, RebuildFailure, RebuildReport, Rule,
+    Stamp, TagEntry,
 };
 use crate::sidecar;
 use crate::tags;
@@ -128,14 +129,25 @@ pub fn rebuild(
             // about the vocabulary, so every tag from the sidecars stands
             // general and unpinned, exactly as `db.rs`'s migration defaults
             // them.
+            //
+            // The groups' names and folds go in first, one row per index
+            // (`pinned-group-management` design D6), so the compaction below
+            // finds a named group's row where its position says; a file with
+            // no `pinnedGroups` key leaves no rows, and the compaction makes
+            // an unnamed, unfolded row for each group the tags name.
+            if let Some(groups) = &file.pinned_groups {
+                insert_pinned_groups(&tx, groups)?;
+            }
             if let Some(vocabulary) = &file.tags {
                 insert_vocabulary(&tx, vocabulary)?;
-                // `library.json` restores groups exactly as written, and the
-                // merge rule above can empty one — `Tagme` group 2, `tagme`
-                // group 1 and `x` group 3 canonicalise and merge onto groups
-                // {1, 3}, skipping 2. Densifying here, inside the same
-                // transaction, is what keeps a rebuild from ever handing the
-                // menu an empty group (`pinned-tag-groups` design D3).
+            }
+            // `library.json` restores groups exactly as written, and the
+            // merge rule above can empty one — `Tagme` group 2, `tagme`
+            // group 1 and `x` group 3 canonicalise and merge onto groups
+            // {1, 3}, skipping 2. Densifying here, inside the same
+            // transaction, is what keeps a rebuild from ever handing the
+            // menu an empty unnamed group (`pinned-tag-groups` design D3).
+            if file.tags.is_some() || file.pinned_groups.is_some() {
                 tags::compact_groups(&tx)?;
             }
             // The stamps, restored the same way and for the same reason
@@ -305,21 +317,36 @@ fn insert_vocabulary(conn: &Connection, entries: &[TagEntry]) -> Result<()> {
     Ok(())
 }
 
-/// Stamps restored with their own id and timestamps verbatim (design D3), the
+/// The pinned groups' rows, the file's order as their position
+/// (`pinned-group-management` design D6): the same index-is-position rule
+/// [`insert_stamps`] follows.
+fn insert_pinned_groups(conn: &Connection, groups: &[PinnedGroup]) -> Result<()> {
+    for (index, group) in groups.iter().enumerate() {
+        conn.execute(
+            "INSERT INTO pinned_groups (position, name, collapsed) VALUES (?1, ?2, ?3)",
+            params![(index + 1) as u32, group.name.trim(), group.collapsed],
+        )?;
+    }
+    Ok(())
+}
+
+/// Stamps restored with their own id and timestamps verbatim (design D3) and
+/// the file's order as their position (`stamp-order` design D4), the
 /// same rule [`insert_rules`] and [`insert_sites`] already follow for their
 /// own ids — never through `stamps::upsert`, which mints a fresh id on every
 /// create.
 fn insert_stamps(conn: &Connection, stamps: &[Stamp]) -> Result<()> {
-    for stamp in stamps {
+    for (index, stamp) in stamps.iter().enumerate() {
         conn.execute(
-            "INSERT INTO stamps (id, name, text, created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5)",
+            "INSERT INTO stamps (id, name, text, created_at, updated_at, position)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
             params![
                 stamp.id,
                 stamp.name,
                 stamp.text,
                 stamp.created_at,
-                stamp.updated_at
+                stamp.updated_at,
+                index as i64 + 1
             ],
         )?;
     }
@@ -1081,6 +1108,62 @@ mod tests {
         );
     }
 
+    /// `pinned-group-management` design D6: a rebuild brings back every
+    /// group's name and fold, and a named group left empty.
+    #[test]
+    fn a_rebuild_restores_group_names_and_folds() {
+        let (_dir, library) = library();
+        store(&library, "a", &["1girl", "sketch"], None);
+        crate::tags::place_pinned(&library, "1girl", PinTarget::Group(1)).unwrap();
+        crate::tags::place_pinned(&library, "sketch", PinTarget::NewGroupAt(2)).unwrap();
+        crate::tags::rename_pinned_group(&library, 2, "Style").unwrap();
+        crate::tags::set_pinned_group_collapsed(&library, 2, true).unwrap();
+        crate::tags::create_pinned_group(&library, "Pose").unwrap();
+        let paths = library.paths.clone();
+        drop(library);
+
+        let report = rebuild(&paths, &mut |_, _| {}).unwrap();
+
+        assert!(report.failures.is_empty(), "{:?}", report.failures);
+        let rebuilt = Library::open_existing(paths.root.as_path()).unwrap();
+        let groups = crate::tags::vocabulary(&rebuilt.conn).unwrap().groups;
+        let seen: Vec<(&str, bool)> = groups
+            .iter()
+            .map(|group| (group.name.as_str(), group.collapsed))
+            .collect();
+        assert_eq!(seen, vec![("", false), ("Style", true), ("Pose", false)]);
+        assert_eq!(tag_row(&rebuilt.conn, "sketch"), ("general".to_string(), 2));
+        crate::tags::groups_are_consistent(&rebuilt.conn);
+    }
+
+    /// A `library.json` written before groups had names has no `pinnedGroups`
+    /// key; the groups the tags name come back unnamed and unfolded.
+    #[test]
+    fn a_library_file_without_pinned_groups_restores_unnamed_groups_from_the_tags() {
+        let (_dir, library) = library();
+        store(&library, "a", &["1girl", "sketch"], None);
+        crate::tags::place_pinned(&library, "1girl", PinTarget::Group(1)).unwrap();
+        crate::tags::place_pinned(&library, "sketch", PinTarget::NewGroupAt(2)).unwrap();
+        crate::tags::rename_pinned_group(&library, 2, "Style").unwrap();
+        let file = sidecar::library_path(&library.paths);
+        let mut json: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&file).unwrap()).unwrap();
+        json.as_object_mut().unwrap().remove("pinnedGroups");
+        std::fs::write(&file, serde_json::to_vec_pretty(&json).unwrap()).unwrap();
+        let paths = library.paths.clone();
+        drop(library);
+
+        let report = rebuild(&paths, &mut |_, _| {}).unwrap();
+
+        assert!(report.failures.is_empty(), "{:?}", report.failures);
+        let rebuilt = Library::open_existing(paths.root.as_path()).unwrap();
+        let groups = crate::tags::vocabulary(&rebuilt.conn).unwrap().groups;
+        assert_eq!(groups.len(), 2);
+        assert!(groups.iter().all(|g| g.name.is_empty() && !g.collapsed));
+        assert_eq!(tag_row(&rebuilt.conn, "sketch"), ("general".to_string(), 2));
+        crate::tags::groups_are_consistent(&rebuilt.conn);
+    }
+
     /// Review finding on `aa38dda`: `library.json` restores groups exactly
     /// as written, and `insert_vocabulary`'s "lowest non-zero group wins"
     /// merge can empty one on its own — `Tagme` (group 2) and `tagme`
@@ -1183,6 +1266,43 @@ mod tests {
             crate::stamps::list(&rebuilt.conn).unwrap(),
             vec![cat, reviewed],
         );
+    }
+
+    /// `stamp-order` design D4: the file's order, not the creation order, is
+    /// the order a rebuild restores.
+    #[test]
+    fn a_rebuild_restores_the_stamp_order() {
+        let (_dir, library) = library();
+        let ids: Vec<String> = ["Cat", "Dog", "Bird"]
+            .iter()
+            .map(|name| {
+                crate::stamps::upsert(
+                    &library,
+                    &crate::model::StampInput {
+                        id: None,
+                        name: name.to_string(),
+                        text: "x".to_string(),
+                    },
+                )
+                .unwrap()
+                .id
+            })
+            .collect();
+        crate::stamps::reorder(&library, &[ids[2].clone(), ids[0].clone(), ids[1].clone()])
+            .unwrap();
+        let paths = library.paths.clone();
+        drop(library);
+
+        let report = rebuild(&paths, &mut |_, _| {}).unwrap();
+
+        assert!(report.failures.is_empty(), "{:?}", report.failures);
+        let rebuilt = Library::open_existing(paths.root.as_path()).unwrap();
+        let names: Vec<String> = crate::stamps::list(&rebuilt.conn)
+            .unwrap()
+            .into_iter()
+            .map(|stamp| stamp.name)
+            .collect();
+        assert_eq!(names, vec!["Bird", "Cat", "Dog"]);
     }
 
     /// Spec `artist-entries`, "Entries survive a rebuild": an artist's two

@@ -36,6 +36,7 @@
   import PencilIcon from '@lucide/svelte/icons/pencil'
   import PinIcon from '@lucide/svelte/icons/pin'
   import PinOffIcon from '@lucide/svelte/icons/pin-off'
+  import Settings2Icon from '@lucide/svelte/icons/settings-2'
   import StickyNoteIcon from '@lucide/svelte/icons/sticky-note'
   import { vocabulary } from '$lib/api'
   import * as ContextMenu from '$lib/components/ui/context-menu'
@@ -54,9 +55,15 @@
      * `ArtistDialog` (`artist-workflow` design D2).
      */
     oneditartist: (tag: string) => void
+    /**
+     * "Manage pinned groups…" was chosen — the host opens its own
+     * `PinnedGroupsDialog` (`pinned-group-management` design D9), the
+     * `oneditnote` shape and required for the same reason.
+     */
+    onmanagegroups: () => void
   }
 
-  let { name, oneditnote, oneditartist }: Props = $props()
+  let { name, oneditnote, oneditartist, onmanagegroups }: Props = $props()
 
   const group = $derived(vocabulary.groupOf(name))
   const pinned = $derived(group !== null)
@@ -64,7 +71,7 @@
   const lookup = $derived(danbooruLookup(name, category))
 
   /**
-   * Every group but the tag's own, in order — the "Move to #x" items. A
+   * Every group but the tag's own, in order — the "Move to <group>" items. A
    * counted range `1..groupCount` is the live set of groups only because
    * Rust keeps them dense after every write and every rebuild
    * (`pinned-tag-groups` design D3): group n is row n. It has to be the
@@ -76,7 +83,7 @@
     Array.from({ length: vocabulary.groupCount }, (_, i) => i + 1).filter((n) => n !== group),
   )
   /** The only tag of its group: inserting a group beside it changes nothing. */
-  const alone = $derived(group !== null && vocabulary.pinnedGroups[group - 1]?.length === 1)
+  const alone = $derived(group !== null && vocabulary.pinnedGroups[group - 1]?.tags.length === 1)
 </script>
 
 {#if category === 'artist'}
@@ -109,9 +116,10 @@
 </ContextMenu.Item>
 {#if group !== null}
   <!--
-    Inserting is the only operation the owner asked for (proposal, "no move
-    up or move down"): "New group above"/"below" is `NewGroupAt`, "Move to
-    #x" is `Group(x)` (`pinned-tag-groups` design D3). Not for a tag alone in
+    A tag's own moves only insert or relocate it (`pinned-tag-groups`: no
+    move up or move down for one tag; moving a whole group is
+    `pinned-group-management`'s dialog): "New group above"/"below" is
+    `NewGroupAt`, "Move to #x" is `Group(x)` (`pinned-tag-groups` design D3). Not for a tag alone in
     its group: the new group would hold only this tag and the emptied one
     would close, leaving the strip as it was — a control that does nothing
     is not shown (`app-frame`, owner 2026-09-24).
@@ -126,9 +134,15 @@
   {/if}
   {#each otherGroups as target (target)}
     <ContextMenu.Item onSelect={() => void vocabulary.place(name, { group: target })}>
-      Move to #{target}
+      Move to {vocabulary.labelOf(target)}
     </ContextMenu.Item>
   {/each}
+{/if}
+{#if vocabulary.groupCount > 0}
+  <ContextMenu.Item onSelect={onmanagegroups}>
+    <Settings2Icon />
+    Manage pinned groups…
+  </ContextMenu.Item>
 {/if}
 <ContextMenu.Separator />
 <!--

@@ -67,3 +67,36 @@ it('draws the `?` first when a lookup is passed, and it alone opens the look-up'
 
   unmount(instance)
 })
+
+it('draws the pinned dot before the count, and none for an unpinned row', () => {
+  const mountRow = (pinned: boolean) => {
+    const target = document.createElement('ul')
+    document.body.appendChild(target)
+    const instance = mount(FilterRow, {
+      target,
+      props: {
+        name: 'solo',
+        count: 3,
+        mark: 'none',
+        pinned,
+        oninclude: vi.fn(),
+        onexclude: vi.fn(),
+        ontoggle: vi.fn(),
+        menu: noMenu,
+      },
+    })
+    flushSync()
+    return { target, instance }
+  }
+
+  const pinned = mountRow(true)
+  const dot = pinned.target.querySelector('span[aria-hidden="true"].rounded-full')
+  const count = [...pinned.target.querySelectorAll('span')].find((span) => span.textContent === '3')
+  expect(dot).not.toBeNull()
+  expect(dot!.compareDocumentPosition(count!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+  unmount(pinned.instance)
+
+  const unpinned = mountRow(false)
+  expect(unpinned.target.querySelector('.rounded-full')).toBeNull()
+  unmount(unpinned.instance)
+})
