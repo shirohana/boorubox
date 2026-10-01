@@ -1,7 +1,7 @@
 /**
  * The settings pages, in the order the nav lists them: General, Library,
- * Artists, Rules, Stamps, Booru, Keyboard, About (owner, 2026-09-28). General
- * holds the settings set once and then left alone — how the app looks and
+ * Artists, Rules, Stamps, Pinned tags, Booru, Keyboard, About (Pinned tags' place: owner,
+ * 2026-10-02). General holds the settings set once and then left alone — how the app looks and
  * how it listens for captures — because a page holding a single field is not
  * worth a place in the nav (spec `app-frame`, "Settings is a set of pages
  * with a nav"). `path` is a literal route id, `as const`, so the nav, the
@@ -16,6 +16,7 @@ export const SETTINGS_PAGES = [
   { slug: 'artists', label: 'Artists', path: '/settings/artists' },
   { slug: 'rules', label: 'Rules', path: '/settings/rules' },
   { slug: 'stamps', label: 'Stamps', path: '/settings/stamps' },
+  { slug: 'pinned-tags', label: 'Pinned tags', path: '/settings/pinned-tags' },
   { slug: 'booru', label: 'Booru', path: '/settings/booru' },
   { slug: 'keyboard', label: 'Keyboard', path: '/settings/keyboard' },
   { slug: 'about', label: 'About', path: '/settings/about' },

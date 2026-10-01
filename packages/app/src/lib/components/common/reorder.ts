@@ -1,11 +1,10 @@
 // The one reorder primitive, for short lists of uniform rows. A pure `moveItem`, a `dropIndex` that
 // turns a pointer position into a destination, and the `reorderable` action
-// that wires native HTML5 drag-and-drop onto a list element.
+// that wires `pointerDrag` onto a list element.
 //
-// Native drag rather than pointer events: the lists are short and their rows
-// uniform, and both webviews (WebKit, WebView2) drag a `draggable` element
-// with the OS ghost image for free. The action reorders nothing itself; it
-// reports `onmove(from, to)` and the owner writes the new order.
+// Pointer events, not HTML5 drag: the window's file drop swallows every HTML5
+// drag (`api/drag-drop.ts`). The action reorders nothing itself; it reports
+// `onmove(from, to)` and the owner writes the new order.
 //
 // Row contract. The element carrying `use:reorderable` contains the rows;
 // every row carries `data-reorder-index="<its index in the list>"`, and
@@ -15,6 +14,8 @@
 // `moveItem(list, from, to)` takes.
 // While a drag is over a row the row carries `data-reorder-drop="before"` or
 // `"after"` for the owner's styling, removed when the drag ends.
+
+import { pointerDrag } from './pointer-drag'
 
 /**
  * A new array with the item at `from` placed at `to`. The same `list` comes
@@ -49,8 +50,8 @@ const ROW = '[data-reorder-index]'
 const HANDLE = '[data-reorder-handle]'
 const DROP = 'data-reorder-drop'
 
-function rowOf(target: EventTarget | null): HTMLElement | null {
-  return target instanceof Element ? target.closest<HTMLElement>(ROW) : null
+function rowAt(x: number, y: number): HTMLElement | null {
+  return document.elementFromPoint(x, y)?.closest<HTMLElement>(ROW) ?? null
 }
 
 function indexOf(row: HTMLElement): number {
@@ -70,61 +71,33 @@ export function reorderable(node: HTMLElement, options: ReorderOptions) {
     for (const row of node.querySelectorAll(`[${DROP}]`)) row.removeAttribute(DROP)
   }
 
-  function onDragStart(event: DragEvent) {
-    const handle = event.target instanceof Element ? event.target.closest(HANDLE) : null
-    const row = rowOf(handle)
-    if (!handle || !row || !event.dataTransfer) return
-    dragged = indexOf(row)
-    event.dataTransfer.effectAllowed = 'move'
-    event.dataTransfer.setData('text/plain', String(dragged))
-    event.dataTransfer.setDragImage?.(row, 0, 0)
-  }
-
-  function onDragOver(event: DragEvent) {
-    const row = rowOf(event.target)
-    if (dragged === null || !row) return
-    event.preventDefault()
-    if (event.dataTransfer) event.dataTransfer.dropEffect = 'move'
+  function markRowAt(x: number, y: number) {
     clearMarks()
-    row.setAttribute(DROP, pointerInLowerHalf(row, event.clientY) ? 'after' : 'before')
+    const row = rowAt(x, y)
+    if (row && node.contains(row)) row.setAttribute(DROP, pointerInLowerHalf(row, y) ? 'after' : 'before')
   }
 
-  function onDrop(event: DragEvent) {
-    const row = rowOf(event.target)
-    const from = dragged
-    dragged = null
-    clearMarks()
-    if (from === null || !row) return
-    event.preventDefault()
-    const to = dropIndex(from, indexOf(row), pointerInLowerHalf(row, event.clientY))
-    if (to !== from) current.onmove(from, to)
-  }
-
-  function onDragLeave(event: DragEvent) {
-    const into = event.relatedTarget
-    if (!(into instanceof Node) || !node.contains(into)) clearMarks()
-  }
-
-  function onDragEnd() {
-    dragged = null
-    clearMarks()
-  }
-
-  node.addEventListener('dragstart', onDragStart)
-  node.addEventListener('dragover', onDragOver)
-  node.addEventListener('drop', onDrop)
-  node.addEventListener('dragleave', onDragLeave)
-  node.addEventListener('dragend', onDragEnd)
+  const drag = pointerDrag(node, {
+    onstart(x, y, handle) {
+      const row = handle.closest<HTMLElement>(ROW)
+      dragged = row ? indexOf(row) : null
+      markRowAt(x, y)
+    },
+    onmove: markRowAt,
+    onend(x, y, dropped) {
+      const from = dragged
+      dragged = null
+      clearMarks()
+      const row = rowAt(x, y)
+      if (!dropped || from === null || !row || !node.contains(row)) return
+      const to = dropIndex(from, indexOf(row), pointerInLowerHalf(row, y))
+      if (to !== from) current.onmove(from, to)
+    },
+  }, { selector: HANDLE })
   return {
     update(next: ReorderOptions) {
       current = next
     },
-    destroy() {
-      node.removeEventListener('dragstart', onDragStart)
-      node.removeEventListener('dragover', onDragOver)
-      node.removeEventListener('drop', onDrop)
-      node.removeEventListener('dragleave', onDragLeave)
-      node.removeEventListener('dragend', onDragEnd)
-    },
+    destroy: drag.destroy,
   }
 }

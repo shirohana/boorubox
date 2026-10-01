@@ -4,6 +4,7 @@ import type { Snippet } from 'svelte'
 import { flushSync, mount, unmount } from 'svelte'
 import { expect, it, vi } from 'vitest'
 import FilterRow from './FilterRow.svelte'
+import Harness from './TooltipHarness.svelte'
 
 // No menu content is exercised by these tests, which never open the row's
 // context menu — a snippet that renders nothing stands in for it.
@@ -68,35 +69,45 @@ it('draws the `?` first when a lookup is passed, and it alone opens the look-up'
   unmount(instance)
 })
 
-it('draws the pinned dot before the count, and none for an unpinned row', () => {
-  const mountRow = (pinned: boolean) => {
+it('draws the name, the pinned dot, the note glyph, then the count, and no dot when unpinned', () => {
+  const mountRow = (pinnedLabel: string | null) => {
     const target = document.createElement('ul')
     document.body.appendChild(target)
-    const instance = mount(FilterRow, {
+    const instance = mount(Harness, {
       target,
       props: {
-        name: 'solo',
-        count: 3,
-        mark: 'none',
-        pinned,
-        oninclude: vi.fn(),
-        onexclude: vi.fn(),
-        ontoggle: vi.fn(),
-        menu: noMenu,
+        component: FilterRow,
+        props: {
+          name: 'solo',
+          count: 3,
+          mark: 'none',
+          note: 'a note',
+          pinnedLabel,
+          oninclude: vi.fn(),
+          onexclude: vi.fn(),
+          ontoggle: vi.fn(),
+          menu: noMenu,
+        },
       },
     })
     flushSync()
     return { target, instance }
   }
+  const before = (a: Element, b: Element) => !!(a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING)
 
-  const pinned = mountRow(true)
+  const pinned = mountRow('Scene')
+  const name = [...pinned.target.querySelectorAll('button')].find((button) => button.textContent?.trim() === 'solo')
   const dot = pinned.target.querySelector('span[aria-hidden="true"].rounded-full')
+  const glyph = pinned.target.querySelector('svg[aria-label="Tag note"]')
   const count = [...pinned.target.querySelectorAll('span')].find((span) => span.textContent === '3')
   expect(dot).not.toBeNull()
-  expect(dot!.compareDocumentPosition(count!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+  expect(glyph).not.toBeNull()
+  expect(before(name!, dot!)).toBe(true)
+  expect(before(dot!, glyph!)).toBe(true)
+  expect(before(glyph!, count!)).toBe(true)
   unmount(pinned.instance)
 
-  const unpinned = mountRow(false)
+  const unpinned = mountRow(null)
   expect(unpinned.target.querySelector('.rounded-full')).toBeNull()
   unmount(unpinned.instance)
 })

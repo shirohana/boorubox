@@ -2,12 +2,13 @@
 
 import { flushSync, mount, unmount } from 'svelte'
 import { expect, it } from 'vitest'
-import Harness from './TagNoteIndicator.test-harness.svelte'
+import TagNoteIndicator from './TagNoteIndicator.svelte'
+import Harness from './TooltipHarness.svelte'
 
 function setup(note: string | null) {
   const target = document.createElement('div')
   document.body.appendChild(target)
-  const instance = mount(Harness, { target, props: { note } })
+  const instance = mount(Harness, { target, props: { component: TagNoteIndicator, props: { note } } })
   flushSync()
   return { target, instance }
 }

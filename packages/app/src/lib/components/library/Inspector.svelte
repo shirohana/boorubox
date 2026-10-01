@@ -25,13 +25,14 @@
   import BookmarkIcon from '@lucide/svelte/icons/bookmark'
   import PencilIcon from '@lucide/svelte/icons/pencil'
   import PinIcon from '@lucide/svelte/icons/pin'
+  import Settings2Icon from '@lucide/svelte/icons/settings-2'
   import CollectionNameDialog from '$lib/components/common/CollectionNameDialog.svelte'
   import ExternalLink from '$lib/components/common/ExternalLink.svelte'
   import RatingControl from '$lib/components/tags/RatingControl.svelte'
   import { CATEGORY_TEXT_CLASS, searchMark, searchMarkClass, SEARCH_MARK_CLASS } from '$lib/components/tags/categories'
   import TagInput from '$lib/components/tags/TagInput.svelte'
   import CollectionPinMenuItem from '$lib/components/tags/CollectionPinMenuItem.svelte'
-  import PinnedGroupsDialog from '$lib/components/tags/PinnedGroupsDialog.svelte'
+  import PinnedTagsDialog from '$lib/components/tags/PinnedTagsDialog.svelte'
   import TagNoteDialog from '$lib/components/tags/TagNoteDialog.svelte'
   import PinnedDot from '$lib/components/tags/PinnedDot.svelte'
   import TagNoteIndicator from '$lib/components/tags/TagNoteIndicator.svelte'
@@ -565,7 +566,7 @@
    */
   let editingNote = $state<string | null>(null)
 
-  /** The pinned-groups dialog is open; one instance serves every menu of both strips. */
+  /** The pinned tags dialog is open; one instance serves every menu of both strips. */
   let managingGroups = $state(false)
 
   async function removeFromCollection(collectionId: string): Promise<void> {
@@ -847,19 +848,32 @@
         </ul>
       {/if}
       {#if labelled}
-        <button
-          type="button"
-          aria-expanded={!group.collapsed}
-          title={label}
-          class="
-            order-last ml-auto max-w-32 cursor-pointer self-end truncate text-[10px]
-            text-muted-foreground tabular-nums
-            hover:text-foreground
-          "
-          onclick={() => void vocabulary.setGroupCollapsed(position, !group.collapsed)}
-        >
-          {group.collapsed ? `${label} · ${group.tags.length}` : label}
-        </button>
+        <ContextMenu.Root>
+          <ContextMenu.Trigger>
+            {#snippet child({ props })}
+              <button
+                type="button"
+                {...props}
+                aria-expanded={!group.collapsed}
+                title={label}
+                class="
+                  order-last ml-auto max-w-32 cursor-pointer self-end truncate text-[10px]
+                  text-muted-foreground tabular-nums
+                  hover:text-foreground
+                "
+                onclick={() => void vocabulary.setGroupCollapsed(position, !group.collapsed)}
+              >
+                {group.collapsed ? `${label} · ${group.tags.length}` : label}
+              </button>
+            {/snippet}
+          </ContextMenu.Trigger>
+          <ContextMenu.Content portalProps={{ to: portalTo }}>
+            <ContextMenu.Item onSelect={() => (managingGroups = true)}>
+              <Settings2Icon />
+              Manage pinned tags…
+            </ContextMenu.Item>
+          </ContextMenu.Content>
+        </ContextMenu.Root>
       {/if}
     </div>
   {/each}
@@ -1107,7 +1121,7 @@
             panel sideways; the name needs `whitespace-normal`, since the
             button's `nowrap` would otherwise suppress `break-all`.
           -->
-          <ul class="mt-2 flex flex-wrap gap-x-2">
+          <ul class="mt-2 flex flex-wrap items-center gap-x-2">
             {#each groupedTags as tag (tag)}
               <li>
                 <ContextMenu.Root>
@@ -1125,8 +1139,8 @@
                         onclick={() => query(toggleTagInQuery(tagQuery, tag))}
                       >
                         <span class="min-w-0 break-all whitespace-normal">{tag}</span>
-                        <PinnedDot pinned={vocabulary.isPinned(tag)} />
                         <TagNoteIndicator note={vocabulary.noteOf(tag)} {portalTo} />
+                        <PinnedDot group={vocabulary.pinnedLabelOf(tag)} {portalTo} />
                       </button>
                     {/snippet}
                   </ContextMenu.Trigger>
@@ -1595,7 +1609,7 @@
   }}
 />
 
-<PinnedGroupsDialog
+<PinnedTagsDialog
   open={managingGroups}
   {portalTo}
   onclose={() => {

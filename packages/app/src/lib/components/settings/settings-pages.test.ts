@@ -31,6 +31,7 @@ it('lists the pages in the owner\'s order', () => {
     'Artists',
     'Rules',
     'Stamps',
+    'Pinned tags',
     'Booru',
     'Keyboard',
     'About',

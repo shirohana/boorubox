@@ -61,6 +61,12 @@ The row's context menu — `StampsTable` gains one, the bar's chips already have
 (`app-frame`'s "no control appears before it does something": disabled, not hidden, because
 the item's position in the menu is what a repeat user's hand learns).
 
+Amended by `pinned-tags-panel` D1, 2026-10-02: "for free" was right about the engines and
+wrong inside this window — Tauri's drag-drop handler, which import by drop needs
+(`api/drag-drop.ts`), takes every drag in the webview before the page sees `dragover`, so no
+HTML5 drag ever landed in the app (owner, 2026-10-02: it "triggers the background dropper").
+The primitive keeps this row contract and runs on pointer events, `pinned-tags-panel` D1.
+
 **D6. `StampsTable` owns the drag and asks the store after the write.** On `onmove` it
 computes `moveItem(stamps, from, to).map((s) => s.id)`, calls `stampsReorder`, then
 `onchanged` (which refreshes the store), the same `run` shape its delete uses: the list comes

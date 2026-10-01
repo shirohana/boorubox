@@ -1,18 +1,21 @@
 // @vitest-environment jsdom
 
 import { flushSync, mount, unmount } from 'svelte'
-import { expect, it, vi } from 'vitest'
+import { afterAll, afterEach, expect, it, vi } from 'vitest'
 import { reorderable } from './reorder'
 import ReorderHandle from './ReorderHandle.svelte'
 
-function dragEvent(type: string, clientY = 0) {
+function pointer(type: string, clientY = 0) {
   const event = new Event(type, { bubbles: true, cancelable: true })
-  Object.defineProperty(event, 'clientY', { value: clientY })
-  Object.defineProperty(event, 'dataTransfer', {
-    value: { setData: vi.fn(), setDragImage: vi.fn(), effectAllowed: '', dropEffect: '' },
-  })
+  Object.assign(event, { clientX: 0, clientY, pointerId: 1, button: 0 })
   return event
 }
+
+// jsdom has no layout: the row under the pointer is whichever one the test
+// says `elementFromPoint` answers.
+let under: Element | null = null
+const originalElementFromPoint = document.elementFromPoint
+document.elementFromPoint = () => under
 
 function setup() {
   const list = document.createElement('ul')
@@ -29,23 +32,36 @@ function setup() {
   const onmove = vi.fn()
   const action = reorderable(list, { onmove })
   const rows = [...list.querySelectorAll('li')]
+  const grips = rows.map((row) => {
+    const grip = row.querySelector('button')!
+    grip.setPointerCapture = vi.fn()
+    grip.releasePointerCapture = vi.fn()
+    return grip
+  })
   const teardown = () => {
     action.destroy()
     handles.forEach((handle) => unmount(handle))
     list.remove()
   }
-  return { rows, onmove, teardown }
+  return { rows, grips, onmove, teardown }
 }
 
-it('a drag from a handle dropped on the lower half of another row reports from and to', () => {
-  const { rows, onmove, teardown } = setup()
+afterEach(() => {
+  under = null
+})
 
-  rows[0].querySelector('button')!.dispatchEvent(dragEvent('dragstart'))
-  const over = dragEvent('dragover', 15)
-  rows[2].dispatchEvent(over)
-  expect(over.defaultPrevented).toBe(true)
+afterAll(() => {
+  document.elementFromPoint = originalElementFromPoint
+})
+
+it('a drag from a handle dropped on the lower half of another row reports from and to', () => {
+  const { rows, grips, onmove, teardown } = setup()
+
+  grips[0].dispatchEvent(pointer('pointerdown'))
+  under = rows[2]
+  grips[0].dispatchEvent(pointer('pointermove', 15))
   expect(rows[2].getAttribute('data-reorder-drop')).toBe('after')
-  rows[2].dispatchEvent(dragEvent('drop', 15))
+  grips[0].dispatchEvent(pointer('pointerup', 15))
 
   expect(onmove).toHaveBeenCalledWith(0, 2)
   expect(rows[2].hasAttribute('data-reorder-drop')).toBe(false)
@@ -53,52 +69,66 @@ it('a drag from a handle dropped on the lower half of another row reports from a
 })
 
 it('the upper half of a row above the dragged one lands before it', () => {
-  const { rows, onmove, teardown } = setup()
+  const { rows, grips, onmove, teardown } = setup()
 
-  rows[2].querySelector('button')!.dispatchEvent(dragEvent('dragstart'))
-  rows[0].dispatchEvent(dragEvent('dragover', 5))
-  rows[0].dispatchEvent(dragEvent('drop', 5))
+  grips[2].dispatchEvent(pointer('pointerdown', 50))
+  under = rows[0]
+  grips[2].dispatchEvent(pointer('pointermove', 5))
+  expect(rows[0].getAttribute('data-reorder-drop')).toBe('before')
+  grips[2].dispatchEvent(pointer('pointerup', 5))
 
   expect(onmove).toHaveBeenCalledWith(2, 0)
   teardown()
 })
 
 it('a drop that leaves the item where it was reports nothing', () => {
-  const { rows, onmove, teardown } = setup()
+  const { rows, grips, onmove, teardown } = setup()
 
-  rows[1].querySelector('button')!.dispatchEvent(dragEvent('dragstart'))
-  rows[1].dispatchEvent(dragEvent('dragover', 5))
-  rows[1].dispatchEvent(dragEvent('drop', 5))
+  grips[1].dispatchEvent(pointer('pointerdown', 50))
+  under = rows[1]
+  grips[1].dispatchEvent(pointer('pointermove', 5))
+  grips[1].dispatchEvent(pointer('pointerup', 5))
 
   expect(onmove).not.toHaveBeenCalled()
   teardown()
 })
 
-it('the drop marker clears when the pointer leaves the list', () => {
-  const { rows, teardown } = setup()
+it('the drop marker follows the pointer and clears when the drag is cancelled', () => {
+  const { rows, grips, onmove, teardown } = setup()
 
-  rows[0].querySelector('button')!.dispatchEvent(dragEvent('dragstart'))
-  rows[2].dispatchEvent(dragEvent('dragover', 15))
-  expect(rows[2].hasAttribute('data-reorder-drop')).toBe(true)
-
-  const stay = dragEvent('dragleave')
-  Object.defineProperty(stay, 'relatedTarget', { value: rows[1] })
-  rows[2].dispatchEvent(stay)
-  expect(rows[2].hasAttribute('data-reorder-drop')).toBe(true)
-
-  const leave = dragEvent('dragleave')
-  Object.defineProperty(leave, 'relatedTarget', { value: document.body })
-  rows[2].dispatchEvent(leave)
+  grips[0].dispatchEvent(pointer('pointerdown'))
+  under = rows[2]
+  grips[0].dispatchEvent(pointer('pointermove', 15))
+  under = rows[1]
+  grips[0].dispatchEvent(pointer('pointermove', 5))
   expect(rows[2].hasAttribute('data-reorder-drop')).toBe(false)
+  expect(rows[1].getAttribute('data-reorder-drop')).toBe('before')
+
+  grips[0].dispatchEvent(pointer('pointercancel', 5))
+  expect(rows[1].hasAttribute('data-reorder-drop')).toBe(false)
+  expect(onmove).not.toHaveBeenCalled()
   teardown()
 })
 
-it('a drag that does not start at a handle reports nothing', () => {
+it('a drop outside every row reports nothing', () => {
+  const { grips, onmove, teardown } = setup()
+
+  grips[0].dispatchEvent(pointer('pointerdown'))
+  under = document.body
+  grips[0].dispatchEvent(pointer('pointermove', 15))
+  grips[0].dispatchEvent(pointer('pointerup', 15))
+
+  expect(onmove).not.toHaveBeenCalled()
+  teardown()
+})
+
+it('a press that does not start at a handle reports nothing', () => {
   const { rows, onmove, teardown } = setup()
 
-  rows[0].dispatchEvent(dragEvent('dragstart'))
-  rows[2].dispatchEvent(dragEvent('dragover', 15))
-  rows[2].dispatchEvent(dragEvent('drop', 15))
+  rows[0].dispatchEvent(pointer('pointerdown'))
+  under = rows[2]
+  rows[0].dispatchEvent(pointer('pointermove', 15))
+  rows[0].dispatchEvent(pointer('pointerup', 15))
 
   expect(onmove).not.toHaveBeenCalled()
   teardown()

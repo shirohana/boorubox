@@ -66,7 +66,8 @@ revert) answers a layout question in one round; it found `aspect-ratio: auto` on
 - Real mouse events — right-click, hover, double-click, scroll — come from `mouse.swift`
   beside this file: `swiftc -O mouse.swift -o /tmp/m` once, then `/tmp/m rclick X Y`,
   `/tmp/m move X Y` (a hover that paints), `/tmp/m click X Y`, `/tmp/m dclick X Y`,
-  `/tmp/m scroll X Y -300`, in screen points. It posts CGEvents at the HID tap and the
+  `/tmp/m scroll X Y -300`, in screen points. `/tmp/m drag X1 Y1 X2 Y2` is a
+  pointer drag (down, twelve dragged moves, a pause, up) for the app's own pointer-event drags. It posts CGEvents at the HID tap and the
   terminal's own Accessibility trust carries them (2026-09-25 smoke run: right-click menus,
   pill hover and the viewer were all driven this way). A JXA CGEvent click was not delivered
   the same way; `cliclick` is not installed.

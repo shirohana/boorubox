@@ -30,8 +30,8 @@
      * list passes nothing.
      */
     note?: string | null
-    /** The tag list passes whether the tag is pinned; the collection list passes nothing. */
-    pinned?: boolean
+    /** The tag list passes the label of the tag's pinned group; the collection list passes nothing. */
+    pinnedLabel?: string | null
     oninclude: () => void
     onexclude: () => void
     ontoggle: () => void
@@ -45,7 +45,7 @@
     nameClass = '',
     lookup,
     note = null,
-    pinned = false,
+    pinnedLabel = null,
     oninclude,
     onexclude,
     ontoggle,
@@ -109,8 +109,8 @@
           >
             {name}
           </button>
-          <PinnedDot {pinned} />
-          <TagNoteIndicator {note} />
+          <PinnedDot group={pinnedLabel} />
+          <span class="ml-0.5 inline-flex empty:hidden"><TagNoteIndicator {note} /></span>
           <span class="shrink-0 text-muted-foreground tabular-nums">{count}</span>
         </div>
       {/snippet}

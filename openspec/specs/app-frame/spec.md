@@ -336,7 +336,7 @@ or reset it.
 ### Requirement: Settings is a set of pages with a nav
 The settings screen SHALL be a set of pages, with a nav listing them at the left of the main
 content region and the chosen page beside it. The nav SHALL list, in this order: General,
-Library, Artists, Rules, Stamps, Booru, Keyboard, About, and SHALL show which page is open.
+Library, Artists, Rules, Stamps, Pinned tags, Booru, Keyboard, About (Pinned tags' place: owner, 2026-10-02), and SHALL show which page is open.
 Each page SHALL have its own address, and navigating to that address from anywhere in the app
 SHALL show that page with the nav, without passing through another page first. A page's
 content SHALL be as wide as the settings screen's single column was; the nav SHALL NOT narrow
@@ -351,7 +351,9 @@ settings page.
 
 What each page holds is said by the capability that owns the fact; General holds the settings
 set once and then left alone — how the app looks and how it listens for captures — because a
-page holding a single field is not worth a place in the nav (owner, 2026-09-28).
+page holding a single field is not worth a place in the nav (owner, 2026-09-28). Pinned tags
+has a page because its groups are library configuration managed in one place, as stamps and
+rules are (owner, 2026-10-02).
 
 A page row that pairs an action button with its description SHALL keep the button at the
 right edge of the row whether or not the description has wrapped the button onto a line of
@@ -360,7 +362,7 @@ stray).
 
 #### Scenario: The pages in order
 - **WHEN** the user opens Settings
-- **THEN** the nav lists General, Library, Artists, Rules, Stamps, Booru, Keyboard, About, and the page shown is marked in it
+- **THEN** the nav lists General, Library, Artists, Rules, Stamps, Pinned tags, Booru, Keyboard, About, and the page shown is marked in it
 
 #### Scenario: First visit
 - **WHEN** Settings is opened on a machine where no settings page has been shown before

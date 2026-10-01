@@ -4,7 +4,7 @@
   // reads its provider from context and throws without one. In the running
   // app that provider is the frame's (`ui/sidebar/sidebar-provider.svelte`),
   // an ancestor no unit test mounts — the same reason
-  // `TagNoteIndicator.test-harness.svelte` gives.
+  // `tags/TooltipHarness.svelte` gives.
   //
   // This does not wrap Inspector itself: several tests here call
   // `instance.startEditTags()` the instant `mount()` returns, before any

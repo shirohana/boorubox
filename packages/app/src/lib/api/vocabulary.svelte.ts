@@ -100,6 +100,12 @@ export class Vocabulary {
   /** The group's name, or `#n` when it has none: the one spelling the menu and the strip share. */
   labelOf = (position: number): string => this.groups[position - 1]?.name || `#${position}`
 
+  /** The label of the group a tag is pinned in, `null` for a tag that is not pinned: what a pinned dot's hint names. */
+  pinnedLabelOf = (name: string): string | null => {
+    const group = this.groupOf(name)
+    return group === null ? null : this.labelOf(group)
+  }
+
   /** How many groups exist — the menu's "Move to #x" range (`pinned-tag-groups` design D4). */
   groupCount = $derived(this.pinnedGroups.length)
 
@@ -124,8 +130,9 @@ export class Vocabulary {
     await this.#apply(setTagCategory(name, category))
   }
 
-  async place(name: string, target: PinTarget): Promise<void> {
-    await this.#apply(setTagPinnedGroup(name, target))
+  /** Answers whether it landed, for the pin field that must keep its text on a refusal. */
+  place(name: string, target: PinTarget): Promise<boolean> {
+    return this.#apply(setTagPinnedGroup(name, target))
   }
 
   /** All of `names` move or none do. */

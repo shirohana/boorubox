@@ -371,7 +371,7 @@ it('the Artist row re-reads when an artist entry is written elsewhere', async ()
 })
 
 it('draws the pinned dot after a pinned tag in the list and none after an unpinned one', () => {
-  vocabulary.entries = [{ name: 'solo', category: 'general', pinnedGroup: 1, note: null }]
+  vocabulary.entries = [{ name: 'solo', category: 'general', pinnedGroup: 1, note: 'a note' }]
   const { target, instance } = setup(img({ id: 'a', tags: ['solo', 'cat'] }))
   flushSync()
 
@@ -382,6 +382,10 @@ it('draws the pinned dot after a pinned tag in the list and none after an unpinn
     ?.querySelector('span[aria-hidden="true"].rounded-full')
   expect(dotted('solo')).not.toBeNull()
   expect(dotted('cat')).toBeNull()
+
+  const solo = buttons.find((button) => button.textContent?.includes('solo'))!
+  const glyph = solo.querySelector('svg[aria-label="Tag note"]')!
+  expect(glyph.compareDocumentPosition(dotted('solo')!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
 
   unmount(instance)
   vocabulary.entries = []
@@ -461,6 +465,23 @@ it('clicking a group label writes the fold through set_pinned_group_collapsed', 
     { cmd: 'set_pinned_group_collapsed', payload: { position: 1, collapsed: true } },
   ])
   expect(groupLabels(target)[0].getAttribute('aria-expanded')).toBe('true')
+
+  unmount(instance)
+})
+
+it('right-clicking a group label offers Manage pinned tags…', async () => {
+  seedGroups(
+    [{ name: 'Clothes', collapsed: false }, { name: '', collapsed: false }],
+    [['hat', 1], ['solo', 2]],
+  )
+  const { target, instance } = setup(img({ id: 'a', tags: [] }))
+  flushSync()
+
+  groupLabels(target)[0].dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true }))
+  await tick()
+  await tick()
+
+  expect(document.body.textContent).toContain('Manage pinned tags…')
 
   unmount(instance)
 })

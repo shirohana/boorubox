@@ -4,7 +4,8 @@
 // filesystem path, and import needs paths. Tauri's own drag-drop event carries
 // them, so it is the only usable source here. It is on by default
 // (`app.windows[].dragDropEnabled`); turning it off to get HTML5 drag and drop
-// would silently kill import by drop.
+// would silently kill import by drop. Drags between elements of the page use
+// `components/common/pointer-drag.ts` instead.
 
 import type { UnlistenFn } from '@tauri-apps/api/event'
 import { getCurrentWebview } from '@tauri-apps/api/webview'

@@ -22,7 +22,7 @@
   import { CATEGORY_ICON, CATEGORY_TEXT_CLASS, searchMark } from './categories'
   import { openDanbooruLookup } from './danbooru-open'
   import FilterRow from './FilterRow.svelte'
-  import PinnedGroupsDialog from './PinnedGroupsDialog.svelte'
+  import PinnedTagsDialog from './PinnedTagsDialog.svelte'
   import TagNoteDialog from './TagNoteDialog.svelte'
   import TagVocabularyMenuItems from './TagVocabularyMenuItems.svelte'
 
@@ -172,7 +172,7 @@
           nameClass={CATEGORY_TEXT_CLASS[vocabulary.categoryOf(name)]}
           lookup={tagLookup(name)}
           note={vocabulary.noteOf(name)}
-          pinned={vocabulary.isPinned(name)}
+          pinnedLabel={vocabulary.pinnedLabelOf(name)}
           oninclude={() => onquery(addTagToQuery(tagQuery, name))}
           onexclude={() => onquery(excludeTagFromQuery(tagQuery, name))}
           ontoggle={() => onquery(toggleTagInQuery(tagQuery, name))}
@@ -201,7 +201,7 @@
   name={editingNote ?? ''}
   onclose={() => (editingNote = null)}
 />
-<PinnedGroupsDialog open={managingGroups} onclose={() => (managingGroups = false)} />
+<PinnedTagsDialog open={managingGroups} onclose={() => (managingGroups = false)} />
 <ArtistDialog
   open={editingArtist !== null}
   request={editingArtist}

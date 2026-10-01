@@ -56,8 +56,8 @@
      */
     oneditartist: (tag: string) => void
     /**
-     * "Manage pinned groups…" was chosen — the host opens its own
-     * `PinnedGroupsDialog` (`pinned-group-management` design D9), the
+     * "Manage pinned tags…" was chosen — the host opens its own
+     * `PinnedTagsDialog` (`pinned-tags-panel` design D8), the
      * `oneditnote` shape and required for the same reason.
      */
     onmanagegroups: () => void
@@ -141,7 +141,7 @@
 {#if vocabulary.groupCount > 0}
   <ContextMenu.Item onSelect={onmanagegroups}>
     <Settings2Icon />
-    Manage pinned groups…
+    Manage pinned tags…
   </ContextMenu.Item>
 {/if}
 <ContextMenu.Separator />

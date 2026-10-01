@@ -150,7 +150,7 @@ it('place calls the command and replaces the list with its answer', async () => 
   })
 
   const store = new Vocabulary()
-  await store.place('tagme', { group: 1 })
+  expect(await store.place('tagme', { group: 1 })).toBe(true)
 
   expect(calls).toHaveBeenCalledWith('set_tag_pinned_group', { name: 'tagme', target: { group: 1 } })
   expect(store.entries).toEqual(next.tags)
@@ -210,7 +210,7 @@ it('place reports a refusal instead of throwing, and leaves entries as they were
   mockIPC(() => {
     throw new Error('no such tag')
   })
-  await store.place('ghost', { group: 1 })
+  expect(await store.place('ghost', { group: 1 })).toBe(false)
 
   expect(store.error).toBe('no such tag')
   expect(store.entries).toEqual([kantoku])
@@ -255,6 +255,20 @@ it('labelOf answers the name and falls back to #n', async () => {
   const { labelOf } = store
   expect(labelOf(1)).toBe('Style')
   expect(labelOf(2)).toBe('#2')
+})
+
+it('pinnedLabelOf answers the group name, #n for an unnamed group, null for an unpinned tag', async () => {
+  mockIPC(() => answer([tagme, { ...zebra, pinnedGroup: 2 }, kantoku], [
+    { name: 'Scene', collapsed: false },
+    { name: '', collapsed: false },
+  ]))
+  const store = new Vocabulary()
+  await store.refresh()
+
+  expect(store.pinnedLabelOf('tagme')).toBe('Scene')
+  expect(store.pinnedLabelOf('zebra')).toBe('#2')
+  expect(store.pinnedLabelOf('kantoku')).toBeNull()
+  expect(store.pinnedLabelOf('ghost')).toBeNull()
 })
 
 it.each([
