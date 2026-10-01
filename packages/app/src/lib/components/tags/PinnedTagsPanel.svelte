@@ -81,6 +81,9 @@
   /** What the pointer is over while dragging: a group's position, or the new-group button. */
   let over = $state<number | typeof NEW_GROUP | null>(null)
 
+  let root = $state<HTMLElement | null>(null)
+  let groupsRegion = $state<HTMLElement | null>(null)
+
   const groups = $derived(vocabulary.pinnedGroups)
   const selected = $derived(ticked.filter((tag) => vocabulary.isPinned(tag)))
   /** The one group every selected tag already sits in, which a move into would do nothing. */
@@ -123,11 +126,22 @@
     closeAdd()
   }
 
-  /** Runs a vocabulary write, then drops the position-keyed state if the groups were renumbered. */
+  /**
+   * Runs a vocabulary write, then drops the position-keyed state if the groups were renumbered.
+   * Focus that was inside the panel stays on its element, or rests on the groups region when
+   * the write removed it: left alone, the dialog's focus scope would send it to the first
+   * tabbable, a group's name field.
+   */
   async function write<T>(change: () => Promise<T>): Promise<T> {
     const before = vocabulary.groups.length
+    const focused = root?.contains(document.activeElement) ? document.activeElement : null
     const result = await change()
     if (vocabulary.groups.length !== before) clearPositionKeyed()
+    if (focused) {
+      await tick()
+      const kept = focused.isConnected && !(focused as HTMLButtonElement).disabled
+      ;(kept ? (focused as HTMLElement) : groupsRegion)?.focus()
+    }
     return result
   }
 
@@ -249,6 +263,43 @@
     else if (target !== vocabulary.groupOf(held.tag)) void placeAndUntick(held.names, target)
   }
 
+  /** Distance from the groups region's top or bottom edge inside which a drag scrolls it. */
+  const EDGE_BAND = 40
+
+  /** Pixels per frame at `distance` from the edge: faster the nearer the pointer is to it. */
+  const edgeSpeed = (distance: number) => 2 + 14 * (1 - Math.max(0, distance) / EDGE_BAND)
+
+  /** The signed scroll step for a pointer at `y`, 0 outside both edge bands. */
+  function edgeStep(region: HTMLElement, y: number): number {
+    const rect = region.getBoundingClientRect()
+    if (y < rect.top + EDGE_BAND) return -edgeSpeed(y - rect.top)
+    if (y > rect.bottom - EDGE_BAND) return edgeSpeed(rect.bottom - y)
+    return 0
+  }
+
+  let edgeFrame: number | null = null
+  let pointer = { x: 0, y: 0 }
+
+  function stopEdgeScroll() {
+    if (edgeFrame !== null) cancelAnimationFrame(edgeFrame)
+    edgeFrame = null
+  }
+
+  /** One step per frame while the last reported pointer is in an edge band; the ring follows what scrolls under it. */
+  function edgeScrollFrame(region: HTMLElement) {
+    edgeFrame = null
+    const step = edgeStep(region, pointer.y)
+    if (step === 0) return
+    const before = region.scrollTop
+    region.scrollTop += step
+    if (dragging) over = targetAt(pointer.x, pointer.y)
+    if (region.scrollTop !== before) armEdgeScroll(region)
+  }
+
+  function armEdgeScroll(region: HTMLElement) {
+    if (edgeFrame === null) edgeFrame = requestAnimationFrame(() => edgeScrollFrame(region))
+  }
+
   function tagDrag(node: HTMLElement) {
     return pointerDrag(
       node,
@@ -258,17 +309,29 @@
           if (tag) dragging = { tag, names: draggedNames(tag) }
         },
         onmove: (x, y) => {
-          if (dragging) over = targetAt(x, y)
+          if (!dragging) return
+          pointer = { x, y }
+          over = targetAt(x, y)
+          if (edgeStep(node, y) !== 0) armEdgeScroll(node)
         },
-        onend: dropDrag,
+        onend: (x, y, dropped) => {
+          stopEdgeScroll()
+          dropDrag(x, y, dropped)
+        },
       },
       { selector: '[data-tag-handle]' },
     )
   }
 </script>
 
-<div class="flex min-h-0 flex-1 flex-col gap-3">
-  <div class="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto pr-1" data-groups use:tagDrag>
+<div bind:this={root} class="flex min-h-0 flex-1 flex-col gap-3">
+  <div
+    bind:this={groupsRegion}
+    tabindex="-1"
+    class="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto pr-1 outline-none"
+    data-groups
+    use:tagDrag
+  >
     {#each groups as group, index (index)}
       {@const position = index + 1}
       {@const label = vocabulary.labelOf(position)}

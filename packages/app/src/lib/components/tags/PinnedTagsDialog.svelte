@@ -17,10 +17,20 @@
   }
 
   let { open, portalTo, onclose }: Props = $props()
+  let content = $state<HTMLElement | null>(null)
 </script>
 
 <Dialog.Root {open} onOpenChange={(next) => { if (!next) onclose() }}>
-  <Dialog.Content portalProps={{ to: portalTo }} class="max-h-[85vh] grid-rows-[auto_minmax(0,1fr)] sm:max-w-lg">
+  <Dialog.Content
+    bind:ref={content}
+    portalProps={{ to: portalTo }}
+    class="max-h-[85vh] grid-rows-[auto_minmax(0,1fr)] sm:max-w-lg"
+    onOpenAutoFocus={(event) => {
+      // The groups region, not the kit's first tabbable (a group's name field).
+      event.preventDefault()
+      content?.querySelector<HTMLElement>('[data-groups]')?.focus()
+    }}
+  >
     <Dialog.Header>
       <Dialog.Title>Pinned tags</Dialog.Title>
       <Dialog.Description>

@@ -18,6 +18,9 @@ case "scroll": let p = pt(); post(.mouseMoved, .left, p)
 case "drag": let p = pt(); let q = CGPoint(x: Double(a[4])!, y: Double(a[5])!)
   post(.mouseMoved, .left, p); post(.leftMouseDown, .left, p)
   for i in 1...12 { let t = Double(i) / 12; post(.leftMouseDragged, .left, CGPoint(x: p.x + (q.x - p.x) * t, y: p.y + (q.y - p.y) * t)) }
-  usleep(150000); post(.leftMouseUp, .left, q)
+  let hold = a.count > 6 ? UInt32(a[6])! * 1000 : 150000
+  var waited: UInt32 = 0
+  while waited < hold { post(.leftMouseDragged, .left, q); usleep(100000); waited += 100000 }
+  post(.leftMouseUp, .left, q)
 default: print("?")
 }
