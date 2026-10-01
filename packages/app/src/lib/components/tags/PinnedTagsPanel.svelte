@@ -8,6 +8,11 @@
   // together, so the sections below cannot show a name on the wrong row after a
   // compaction.
   //
+  // The host bounds the panel's height: the groups scroll inside their own region
+  // and the bar (the move control, "New group…", the host's `barEnd`) sits outside
+  // it. The bar is sticky with the page background so it also holds when the host
+  // is a scrolling page, where the groups region has no bound of its own.
+  //
   // A tag is dragged by its handle with `pointerDrag`, never HTML5 drag (see
   // `api/drag-drop.ts`). No `<label>` wraps a row's checkbox: a label toggles
   // on the press that opens a context menu, and a right-click must never tick.
@@ -16,7 +21,7 @@
   import PinOffIcon from '@lucide/svelte/icons/pin-off'
   import PlusIcon from '@lucide/svelte/icons/plus'
   import Trash2Icon from '@lucide/svelte/icons/trash-2'
-  import { tick } from 'svelte'
+  import { tick, type Snippet } from 'svelte'
   import { vocabulary } from '$lib/api'
   import { moveItem } from '$lib/components/common/reorder'
   import { pointerDrag } from '$lib/components/common/pointer-drag'
@@ -31,11 +36,20 @@
   import TagInput from './TagInput.svelte'
 
   interface Props {
+    /**
+     * Pin the bar to the bottom of a scrolling host (the Settings page). Off in the
+     * dialog: there the host bounds the panel and the bar is already outside the
+     * scroll region, and WebKit misplaces a sticky box inside the dialog's
+     * centring transform.
+     */
+    stickyBar?: boolean
     /** Where menus and the move list portal: the viewer's `<dialog>` when opened from inside it. */
     portalTo?: Element
+    /** Rendered at the bar's end after "New group…", e.g. the dialog's Done. */
+    barEnd?: Snippet
   }
 
-  let { portalTo }: Props = $props()
+  let { portalTo, barEnd, stickyBar = false }: Props = $props()
 
   const NEW_GROUP = 'new'
 
@@ -253,8 +267,8 @@
   }
 </script>
 
-<div class="flex flex-col gap-3">
-  <div class="flex flex-col gap-3" use:tagDrag>
+<div class="flex min-h-0 flex-1 flex-col gap-3">
+  <div class="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto pr-1" data-groups use:tagDrag>
     {#each groups as group, index (index)}
       {@const position = index + 1}
       {@const label = vocabulary.labelOf(position)}
@@ -444,7 +458,10 @@
       </div>
     </form>
   {:else}
-    <div class="flex flex-wrap items-center justify-end gap-2">
+    <div
+      data-bar
+      class="flex flex-wrap items-center justify-end gap-2 pt-2 {stickyBar ? 'sticky bottom-0 bg-background' : ''}"
+    >
       {#if selected.length > 0}
         <Select.Root
           type="single"
@@ -475,6 +492,7 @@
       >
         New group…
       </Button>
+      {@render barEnd?.()}
     </div>
   {/if}
 </div>

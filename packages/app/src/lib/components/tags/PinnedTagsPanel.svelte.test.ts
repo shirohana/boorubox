@@ -3,7 +3,7 @@
 import type { TagEntry, Vocabulary } from '@boorubox/shared'
 import { vocabulary } from '$lib/api'
 import { clearMocks, mockIPC } from '@tauri-apps/api/mocks'
-import { flushSync, mount, tick, unmount } from 'svelte'
+import { createRawSnippet, flushSync, mount, tick, unmount } from 'svelte'
 import { afterEach, expect, it, vi } from 'vitest'
 import PinnedTagsPanel from './PinnedTagsPanel.svelte'
 
@@ -411,4 +411,21 @@ it('pins once when Enter is pressed twice while the first pin is in flight', asy
 
   expect(calls.filter((call) => call.cmd === 'set_tag_pinned_group')).toHaveLength(1)
   unmount(instance)
+})
+
+it('renders barEnd inside the bar, which is a sibling of the scroll region', () => {
+  seed()
+  mockIPC((cmd) => (cmd === 'tag_suggestions' ? [] : { tags: vocabulary.entries, groups: vocabulary.groups }))
+  mount(PinnedTagsPanel, {
+    target: document.body,
+    props: {
+      barEnd: createRawSnippet(() => ({ render: () => '<button data-done>Done</button>' })),
+    },
+  })
+  flushSync()
+  const bar = document.body.querySelector('[data-bar]')!
+  const groupsRegion = document.body.querySelector('[data-groups]')!
+  expect(bar.querySelector('[data-done]')).not.toBeNull()
+  expect(groupsRegion.contains(bar)).toBe(false)
+  expect(bar.parentElement).toBe(groupsRegion.parentElement)
 })

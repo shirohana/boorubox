@@ -102,14 +102,19 @@
             </button>
           </span>
           <!-- Clicking an active row takes it out again (spec "Filter from the list"). -->
+          <!--
+            The dot sits inside the name button, right after the text: the button
+            stretches to fill the row, so a dot placed after it would land at the
+            row's end beside the glyph and the count (owner, 2026-10-02).
+          -->
           <button
             type="button"
-            class="min-w-0 flex-1 truncate py-0.5 text-left {nameClass}"
+            class="flex min-w-0 flex-1 items-center gap-1 py-0.5 text-left {nameClass}"
             onclick={ontoggle}
           >
-            {name}
+            <span class="min-w-0 truncate">{name}</span>
+            <PinnedDot group={pinnedLabel} />
           </button>
-          <PinnedDot group={pinnedLabel} />
           <span class="ml-0.5 inline-flex empty:hidden"><TagNoteIndicator {note} /></span>
           <span class="shrink-0 text-muted-foreground tabular-nums">{count}</span>
         </div>

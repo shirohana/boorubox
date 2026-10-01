@@ -885,7 +885,8 @@
   {@const textClass = chip.kind === 'tag'
     ? CATEGORY_TEXT_CLASS[vocabulary.categoryOf(chip.tag)]
     : 'text-foreground'}
-  <li>
+  <!-- `flex`: an inline button in a block `li` aligns by baseline, and a glyph wrapper shifts that baseline, lifting the chip off its row. -->
+  <li class="flex">
     <ContextMenu.Root>
       <ContextMenu.Trigger>
         {#snippet child({ props })}

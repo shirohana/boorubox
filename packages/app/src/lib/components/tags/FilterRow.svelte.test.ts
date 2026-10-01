@@ -96,13 +96,15 @@ it('draws the name, the pinned dot, the note glyph, then the count, and no dot w
   const before = (a: Element, b: Element) => !!(a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING)
 
   const pinned = mountRow('Scene')
-  const name = [...pinned.target.querySelectorAll('button')].find((button) => button.textContent?.trim() === 'solo')
+  const name = [...pinned.target.querySelectorAll('button')].find((button) => button.querySelector('span.truncate')?.textContent === 'solo')
   const dot = pinned.target.querySelector('span[aria-hidden="true"].rounded-full')
   const glyph = pinned.target.querySelector('svg[aria-label="Tag note"]')
   const count = [...pinned.target.querySelectorAll('span')].find((span) => span.textContent === '3')
   expect(dot).not.toBeNull()
   expect(glyph).not.toBeNull()
   expect(before(name!, dot!)).toBe(true)
+  // Inside the name button, right after its text: outside it the stretched button pushes the dot to the row's end.
+  expect(name!.contains(dot!)).toBe(true)
   expect(before(dot!, glyph!)).toBe(true)
   expect(before(glyph!, count!)).toBe(true)
   unmount(pinned.instance)

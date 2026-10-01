@@ -20,7 +20,7 @@
 </script>
 
 <Dialog.Root {open} onOpenChange={(next) => { if (!next) onclose() }}>
-  <Dialog.Content portalProps={{ to: portalTo }} class="max-h-[85vh] overflow-y-auto sm:max-w-lg">
+  <Dialog.Content portalProps={{ to: portalTo }} class="max-h-[85vh] grid-rows-[auto_minmax(0,1fr)] sm:max-w-lg">
     <Dialog.Header>
       <Dialog.Title>Pinned tags</Dialog.Title>
       <Dialog.Description>
@@ -28,10 +28,10 @@
       </Dialog.Description>
     </Dialog.Header>
 
-    <PinnedTagsPanel {portalTo} />
-
-    <Dialog.Footer>
-      <Button type="button" onclick={onclose}>Done</Button>
-    </Dialog.Footer>
+    <PinnedTagsPanel {portalTo}>
+      {#snippet barEnd()}
+        <Button type="button" onclick={onclose}>Done</Button>
+      {/snippet}
+    </PinnedTagsPanel>
   </Dialog.Content>
 </Dialog.Root>
