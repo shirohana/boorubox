@@ -111,3 +111,80 @@ export function pointerDrag(
     },
   }
 }
+
+/** Distance from a scroll box's top or bottom edge inside which a held drag scrolls it. */
+const EDGE_BAND = 40
+
+/** Pixels per frame at `distance` from the edge: faster the nearer the pointer is to it. */
+const edgeSpeed = (distance: number) => 2 + 14 * (1 - Math.max(0, distance) / EDGE_BAND)
+
+function scrollsVertically(element: Element): boolean {
+  if (element.scrollHeight <= element.clientHeight) return false
+  const { overflowY } = getComputedStyle(element)
+  return overflowY === 'auto' || overflowY === 'scroll'
+}
+
+// The box is whatever scrolls under the pointer, never a configured region: the
+// nearest ancestor of the element at the pointer that overflows and has an
+// `overflow-y` of `auto` or `scroll`, else the document's scrolling element.
+// Resolved afresh on every call and frame, so a host needs no prop and a box
+// that appears or disappears under a held pointer is followed.
+function scrollBoxAt(x: number, y: number): Element | null {
+  for (let element = document.elementFromPoint(x, y); element; element = element.parentElement) {
+    if (scrollsVertically(element)) return element
+  }
+  return document.scrollingElement
+}
+
+/** The box's visible vertical extent; the viewport for the document's scrolling element. */
+function visibleExtent(box: Element): { top: number, bottom: number } {
+  if (box === document.scrollingElement) return { top: 0, bottom: window.innerHeight }
+  return box.getBoundingClientRect()
+}
+
+/** The signed scroll step for a pointer at `y` in `box`, 0 outside both edge bands. */
+function edgeStep(box: Element, y: number): number {
+  const { top, bottom } = visibleExtent(box)
+  if (y < top + EDGE_BAND) return -edgeSpeed(y - top)
+  if (y > bottom - EDGE_BAND) return edgeSpeed(bottom - y)
+  return 0
+}
+
+/**
+ * Scrolls whatever scrolls under a held drag pointer. Call `at(x, y)` on every
+ * drag move and `stop()` when the drag ends. While the pointer sits in the top
+ * or bottom band of the box under it, one step per frame moves its `scrollTop`
+ * until the step moves nothing or the pointer leaves the band. `onscroll`
+ * runs after each step, for a host whose drop target moves under a still pointer.
+ */
+export function edgeScroller(onscroll?: () => void) {
+  let frame: number | null = null
+  let pointer = { x: 0, y: 0 }
+
+  function step() {
+    frame = null
+    const box = scrollBoxAt(pointer.x, pointer.y)
+    const delta = box ? edgeStep(box, pointer.y) : 0
+    if (!box || delta === 0) return
+    const before = box.scrollTop
+    box.scrollTop += delta
+    onscroll?.()
+    if (box.scrollTop !== before) arm()
+  }
+
+  function arm() {
+    if (frame === null) frame = requestAnimationFrame(step)
+  }
+
+  return {
+    at(x: number, y: number) {
+      pointer = { x, y }
+      const box = scrollBoxAt(x, y)
+      if (box && edgeStep(box, y) !== 0) arm()
+    },
+    stop() {
+      if (frame !== null) cancelAnimationFrame(frame)
+      frame = null
+    },
+  }
+}

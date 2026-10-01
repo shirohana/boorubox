@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
-import { afterEach, expect, it, vi } from 'vitest'
-import { pointerDrag } from './pointer-drag'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import { edgeScroller, pointerDrag } from './pointer-drag'
 
 function pointer(type: string, x = 0, y = 0, init: PointerEventInit = {}) {
   const event = new Event(type, { bubbles: true, cancelable: true })
@@ -120,4 +120,126 @@ it('with a selector only a press inside a match arms', () => {
   expect(grip.setPointerCapture).toHaveBeenCalledWith(1)
   grip.dispatchEvent(pointer('pointermove', 0, 20))
   expect(onstart).toHaveBeenCalledWith(0, 20, grip)
+})
+
+/** A box that overflows by 800px, with a plain-number `scrollTop` and a rect of 100..300. */
+function scrollBox(parent: HTMLElement, overflowY = 'auto') {
+  const box = document.createElement('div')
+  box.style.overflowY = overflowY
+  box.getBoundingClientRect = () => ({ top: 100, bottom: 300 }) as DOMRect
+  Object.defineProperty(box, 'scrollHeight', { value: 1000, configurable: true })
+  Object.defineProperty(box, 'clientHeight', { value: 200, configurable: true })
+  let top = 0
+  Object.defineProperty(box, 'scrollTop', { get: () => top, set: (v: number) => (top = v), configurable: true })
+  parent.appendChild(box)
+  return box
+}
+
+function stubFrames() {
+  const frames: FrameRequestCallback[] = []
+  vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => frames.push(callback))
+  vi.stubGlobal('cancelAnimationFrame', () => frames.splice(0))
+  return frames
+}
+
+function pointerOver(element: Element | null) {
+  document.elementFromPoint = () => element
+}
+
+describe('edgeScroller', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  it('scrolls the nearest scrollable ancestor of the element under the pointer', () => {
+    const frames = stubFrames()
+    const outer = scrollBox(document.body)
+    const inner = scrollBox(outer)
+    const leaf = document.createElement('span')
+    inner.appendChild(leaf)
+    pointerOver(leaf)
+
+    edgeScroller().at(0, 290)
+    frames.shift()!(0)
+
+    expect(inner.scrollTop).toBeGreaterThan(2)
+    expect(outer.scrollTop).toBe(0)
+  })
+
+  it('skips an ancestor that does not overflow or does not scroll', () => {
+    const frames = stubFrames()
+    const outer = scrollBox(document.body)
+    const hidden = scrollBox(outer, 'hidden')
+    pointerOver(hidden)
+
+    edgeScroller().at(0, 290)
+    frames.shift()!(0)
+
+    expect(hidden.scrollTop).toBe(0)
+    expect(outer.scrollTop).toBeGreaterThan(2)
+  })
+
+  it('falls back to the document scrolling element, measured against the viewport', () => {
+    const frames = stubFrames()
+    const root = document.documentElement
+    Object.defineProperty(document, 'scrollingElement', { value: root, configurable: true })
+    Object.defineProperty(root, 'scrollTop', { value: 0, writable: true, configurable: true })
+    pointerOver(document.body)
+
+    edgeScroller().at(0, window.innerHeight - 5)
+    frames.shift()!(0)
+
+    expect(root.scrollTop).toBeGreaterThan(2)
+  })
+
+  it('steps on the next frame in the bottom band, up in the top band, and not outside them', () => {
+    const frames = stubFrames()
+    const box = scrollBox(document.body)
+    box.scrollTop = 500
+    pointerOver(box)
+    const scroller = edgeScroller()
+
+    scroller.at(0, 200)
+    expect(frames).toHaveLength(0)
+
+    scroller.at(0, 110)
+    frames.shift()!(0)
+    expect(box.scrollTop).toBeLessThan(500)
+
+    box.scrollTop = 500
+    scroller.at(0, 290)
+    expect(box.scrollTop).toBe(500)
+    frames.shift()!(0)
+    expect(box.scrollTop).toBeGreaterThan(500)
+    expect(frames).toHaveLength(1)
+  })
+
+  it('stop ends the loop', () => {
+    const frames = stubFrames()
+    const box = scrollBox(document.body)
+    pointerOver(box)
+    const scroller = edgeScroller()
+
+    scroller.at(0, 290)
+    scroller.stop()
+
+    expect(frames).toHaveLength(0)
+  })
+
+  it('stops stepping when scrollTop no longer changes, and reports each step to onscroll', () => {
+    const frames = stubFrames()
+    const box = scrollBox(document.body)
+    let top = 0
+    Object.defineProperty(box, 'scrollTop', { get: () => top, set: (v: number) => (top = Math.min(v, 5)), configurable: true })
+    pointerOver(box)
+    const onscroll = vi.fn()
+
+    edgeScroller(onscroll).at(0, 290)
+    frames.shift()!(0)
+    expect(frames).toHaveLength(1)
+    frames.shift()!(0)
+
+    expect(frames).toHaveLength(0)
+    expect(onscroll).toHaveBeenCalledTimes(2)
+  })
 })

@@ -68,7 +68,7 @@ revert) answers a layout question in one round; it found `aspect-ratio: auto` on
   `/tmp/m move X Y` (a hover that paints), `/tmp/m click X Y`, `/tmp/m dclick X Y`,
   `/tmp/m scroll X Y -300`, in screen points. `/tmp/m drag X1 Y1 X2 Y2` is a
   pointer drag (down, twelve dragged moves, a pause, up); a fifth number holds the pointer at the
-  end for that many milliseconds before the release, for edge auto-scroll for the app's own pointer-event drags. It posts CGEvents at the HID tap and the
+  end for that many milliseconds before the release, for edge auto-scroll; `/tmp/m dragvia X1 Y1 X2 Y2 HOLDMS X3 Y3` holds at X2 Y2 then moves to X3 Y3 and releases there, for a drop after the scroll for the app's own pointer-event drags. It posts CGEvents at the HID tap and the
   terminal's own Accessibility trust carries them (2026-09-25 smoke run: right-click menus,
   pill hover and the viewer were all driven this way). A JXA CGEvent click was not delivered
   the same way; `cliclick` is not installed.

@@ -448,66 +448,23 @@ it('rests the focus on the groups when an unpin removes the pressed button, and 
   unmount(instance)
 })
 
-/** A groups region whose rect is 100..300 px tall; the scroll position is a plain number. */
-function stubRegion() {
-  const region = document.body.querySelector<HTMLElement>('[data-groups]')!
-  region.getBoundingClientRect = () => ({ top: 100, bottom: 300 }) as DOMRect
-  Object.defineProperty(region, 'scrollHeight', { value: 1000, configurable: true })
-  let top = 0
-  Object.defineProperty(region, 'scrollTop', { get: () => top, set: (v: number) => (top = v), configurable: true })
-  return region
-}
-
-function startDrag(from: string) {
+it('reports the pointer to the edge scroller on every move and stops it on release', async () => {
+  const pointer_ = await import('$lib/components/common/pointer-drag')
+  const at = vi.fn()
+  const stop = vi.fn()
+  vi.spyOn(pointer_, 'edgeScroller').mockReturnValue({ at, stop })
+  const instance = setup()
   const handle = document.body
-    .querySelector(`[data-tag-row="${from}"] [data-tag-handle]`)!
+    .querySelector('[data-tag-row="cat"] [data-tag-handle]')!
     .firstElementChild as HTMLElement
   handle.setPointerCapture = () => {}
   handle.releasePointerCapture = () => {}
   document.elementFromPoint = () => document.body
   handle.dispatchEvent(pointer('pointerdown'))
-  return handle
-}
-
-it('scrolls the groups a step per frame while a drag is held in the bottom band, and stops on release', () => {
-  const frames: FrameRequestCallback[] = []
-  vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => frames.push(callback))
-  vi.stubGlobal('cancelAnimationFrame', () => frames.splice(0))
-  const instance = setup()
-  const region = stubRegion()
-  const handle = startDrag('cat')
-
-  handle.dispatchEvent(pointer('pointermove', 20, 200))
-  expect(frames).toHaveLength(0)
-  expect(region.scrollTop).toBe(0)
-
   handle.dispatchEvent(pointer('pointermove', 20, 290))
-  expect(frames).toHaveLength(1)
-  frames.shift()!(0)
-  expect(region.scrollTop).toBeGreaterThan(2)
-  expect(frames).toHaveLength(1)
-
+  expect(at).toHaveBeenCalledWith(20, 290)
   handle.dispatchEvent(pointer('pointerup', 20, 290))
-  expect(frames).toHaveLength(0)
-  expect(region.scrollTop).toBeGreaterThan(2)
-  vi.unstubAllGlobals()
-  unmount(instance)
-})
-
-it('scrolls up in the top band', () => {
-  const frames: FrameRequestCallback[] = []
-  vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => frames.push(callback))
-  vi.stubGlobal('cancelAnimationFrame', () => frames.splice(0))
-  const instance = setup()
-  const region = stubRegion()
-  region.scrollTop = 500
-  const handle = startDrag('cat')
-
-  handle.dispatchEvent(pointer('pointermove', 20, 110))
-  frames.shift()!(0)
-
-  expect(region.scrollTop).toBeLessThan(500)
-  handle.dispatchEvent(pointer('pointerup', 20, 110))
-  vi.unstubAllGlobals()
+  expect(stop).toHaveBeenCalled()
+  vi.restoreAllMocks()
   unmount(instance)
 })

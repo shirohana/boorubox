@@ -15,7 +15,7 @@
 // While a drag is over a row the row carries `data-reorder-drop="before"` or
 // `"after"` for the owner's styling, removed when the drag ends.
 
-import { pointerDrag } from './pointer-drag'
+import { edgeScroller, pointerDrag } from './pointer-drag'
 
 /**
  * A new array with the item at `from` placed at `to`. The same `list` comes
@@ -77,14 +77,19 @@ export function reorderable(node: HTMLElement, options: ReorderOptions) {
     if (row && node.contains(row)) row.setAttribute(DROP, pointerInLowerHalf(row, y) ? 'after' : 'before')
   }
 
+  const scroller = edgeScroller()
   const drag = pointerDrag(node, {
     onstart(x, y, handle) {
       const row = handle.closest<HTMLElement>(ROW)
       dragged = row ? indexOf(row) : null
       markRowAt(x, y)
     },
-    onmove: markRowAt,
+    onmove(x, y) {
+      markRowAt(x, y)
+      scroller.at(x, y)
+    },
     onend(x, y, dropped) {
+      scroller.stop()
       const from = dragged
       dragged = null
       clearMarks()
@@ -98,6 +103,9 @@ export function reorderable(node: HTMLElement, options: ReorderOptions) {
     update(next: ReorderOptions) {
       current = next
     },
-    destroy: drag.destroy,
+    destroy() {
+      scroller.stop()
+      drag.destroy()
+    },
   }
 }

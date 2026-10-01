@@ -2,6 +2,7 @@
 
 import { flushSync, mount, unmount } from 'svelte'
 import { afterAll, afterEach, expect, it, vi } from 'vitest'
+import * as pointerDrag from './pointer-drag'
 import { reorderable } from './reorder'
 import ReorderHandle from './ReorderHandle.svelte'
 
@@ -132,4 +133,21 @@ it('a press that does not start at a handle reports nothing', () => {
 
   expect(onmove).not.toHaveBeenCalled()
   teardown()
+})
+
+it('reports the pointer to the edge scroller on every move and stops it on drop', () => {
+  const at = vi.fn()
+  const stop = vi.fn()
+  vi.spyOn(pointerDrag, 'edgeScroller').mockReturnValue({ at, stop })
+  const { rows, grips, teardown } = setup()
+
+  grips[0].dispatchEvent(pointer('pointerdown'))
+  under = rows[2]
+  grips[0].dispatchEvent(pointer('pointermove', 15))
+  expect(at).toHaveBeenCalledWith(0, 15)
+  grips[0].dispatchEvent(pointer('pointerup', 15))
+  expect(stop).toHaveBeenCalled()
+
+  teardown()
+  vi.restoreAllMocks()
 })

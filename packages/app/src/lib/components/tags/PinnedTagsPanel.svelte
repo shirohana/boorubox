@@ -24,7 +24,7 @@
   import { tick, type Snippet } from 'svelte'
   import { vocabulary } from '$lib/api'
   import { moveItem } from '$lib/components/common/reorder'
-  import { pointerDrag } from '$lib/components/common/pointer-drag'
+  import { edgeScroller, pointerDrag } from '$lib/components/common/pointer-drag'
   import ReorderHandle from '$lib/components/common/ReorderHandle.svelte'
   import { Button } from '$lib/components/ui/button'
   import { Checkbox } from '$lib/components/ui/checkbox'
@@ -263,45 +263,15 @@
     else if (target !== vocabulary.groupOf(held.tag)) void placeAndUntick(held.names, target)
   }
 
-  /** Distance from the groups region's top or bottom edge inside which a drag scrolls it. */
-  const EDGE_BAND = 40
-
-  /** Pixels per frame at `distance` from the edge: faster the nearer the pointer is to it. */
-  const edgeSpeed = (distance: number) => 2 + 14 * (1 - Math.max(0, distance) / EDGE_BAND)
-
-  /** The signed scroll step for a pointer at `y`, 0 outside both edge bands. */
-  function edgeStep(region: HTMLElement, y: number): number {
-    const rect = region.getBoundingClientRect()
-    if (y < rect.top + EDGE_BAND) return -edgeSpeed(y - rect.top)
-    if (y > rect.bottom - EDGE_BAND) return edgeSpeed(rect.bottom - y)
-    return 0
-  }
-
-  let edgeFrame: number | null = null
   let pointer = { x: 0, y: 0 }
 
-  function stopEdgeScroll() {
-    if (edgeFrame !== null) cancelAnimationFrame(edgeFrame)
-    edgeFrame = null
-  }
-
-  /** One step per frame while the last reported pointer is in an edge band; the ring follows what scrolls under it. */
-  function edgeScrollFrame(region: HTMLElement) {
-    edgeFrame = null
-    const step = edgeStep(region, pointer.y)
-    if (step === 0) return
-    const before = region.scrollTop
-    region.scrollTop += step
+  /** The ring follows what scrolls under the held pointer. */
+  const scroller = edgeScroller(() => {
     if (dragging) over = targetAt(pointer.x, pointer.y)
-    if (region.scrollTop !== before) armEdgeScroll(region)
-  }
-
-  function armEdgeScroll(region: HTMLElement) {
-    if (edgeFrame === null) edgeFrame = requestAnimationFrame(() => edgeScrollFrame(region))
-  }
+  })
 
   function tagDrag(node: HTMLElement) {
-    return pointerDrag(
+    const drag = pointerDrag(
       node,
       {
         onstart(_x, _y, handle) {
@@ -312,15 +282,21 @@
           if (!dragging) return
           pointer = { x, y }
           over = targetAt(x, y)
-          if (edgeStep(node, y) !== 0) armEdgeScroll(node)
+          scroller.at(x, y)
         },
         onend: (x, y, dropped) => {
-          stopEdgeScroll()
+          scroller.stop()
           dropDrag(x, y, dropped)
         },
       },
       { selector: '[data-tag-handle]' },
     )
+    return {
+      destroy() {
+        scroller.stop()
+        drag.destroy()
+      },
+    }
   }
 </script>
 
@@ -523,7 +499,9 @@
   {:else}
     <div
       data-bar
-      class="flex flex-wrap items-center justify-end gap-2 pt-2 {stickyBar ? 'sticky bottom-0 bg-background' : ''}"
+      class="flex flex-wrap items-center justify-end gap-2 pt-2 {stickyBar
+        ? `sticky bottom-0 bg-background`
+        : ''}"
     >
       {#if selected.length > 0}
         <Select.Root

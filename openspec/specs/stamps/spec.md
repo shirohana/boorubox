@@ -69,7 +69,8 @@ kept. Stamps SHALL be listed, on the page and in the bar alike, in an order the 
 stamp lands last, and the Stamps page SHALL offer moving a stamp by dragging its handle and by
 "Move up" and "Move down" on its row (owner, 2026-10-01, reversing the 2026-09-23
 non-goal: creation order was the order at four stamps and stopped being at a daily working
-set). The bar SHALL follow the new order at once. They SHALL belong to the library,
+set). The bar SHALL follow the new order at once. A drag held near the top or bottom of the
+page SHALL scroll it, so a long list can be dragged across (owner, 2026-10-02). They SHALL belong to the library,
 not to the machine, and SHALL be described in the library's own file so a rebuild restores
 them.
 
@@ -100,6 +101,10 @@ them.
 #### Scenario: The order survives a rebuild
 - **WHEN** the order is Bird, Cat, Dog and the library is rebuilt from its folder
 - **THEN** the order is Bird, Cat, Dog afterwards
+
+#### Scenario: Drag past the page's edge
+- **WHEN** the Stamps page is longer than the window and the user drags a stamp's handle to the bottom edge and holds it
+- **THEN** the page scrolls until the target row is under the pointer, and letting go lands the stamp there
 
 ### Requirement: Edit mode applies the active stamp by a click
 The library screen SHALL offer an edit mode, entered and left by a toolbar control — no key
