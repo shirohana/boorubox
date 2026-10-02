@@ -17,8 +17,17 @@
 </script>
 
 {#if group !== null}
+  <!--
+    The dot names itself (`role="img"`), never through an `sr-only` sibling:
+    that span is `position: absolute`, and the inspector's scroll box is not
+    positioned, so it escapes to the page and stretches the whole document by
+    the tag list's height — a window-level scrollbar on Windows.
+  -->
   <HoverHint text="Pinned in {group}" {portalTo}>
-    <span aria-hidden="true" class="size-1 shrink-0 rounded-full bg-muted-foreground/70"></span>
-    <span class="sr-only">Pinned in {group}</span>
+    <span
+      role="img"
+      aria-label="Pinned in {group}"
+      class="size-1 shrink-0 rounded-full bg-muted-foreground/70"
+    ></span>
   </HoverHint>
 {/if}

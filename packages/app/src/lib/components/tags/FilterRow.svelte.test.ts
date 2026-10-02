@@ -97,7 +97,7 @@ it('draws the name, the pinned dot, the note glyph, then the count, and no dot w
 
   const pinned = mountRow('Scene')
   const name = [...pinned.target.querySelectorAll('button')].find((button) => button.querySelector('span.truncate')?.textContent === 'solo')
-  const dot = pinned.target.querySelector('span[aria-hidden="true"].rounded-full')
+  const dot = pinned.target.querySelector('span[role="img"].rounded-full')
   const glyph = pinned.target.querySelector('svg[aria-label="Tag note"]')
   const count = [...pinned.target.querySelectorAll('span')].find((span) => span.textContent === '3')
   expect(dot).not.toBeNull()

@@ -379,7 +379,7 @@ it('draws the pinned dot after a pinned tag in the list and none after an unpinn
   const buttons = [...target.querySelectorAll('button.max-w-full')]
   const dotted = (name: string) => buttons
     .find((button) => button.textContent?.includes(name))
-    ?.querySelector('span[aria-hidden="true"].rounded-full')
+    ?.querySelector('span[role="img"].rounded-full')
   expect(dotted('solo')).not.toBeNull()
   expect(dotted('cat')).toBeNull()
 

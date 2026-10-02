@@ -21,12 +21,13 @@ it('renders nothing for a tag that is not pinned', () => {
   unmount(instance)
 })
 
-it('renders the disc and the hidden "Pinned in" text for a group label', () => {
+it('renders the disc named "Pinned in" its group, with no absolutely placed text', () => {
   const { target, instance } = setup('Scene')
 
-  const disc = target.querySelector('span[aria-hidden="true"]')
+  const disc = target.querySelector('span[role="img"]')
   expect(disc?.classList.contains('rounded-full')).toBe(true)
-  expect(target.querySelector('.sr-only')?.textContent).toBe('Pinned in Scene')
+  expect(disc?.getAttribute('aria-label')).toBe('Pinned in Scene')
+  expect(target.querySelector('.sr-only')).toBeNull()
 
   unmount(instance)
 })
