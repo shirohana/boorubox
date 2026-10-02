@@ -1,6 +1,6 @@
 [package]
 name = "boorubox"
-version = "26.10.201"
+version = "26.10.202"
 description = "Local image library and staging area in front of boorus"
 authors = ["Hana Shiro"]
 edition = "2024"
