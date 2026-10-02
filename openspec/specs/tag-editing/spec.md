@@ -10,8 +10,8 @@ uses, keeps the set clean and sorted, and turns any tag on screen into a search 
 The app SHALL let the user change the tags of the image currently shown in the inspector,
 from both of the inspector's placements, and SHALL store the result as the image's whole tag
 set. Saving SHALL drop duplicates and blank entries, SHALL lowercase every name (so `Cat` and
-`cat` in one editor are one tag), SHALL leave the set unordered but present it in one order
-everywhere it is displayed, and SHALL record the image as changed at that moment. An empty
+`cat` in one editor are one tag), SHALL leave the set unordered but present it in the single-image
+category order everywhere one image's tags are displayed, and SHALL record the image as changed at that moment. An empty
 editor SHALL be a valid save that leaves the image with no tags. The new tags SHALL be visible
 in the grid, the inspector and the tag list of the current results without reopening the
 library.
@@ -20,8 +20,8 @@ The tag area SHALL be read-only until the user opens the editor with an edit act
 or cancelling SHALL close it again, and a refused save SHALL keep it open with the typed
 text. The editor SHALL be a field that grows with its text, not a single line: an image
 carries dozens of tags and a line that scrolls sideways shows a few of them. It SHALL open
-with the image's tags on one line per category that has any, in the app's one category order
-— artist, copyright, character, general, meta — alphabetical within a line, and with a space
+with the image's tags on one line per category that has any, in the single-image category
+order — artist, copyright, character, meta, general — alphabetical within a line, and with a space
 after the last tag, and the caret SHALL be placed after that space when the editor opens, so
 the editor opens ready to type a new token — a click into the editor means a tag is about to
 be added, and the owner had been typing that space by hand on every edit (2026-09-12) and
@@ -39,7 +39,7 @@ break SHALL count as a space. The space is not a change: a save trims.
 
 #### Scenario: One line per category
 - **WHEN** the user opens the editor of an image tagged `kantoku` (artist), `1girl`, `highres` (meta) and `azur_lane` (copyright)
-- **THEN** the field reads `kantoku`, `azur_lane`, `1girl`, `highres ` on four lines, in that order
+- **THEN** the field reads `kantoku`, `azur_lane`, `highres`, `1girl ` on four lines, in that order
 
 #### Scenario: A line does not categorise
 - **WHEN** the user moves `1girl` onto the artist line and saves
@@ -176,8 +176,9 @@ makes English hard to read, and a tag already carrying its category's colour str
 is one colour too many (owner, 2026-09-23). The marking SHALL sit beside the tag's category
 colour, not replace it; an included tag SHALL also carry extra weight, the one change of
 weight the marking makes, since a background alone is easy to miss as the only cue once the
-underline is gone. The tags SHALL be shown grouped by category in the app's one category
-order, alphabetical within a group.
+underline is gone. The tags SHALL be shown grouped by category in the single-image category
+order — artist, copyright, character, meta, general — alphabetical within a group (owner,
+2026-10-02; the left panel keeps the library order, see the tag-sidebar spec).
 
 Acting on a tag from the inspector SHALL keep the image the panel describes as the current
 image: after the search re-runs, that image SHALL be current at whatever row it now occupies,

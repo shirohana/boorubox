@@ -10,13 +10,20 @@ import type { TagCategory } from '@boorubox/shared'
 import { sortTags } from './tag-utils'
 
 /**
- * The one order the sidebar's groups, the inspector's groups and the
- * editor's lines all follow (`tag-panel-polish` design D1, reversing
- * `tag-vocabulary` D6's `meta` before `general`): Danbooru's sidebar order,
- * fixed here rather than left to enum declaration order, since the wire's
- * own alphabetical sort would put `general` first.
+ * The library order: the sidebar's rows and toggles, the pinned chips and the
+ * menu's category list (`single-image-tag-order` design D1/D2). Danbooru's
+ * sidebar order, fixed here rather than left to enum declaration order, since
+ * the wire's own alphabetical sort would put `general` first.
  */
 export const CATEGORY_ORDER: TagCategory[] = ['artist', 'copyright', 'character', 'general', 'meta']
+
+/**
+ * The order of one image's tags: the inspector's tag list, the tile footer
+ * and the editor's lines (`single-image-tag-order` design D1/D2). Differs from
+ * {@link CATEGORY_ORDER} on purpose, by the owner's call; pick by what the
+ * view shows, never by which panel it sits in.
+ */
+export const IMAGE_CATEGORY_ORDER: TagCategory[] = ['artist', 'copyright', 'character', 'meta', 'general']
 
 /** Every category name is already its own label; this only capitalises it. */
 export function categoryLabel(category: TagCategory): string {
@@ -24,11 +31,13 @@ export function categoryLabel(category: TagCategory): string {
 }
 
 /**
- * "Group by `CATEGORY_ORDER`, `sortTags` within" (`tag-panel-polish` design
- * D1/D7): the one grouping every reader of the vocabulary needs — the
- * editor's lines (`tag-input.ts`'s `editorText`), the inspector's tag list
- * and the sidebar's rows all grouped the same three tags into three
- * different loops before this. `nameOf` lets the caller group whatever it
+ * "Group by `order`, `sortTags` within" (`tag-panel-polish` design D7): the
+ * one grouping every reader of the vocabulary needs — the editor's lines
+ * (`tag-input.ts`'s `editorText`), the inspector's tag list, the tile footer,
+ * the pinned chips and the sidebar's rows. `order` has no default
+ * (`single-image-tag-order` design D3): each caller names the library order or
+ * the single-image one, so a new caller cannot fall into the wrong one
+ * silently. `nameOf` lets the caller group whatever it
  * has a name for — a plain tag string in the editor and the inspector, a
  * `TagCount` row in the sidebar — without forcing every caller through the
  * same shape first. Ordering within a group goes through `sortTags` itself
@@ -41,8 +50,9 @@ export function groupByCategory<T>(
   items: T[],
   nameOf: (item: T) => string,
   categoryOf: (name: string) => TagCategory,
+  order: TagCategory[],
 ): { category: TagCategory, items: T[] }[] {
-  return CATEGORY_ORDER.map((category) => {
+  return order.map((category) => {
     const inCategory = items.filter((item) => categoryOf(nameOf(item)) === category)
     const byName = new Map(inCategory.map((item) => [nameOf(item), item] as const))
     return { category, items: sortTags(inCategory.map(nameOf)).map((name) => byName.get(name)!) }
@@ -67,7 +77,7 @@ export function sidebarRows<T>(
   hidden: ReadonlySet<TagCategory>,
 ): T[] {
   const grouped = (part: T[]) =>
-    groupByCategory(part, nameOf, categoryOf).flatMap((group) => group.items)
+    groupByCategory(part, nameOf, categoryOf, CATEGORY_ORDER).flatMap((group) => group.items)
   const active = rows.filter((row) => isActive(nameOf(row)))
   const inactive = rows.filter(
     (row) => !isActive(nameOf(row)) && !hidden.has(categoryOf(nameOf(row))),
