@@ -20,6 +20,9 @@ image are read the order is artist, copyright, character, meta, general. Require
 - `tag-editing`: "The tags of one image can be edited" (editor line order) and "Tags on
   screen are search terms" (the inspector's tag order).
 - `stamps`: "Edit mode applies the active stamp by a click" (the tile footer's order).
+- `tag-sidebar`: "The sidebar lists the tags of the current results with counts" and
+  "Categories can be hidden from the sidebar" name the library order, no longer "the one".
+- `tag-vocabulary`: "A tag can be pinned for one-click editing" names the library order.
 
 ## Non-goals
 

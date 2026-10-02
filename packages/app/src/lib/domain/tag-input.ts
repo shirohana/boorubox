@@ -175,9 +175,10 @@ export function completeToken(value: string, caret: number): TagInputText {
 
 /**
  * The text an image's tag editor opens with (`tag-vocabulary` design D6, D7):
- * one line per category that has any tag (`groupByCategory` in the single-image
- * order, `single-image-tag-order` design D2), and a space after the very last tag so the caret a click
- * puts at the end is already on a new token. Without it the first thing
+ * one line per category that has any tag (`groupByCategory` in the
+ * single-image order, `single-image-tag-order` design D2), and a space after
+ * the very last tag so the caret a click puts at the end is already on a new
+ * token. Without it the first thing
  * typed glued itself to the last tag and the owner had to type the space by
  * hand on every edit — and a click into the editor means a tag is about to
  * be added. A save trims, so the space never counts as a change, and a line

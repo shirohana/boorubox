@@ -4,8 +4,8 @@
 The app SHALL let the user change the tags of the image currently shown in the inspector,
 from both of the inspector's placements, and SHALL store the result as the image's whole tag
 set. Saving SHALL drop duplicates and blank entries, SHALL lowercase every name (so `Cat` and
-`cat` in one editor are one tag), SHALL leave the set unordered but present it in one order
-everywhere it is displayed, and SHALL record the image as changed at that moment. An empty
+`cat` in one editor are one tag), SHALL leave the set unordered but present it in the single-image
+category order everywhere one image's tags are displayed, and SHALL record the image as changed at that moment. An empty
 editor SHALL be a valid save that leaves the image with no tags. The new tags SHALL be visible
 in the grid, the inspector and the tag list of the current results without reopening the
 library.

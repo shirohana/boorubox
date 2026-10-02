@@ -213,11 +213,10 @@
   /** `sortTags` is the only tag order, applied at render (`tags-and-ratings` design D4). */
   const tags = $derived(image ? sortTags(image.tags) : [])
   /**
-   * The read-mode tag list's own grouping (`tag-vocabulary` design D7),
-   * in the single-image order (`single-image-tag-order` design D2):
-   * `groupByCategory` — the same
-   * grouping `editorText` lines the editor with, over the tag list instead
-   * of a string.
+   * The read-mode tag list's own grouping (`tag-vocabulary` design D7), in
+   * the single-image order (`single-image-tag-order` design D2):
+   * `groupByCategory` — the same grouping `editorText` lines the editor with,
+   * over the tag list instead of a string.
    */
   const groupedTags = $derived(
     groupByCategory(tags, (tag) => tag, vocabulary.categoryOf, IMAGE_CATEGORY_ORDER).flatMap((group) => group.items),
