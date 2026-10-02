@@ -278,10 +278,10 @@ describe('editorText', () => {
 
   // spec `tag-editing`, "One line per category" — one tag per category, so
   // every line of the five is exercised, not four of the five.
-  it('reads one line per category, in CATEGORY_ORDER, alphabetical within a line', () => {
+  it('reads one line per category, in IMAGE_CATEGORY_ORDER, alphabetical within a line', () => {
     expect(editorText(
       ['1girl', 'kantoku', 'azur_lane', 'tashkent', 'highres', 'solo'],
       categoryOf,
-    )).toBe('kantoku\nazur_lane\ntashkent\n1girl solo\nhighres ')
+    )).toBe('kantoku\nazur_lane\ntashkent\nhighres\n1girl solo ')
   })
 })

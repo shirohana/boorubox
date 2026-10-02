@@ -44,7 +44,7 @@
   import { Input } from '$lib/components/ui/input'
   import * as Tooltip from '$lib/components/ui/tooltip'
   import { formatRelative, formatSizeLine, formatTimestamp } from '$lib/domain/format'
-  import { groupByCategory } from '$lib/domain/tag-categories'
+  import { groupByCategory, IMAGE_CATEGORY_ORDER } from '$lib/domain/tag-categories'
   import { editorText } from '$lib/domain/tag-input'
   import {
     activeTerms,
@@ -214,12 +214,13 @@
   const tags = $derived(image ? sortTags(image.tags) : [])
   /**
    * The read-mode tag list's own grouping (`tag-vocabulary` design D7),
-   * ordered per `tag-panel-polish` design D1: `groupByCategory` — the same
+   * in the single-image order (`single-image-tag-order` design D2):
+   * `groupByCategory` — the same
    * grouping `editorText` lines the editor with, over the tag list instead
    * of a string.
    */
   const groupedTags = $derived(
-    groupByCategory(tags, (tag) => tag, vocabulary.categoryOf).flatMap((group) => group.items),
+    groupByCategory(tags, (tag) => tag, vocabulary.categoryOf, IMAGE_CATEGORY_ORDER).flatMap((group) => group.items),
   )
   /** Design D3: the same reader the sidebar uses, so a tag's marking agrees. */
   const terms = $derived(activeTerms(tagQuery))

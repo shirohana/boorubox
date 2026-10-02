@@ -1,7 +1,7 @@
 import type { TagCategory } from '@boorubox/shared'
 import { describe, expect, it } from 'vitest'
 import { activeTerms } from './tag-utils'
-import { CATEGORY_ORDER, categoryLabel, sidebarRows } from './tag-categories'
+import { CATEGORY_ORDER, categoryLabel, groupByCategory, IMAGE_CATEGORY_ORDER, sidebarRows } from './tag-categories'
 
 const ALL_CATEGORIES: TagCategory[] = ['artist', 'copyright', 'character', 'meta', 'general']
 
@@ -11,8 +11,26 @@ describe('CATEGORY_ORDER', () => {
     expect(CATEGORY_ORDER.length).toBe(ALL_CATEGORIES.length)
   })
 
-  it('is design D1\'s fixed order: artist, copyright, character, general, meta', () => {
+  it('is the library order: artist, copyright, character, general, meta', () => {
     expect(CATEGORY_ORDER).toEqual(['artist', 'copyright', 'character', 'general', 'meta'])
+  })
+})
+
+describe('IMAGE_CATEGORY_ORDER', () => {
+  it('is the single-image order: artist, copyright, character, meta, general', () => {
+    expect(IMAGE_CATEGORY_ORDER).toEqual(['artist', 'copyright', 'character', 'meta', 'general'])
+  })
+})
+
+describe('groupByCategory', () => {
+  const categoryOf = (name: string): TagCategory => (name === 'highres' ? 'meta' : name === 'kantoku' ? 'artist' : 'general')
+  const order = (tags: string[], categories: TagCategory[]) =>
+    groupByCategory(tags, (tag) => tag, categoryOf, categories).map((group) => group.category)
+
+  it('walks the order it is given', () => {
+    const tags = ['solo', 'highres', 'kantoku']
+    expect(order(tags, CATEGORY_ORDER)).toEqual(['artist', 'general', 'meta'])
+    expect(order(tags, IMAGE_CATEGORY_ORDER)).toEqual(['artist', 'meta', 'general'])
   })
 })
 

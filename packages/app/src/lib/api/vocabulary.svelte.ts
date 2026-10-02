@@ -19,7 +19,7 @@
 // and a name read apart from the tags would sit on the wrong row.
 
 import type { PinnedGroup, PinTarget, TagCategory, TagEntry, Vocabulary as VocabularyAnswer } from '@boorubox/shared'
-import { groupByCategory } from '$lib/domain/tag-categories'
+import { CATEGORY_ORDER, groupByCategory } from '$lib/domain/tag-categories'
 import {
   createPinnedGroup,
   deletePinnedGroup,
@@ -93,6 +93,7 @@ export class Vocabulary {
         this.entries.filter((entry) => entry.pinnedGroup === index + 1),
         (entry) => entry.name,
         this.categoryOf,
+        CATEGORY_ORDER,
       ).flatMap((byCategory) => byCategory.items.map((entry) => entry.name)),
     })),
   )

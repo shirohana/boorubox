@@ -14,7 +14,7 @@
   import { Checkbox } from '$lib/components/ui/checkbox'
   import * as ContextMenu from '$lib/components/ui/context-menu'
   import { formatDuration, ratingLabel } from '$lib/domain/format'
-  import { groupByCategory } from '$lib/domain/tag-categories'
+  import { groupByCategory, IMAGE_CATEGORY_ORDER } from '$lib/domain/tag-categories'
   import type { CollectionTarget } from './collection-actions'
   import CollectionMenuItems from './CollectionMenuItems.svelte'
   import { isOrphanedFocus } from './focus-handback'
@@ -124,7 +124,7 @@
    * most telling tags survive the two-line clamp.
    */
   const tagGroups = $derived(
-    image ? groupByCategory(image.tags, (tag) => tag, vocabulary.categoryOf) : [],
+    image ? groupByCategory(image.tags, (tag) => tag, vocabulary.categoryOf, IMAGE_CATEGORY_ORDER) : [],
   )
 
   /**
