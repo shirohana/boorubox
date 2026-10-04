@@ -118,15 +118,24 @@
         onescape={blurOnEscape}
       />
       {#if text !== ''}
-        <Button
-          size="icon-xs"
-          variant="ghost"
-          aria-label="Clear stamp"
-          class="absolute top-1/2 right-0.5 -translate-y-1/2"
-          onclick={clear}
-        >
-          <XIcon />
-        </Button>
+        <!--
+          The centring is on this wrapper, not the button: the kit's button
+          nudges itself with `translate` while pressed, which would replace a
+          centring translate on the button and drop it out from under the
+          pointer, so the release would miss and nothing would clear. The
+          wrapper passes clicks beside the button through to the input.
+        -->
+        <div class="pointer-events-none absolute inset-y-0 right-0.5 flex items-center">
+          <Button
+            size="icon-xs"
+            variant="ghost"
+            aria-label="Clear stamp"
+            class="pointer-events-auto"
+            onclick={clear}
+          >
+            <XIcon />
+          </Button>
+        </div>
       {/if}
     </div>
 
