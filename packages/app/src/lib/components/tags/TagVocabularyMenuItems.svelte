@@ -2,8 +2,8 @@
   // The tag context menu's vocabulary items — a Danbooru look-up, "Edit
   // note…", pin/unpin, a pinned tag's own group moves, and the category
   // group — mounted wherever a tag's context menu opens (`tag-vocabulary`
-  // design D9): the sidebar row, the inspector badge's menu, and the pinned
-  // chip's own menu. A chip's tag is pinned by definition, so its menu shows
+  // design D9): the sidebar row, the inspector badge's menu, the pinned
+  // chip's own menu and the pinned tags panel's row. A pinned tag's menu shows
   // Unpin and the group moves without this component needing a flag to
   // suppress Pin.
   //
@@ -58,9 +58,11 @@
     /**
      * "Manage pinned tags…" was chosen — the host opens its own
      * `PinnedTagsDialog` (`pinned-tags-panel` design D8), the
-     * `oneditnote` shape and required for the same reason.
+     * `oneditnote` shape and required for the same reason. `null` means the
+     * host is the manager (`pinned-tags-manage` design D6): the item is not
+     * offered, and a host says so explicitly rather than leaving the prop off.
      */
-    onmanagegroups: () => void
+    onmanagegroups: (() => void) | null
   }
 
   let { name, oneditnote, oneditartist, onmanagegroups }: Props = $props()
@@ -138,7 +140,7 @@
     </ContextMenu.Item>
   {/each}
 {/if}
-{#if vocabulary.groupCount > 0}
+{#if onmanagegroups && vocabulary.groupCount > 0}
   <ContextMenu.Item onSelect={onmanagegroups}>
     <Settings2Icon />
     Manage pinned tags…

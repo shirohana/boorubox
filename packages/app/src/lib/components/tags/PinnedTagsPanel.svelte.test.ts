@@ -28,6 +28,7 @@ function seed() {
 function setup(
   refuse: Record<string, string> = {},
   answer?: (cmd: string, payload: unknown) => Vocabulary | undefined,
+  props: { startEditing?: boolean, sticky?: boolean } = { startEditing: true },
 ) {
   seed()
   calls = []
@@ -42,15 +43,17 @@ function setup(
       : vocabulary.groups
     return { tags: vocabulary.entries, groups } satisfies Vocabulary
   })
-  const instance = mount(PinnedTagsPanel, { target: document.body })
+  const instance = mount(PinnedTagsPanel, { target: document.body, props })
   flushSync()
   return instance
 }
 
 const originalElementFromPoint = document.elementFromPoint
+const originalScrollIntoView = Element.prototype.scrollIntoView
 
 afterEach(() => {
   document.elementFromPoint = originalElementFromPoint
+  Element.prototype.scrollIntoView = originalScrollIntoView
   clearMocks()
   vocabulary.entries = []
   vocabulary.groups = []
@@ -419,6 +422,7 @@ it('renders barEnd inside the bar, which is a sibling of the scroll region', () 
   mount(PinnedTagsPanel, {
     target: document.body,
     props: {
+      startEditing: true,
       barEnd: createRawSnippet(() => ({ render: () => '<button data-done>Done</button>' })),
     },
   })
@@ -467,4 +471,254 @@ it('reports the pointer to the edge scroller on every move and stops it on relea
   expect(stop).toHaveBeenCalled()
   vi.restoreAllMocks()
   unmount(instance)
+})
+
+const reading = () => setup({}, undefined, {})
+
+it('reads by default: no field, checkbox or Unpin, and an Edit button', () => {
+  const instance = reading()
+
+  expect(document.body.querySelector('input')).toBeNull()
+  expect(document.body.querySelector('[role="checkbox"]')).toBeNull()
+  expect(document.body.querySelector('[aria-label="Unpin cat"]')).toBeNull()
+  expect(document.body.querySelector('[data-tag-handle]')).toBeNull()
+  expect(document.body.querySelector('[aria-label="Move Animals down"]')).toBeNull()
+  expect(document.body.querySelector('[aria-label="Pin a tag into Animals"]')).toBeNull()
+  expect(document.body.textContent).toContain('cat')
+  expect(button('Edit')!.getAttribute('aria-pressed')).toBe('false')
+  expect(button('New group')).toBeUndefined()
+  unmount(instance)
+})
+
+it('Edit shows the controls, a second press hides them and clears a tick', () => {
+  const instance = reading()
+
+  button('Edit')!.click()
+  flushSync()
+  expect(byLabel('Name of group 1')).not.toBeNull()
+  expect(byLabel('Unpin cat')).not.toBeNull()
+  tick_('cat')
+  expect(button('Move 1 selected')).toBeDefined()
+
+  button('Edit')!.click()
+  flushSync()
+  expect(document.body.querySelector('input')).toBeNull()
+  expect(button('Move')).toBeUndefined()
+  button('Edit')!.click()
+  flushSync()
+  expect(byLabel('Select cat').getAttribute('aria-checked')).toBe('false')
+  unmount(instance)
+})
+
+it('startEditing mounts editing', () => {
+  const instance = setup({}, undefined, { startEditing: true })
+
+  expect(button('Edit')!.getAttribute('aria-pressed')).toBe('true')
+  expect(byLabel('Select cat')).not.toBeNull()
+  unmount(instance)
+})
+
+it('folds a group through set_pinned_group_collapsed and lists no tags while folded', async () => {
+  const folded = (): Vocabulary => ({
+    tags: vocabulary.entries,
+    groups: [{ name: 'Animals', collapsed: true }, vocabulary.groups[1], vocabulary.groups[2]],
+  })
+  const instance = setup({}, (cmd) => (cmd === 'set_pinned_group_collapsed' ? folded() : undefined))
+
+  expect(byLabel('Fold Animals').getAttribute('aria-expanded')).toBe('true')
+  byLabel('Fold Animals').click()
+  await settle()
+
+  expect(calls).toEqual([{ cmd: 'set_pinned_group_collapsed', payload: { position: 1, collapsed: true } }])
+  const section = document.body.querySelector('section[aria-label="Group Animals"]')!
+  expect(section.querySelector('[data-tag-row]')).toBeNull()
+  expect(section.textContent).toContain('· 2')
+  expect(byLabel('Unfold Animals').getAttribute('aria-expanded')).toBe('false')
+  expect(section.hasAttribute('data-group-position')).toBe(true)
+  unmount(instance)
+})
+
+it('folding the group whose pin field is open closes the field', async () => {
+  const instance = setup({}, (cmd) => (cmd === 'set_pinned_group_collapsed'
+    ? { tags: vocabulary.entries, groups: [{ name: 'Animals', collapsed: true }, vocabulary.groups[1], vocabulary.groups[2]] }
+    : undefined))
+
+  byLabel('Pin a tag into Animals').click()
+  await settle()
+  expect(document.body.querySelector('[aria-label="Tag to pin"]')).not.toBeNull()
+  byLabel('Fold Animals').click()
+  await settle()
+
+  expect(document.body.querySelector('[aria-label="Tag to pin"]')).toBeNull()
+  unmount(instance)
+})
+
+/** Animals full, Birds empty, Spare holding fox; a group move answers the groups swapped. */
+function setupBesideEmpty() {
+  const animals = { name: 'Animals', collapsed: false }
+  const birds = { name: 'Birds', collapsed: false }
+  const spare = { name: 'Spare', collapsed: false }
+  const instance = setup({}, (cmd, payload) => {
+    if (cmd !== 'move_pinned_group') return undefined
+    const { to } = payload as { from: number, to: number }
+    return to === 2
+      ? { tags: [tag('cat', 2), tag('dog', 2), tag('fox', 3)], groups: [birds, animals, spare] }
+      : { tags: [tag('cat', 1), tag('dog', 1), tag('fox', 3)], groups: [animals, birds, spare] }
+  })
+  vocabulary.entries = [tag('cat', 1), tag('dog', 1), tag('fox', 3)]
+  vocabulary.groups = [animals, birds, spare]
+  flushSync()
+  return instance
+}
+
+it('keeps the pressed arrow the same node when a move swaps a full group with an empty one', async () => {
+  const instance = setupBesideEmpty()
+  const down = byLabel('Move Animals down')
+  expect(document.body.querySelector('section[aria-label="Group Birds"]')!.textContent).toContain('No tags')
+
+  down.focus()
+  down.click()
+  await settle()
+
+  expect(document.body.querySelector('section[aria-label="Group Birds"]')!.getAttribute('data-group-position')).toBe('1')
+  expect(down.isConnected).toBe(true)
+  expect(document.activeElement).toBe(down)
+
+  const up = byLabel('Move Animals up')
+  up.focus()
+  up.click()
+  await settle()
+
+  expect(document.body.querySelector('section[aria-label="Group Animals"]')!.getAttribute('data-group-position')).toBe('1')
+  expect(document.activeElement).toBe(up)
+  unmount(instance)
+})
+
+it('restores focus without scrolling', async () => {
+  const instance = setup()
+  const focus = vi.spyOn(HTMLElement.prototype, 'focus')
+
+  byLabel('Move Animals down').focus()
+  focus.mockClear()
+  byLabel('Move Animals down').click()
+  await settle()
+
+  expect(focus).toHaveBeenCalledWith({ preventScroll: true })
+  focus.mockRestore()
+  unmount(instance)
+})
+
+/** Right-clicks a row's name; bits-ui renders the menu in a portal under `body`. */
+async function openRowMenu(name: string) {
+  document.body
+    .querySelector(`[data-tag-row="${name}"]`)!
+    .dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, button: 2 }))
+  await settle()
+}
+
+const menuItems = () => [...document.body.querySelectorAll<HTMLElement>('[role="menuitem"]')]
+
+it('offers the tag menu on a row, with one Unpin and no Manage pinned tags', async () => {
+  for (const props of [{ startEditing: true }, {}]) {
+    const instance = setup({}, undefined, props)
+    await openRowMenu('cat')
+
+    const items = menuItems().map((item) => item.textContent?.trim())
+    expect(items).toContain('Open Danbooru wiki')
+    expect(items).toContain('Edit note…')
+    expect(items).toContain('New group above')
+    expect(items).toContain('Move to Spare')
+    expect(items.filter((item) => item === 'Unpin')).toHaveLength(1)
+    expect(items).not.toContain('Manage pinned tags…')
+    unmount(instance)
+    document.body.innerHTML = ''
+  }
+})
+
+it('opens the note dialog from the row menu', async () => {
+  const instance = setup()
+  await openRowMenu('cat')
+  menuItems().find((item) => item.textContent?.trim() === 'Edit note…')!.click()
+  await settle()
+
+  expect(document.body.querySelector('[role="dialog"]')).not.toBeNull()
+  unmount(instance)
+})
+
+it('closes the pin field when a row menu move renumbers the groups', async () => {
+  const split: Vocabulary = {
+    tags: [tag('cat', 1), tag('dog', 2), tag('fox', 3)],
+    groups: [
+      { name: '', collapsed: false },
+      { name: 'Animals', collapsed: false },
+      { name: '', collapsed: false },
+      { name: 'Spare', collapsed: false },
+    ],
+  }
+  const instance = setup({}, (cmd) => (cmd === 'set_tag_pinned_group' ? split : undefined))
+  byLabel('Pin a tag into Spare').click()
+  await settle()
+  typeInto(byLabel('Tag to pin') as unknown as HTMLInputElement, 'owl')
+
+  await openRowMenu('cat')
+  menuItems().find((item) => item.textContent?.trim() === 'New group above')!.click()
+  await settle()
+
+  expect(calls).toEqual([{ cmd: 'set_tag_pinned_group', payload: { name: 'cat', target: { newGroupAt: 1 } } }])
+  expect(document.body.querySelector('[aria-label="Tag to pin"]')).toBeNull()
+  unmount(instance)
+})
+
+it('shows a tag\'s note on its row with the whole note in title, in both modes', () => {
+  for (const props of [{ startEditing: true }, {}]) {
+    const instance = setup({}, undefined, props)
+    vocabulary.entries = vocabulary.entries.map((entry) =>
+      entry.name === 'cat' ? { ...entry, note: 'a long note about cats' } : entry)
+    flushSync()
+
+    const note = document.body.querySelector('[data-tag-row="cat"] [title]')!
+    expect(note.textContent?.trim()).toBe('a long note about cats')
+    expect(note.getAttribute('title')).toBe('a long note about cats')
+    expect(document.body.querySelector('[data-tag-row="dog"] [title]')).toBeNull()
+    unmount(instance)
+  }
+})
+
+const groupIndex = () => document.body.querySelector<HTMLElement>('nav[aria-label="Groups"]')
+
+it('shows no group index at one group', () => {
+  const instance = setup()
+  vocabulary.groups = [{ name: 'Animals', collapsed: false }]
+  vocabulary.entries = [tag('cat', 1)]
+  flushSync()
+
+  expect(groupIndex()).toBeNull()
+  unmount(instance)
+})
+
+it('lists every group by label in the index and scrolls the clicked one into view', () => {
+  const instance = setup()
+  const scrolled = vi.fn()
+  Element.prototype.scrollIntoView = function (this: Element, options?: boolean | ScrollIntoViewOptions) {
+    scrolled(this, options)
+  }
+
+  const entries = [...groupIndex()!.querySelectorAll('button')]
+  expect(entries.map((entry) => entry.textContent?.trim())).toEqual(['Animals', '#2', 'Spare'])
+  entries[2].click()
+
+  expect(scrolled).toHaveBeenCalledTimes(1)
+  expect(scrolled.mock.calls[0][0]).toBe(document.body.querySelector('section[aria-label="Group Spare"]'))
+  expect(scrolled.mock.calls[0][1]).toEqual({ block: 'start' })
+  unmount(instance)
+})
+
+it('pins the index and the bar to a scrolling host with sticky', () => {
+  for (const sticky of [true, false]) {
+    const instance = setup({}, undefined, { sticky })
+    expect(groupIndex()!.classList.contains('sticky')).toBe(sticky)
+    expect(document.body.querySelector('[data-bar]')!.classList.contains('sticky')).toBe(sticky)
+    unmount(instance)
+    document.body.innerHTML = ''
+  }
 })

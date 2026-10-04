@@ -13,5 +13,5 @@
     library, so copying the folder carries them.
   </p>
 
-  <PinnedTagsPanel stickyBar />
+  <PinnedTagsPanel sticky />
 </section>

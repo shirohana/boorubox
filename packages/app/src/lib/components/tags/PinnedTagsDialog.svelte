@@ -26,7 +26,7 @@
     portalProps={{ to: portalTo }}
     class="max-h-[85vh] grid-rows-[auto_minmax(0,1fr)] sm:max-w-lg"
     onOpenAutoFocus={(event) => {
-      // The groups region, not the kit's first tabbable (a group's name field).
+      // The groups region, not the kit's first tabbable (a group's fold button).
       event.preventDefault()
       content?.querySelector<HTMLElement>('[data-groups]')?.focus()
     }}
@@ -38,7 +38,7 @@
       </Dialog.Description>
     </Dialog.Header>
 
-    <PinnedTagsPanel {portalTo}>
+    <PinnedTagsPanel {portalTo} startEditing>
       {#snippet barEnd()}
         <Button type="button" onclick={onclose}>Done</Button>
       {/snippet}
